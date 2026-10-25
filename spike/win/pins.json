@@ -24,7 +24,7 @@
     { "name": "playwriter",                     "version": "0.8.0",  "bin": "playwriter", "integrity": "sha512-+pfGhcb+hxA0piPWIxmSL1PH9gz6rvslNYMSb+M/P4AS0Q9XYtbTsk06HKVCKRdWXa9f5/eB0RLtLKwa1OKoUg==" }
   ],
   "piPackages": [
-    { "name": "pi-straw-boss",                       "version": "0.42.7", "integrity": "sha512-sBMl81GKqtrtxapoLS6WAYCM2gZOpUTVPlt303yEI/YZG1vttYYXcsTUiGQYpDUKD4ivwRsRtxQWLV9P4HRqPA==" },
+    { "name": "pi-straw-boss",                       "version": "0.43.0", "integrity": "sha512-UiCbb5axUAMpgyP24Ie491b+y46uXONLSoeWSXHaB0PEntETgy6iK7lQ1ZWBYhnKMcLzyClgCILtfz6gMtNRfQ==" },
     { "name": "pi-intercom",                         "version": "0.17.1", "integrity": "sha512-I9bu30/cTK8cMWgpe7eNWMY7oQIQTVbY6kwgBcJmzqGFkJiMqeuotijMwm6LHqCwrLkST/mfLJCQ/JMgjQ5WpQ==" },
     { "name": "pi-herdr-agents",                     "version": "3.3.1",  "integrity": "sha512-c0s1zKTc5EpLibHkLM/ZZxiYNuPfyQgR/t1WWNmLuYG2FafDjPw8p4z8UFQv1dB+Rfsax/d/vTuiYnMZqqYFUw==", "gap": "Author pins a git fork (wayne930242/pi-herdr-agents@4f37f3e: upstream 3.2.1 + open PR #84 + fork-only exit hold). The npm release 3.3.1 does not carry PR #84 or the exit hold." },
     { "name": "pi-herdr-roles",                      "version": "0.1.0",  "integrity": "sha512-6pJqj6wiph06mpn6hvRFoAd4tyc/RmvAnZA7+E9GLcILY9zKsaTZH59wEOhTqgnCQkzbg2l4SoH+HGjAp8efMg==" },
