@@ -18,6 +18,17 @@ if ($alive) { $tree = @(Get-ProcessTree $serverPid) }
 $known = @($tree) + @($s.tree)
 Write-Log 'stop' 'begin' @{ serverPid = $serverPid; alive = $alive; children = @($tree).Count }
 
+# herdr restores workspaces and resumes pi panes on its next start, but straw-boss's roles (workspace `tower` token,
+# pane sb_role) do not come back with them, so every restored session lands as a member (VM 2026-10-26; upstream gap).
+# Until straw-boss re-derives roles after a restore, close every workspace first so the next start is clean.
+if ($alive -and (Test-Path -LiteralPath $t.HerdrExe)) {
+    $wl = Invoke-Native -File $t.HerdrExe -ArgList @('workspace', 'list') -TimeoutSec 15
+    $ids = @()
+    try { $ids = @(($wl.StdOut | ConvertFrom-Json).result.workspaces | ForEach-Object { $_.workspace_id }) } catch { }
+    foreach ($id in $ids) { [void](Invoke-Native -File $t.HerdrExe -ArgList @('workspace', 'close', $id) -TimeoutSec 15) }
+    Write-Log 'stop' 'workspaces-closed' @{ closed = $ids }
+}
+
 if ($alive -and (Test-Path -LiteralPath $t.HerdrExe)) {
     $r = Invoke-Native -File $t.HerdrExe -ArgList @('server', 'stop') -TimeoutSec 30
     Write-Log 'stop' 'herdr-server-stop' @{ exit = $r.ExitCode; detail = (Get-FirstLine ($r.StdOut + $r.StdErr)) }
@@ -39,6 +50,18 @@ foreach ($k in $known) {
 if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
     & taskkill.exe /PID $serverPid /T /F 2>&1 | Out-Null
     $left += "$serverPid herdr(server)"
+}
+# pi-intercom's broker is detached from the pi that spawned it and outlives the stack, keeping that pi's environment;
+# stop it only when broker.pid names a node process running pi-intercom's broker in this agent dir.
+$brokerPidFile = Join-Path $AgentDir 'intercom\broker.pid'
+if (Test-Path -LiteralPath $brokerPidFile) {
+    $brokerPid = 0
+    [void][int]::TryParse((Get-Content -LiteralPath $brokerPidFile -Raw).Trim(), [ref]$brokerPid)
+    $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
+    if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker') {
+        & taskkill.exe /PID $brokerPid /T /F 2>&1 | Out-Null
+        $left += "$brokerPid intercom-broker"
+    }
 }
 Start-Sleep -Milliseconds 700
 $still = @()

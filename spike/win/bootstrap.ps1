@@ -41,8 +41,8 @@ function Invoke-Stage {
             Write-Log $Name 'skipped' @{ detail = "already verified: $evidence" }
         } else {
             Write-Log $Name 'install-begin' @{}
-            $install = & $Install
-            if ($install -and $install.FsErrors) { $row.fsErrors = @($install.FsErrors) }
+            $installResult = & $Install
+            if ($installResult -and $installResult.FsErrors) { $row.fsErrors = @($installResult.FsErrors) }
             $evidence = & $Verify
             if (-not $evidence) { throw 'verify returned nothing' }
             $row.action = 'installed'
@@ -197,6 +197,41 @@ foreach ($pkg in $pins.npmGlobal) {
 }
 
 # ---- team profile: AGENTS.md, models, base settings ----
+# herdr on Windows builds a new pane's PATH from the registry, so pi must be on the user PATH for `herdr agent start`
+# and straw-boss's + New base. A node.exe next to the npm shims makes them use the private Node whatever else is on PATH.
+Invoke-Stage 'user-path' {
+    # pi-intercom's broker runs `herdr api snapshot` by name, so herdr's folder must be on the user PATH too
+    # (without it every session shows 不在網中 / herdr_unavailable; VM 2026-10-26).
+    $npmNode = Join-Path $NpmPrefix 'node.exe'
+    $herdrBin = Split-Path -Parent $t.HerdrExe
+    $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+    if ((Test-Path -LiteralPath $npmNode) -and ($cur -contains $NpmPrefix) -and ($cur -contains $herdrBin) -and ($cur -contains (Split-Path -Parent $t.GitExe))) { return "user PATH has npm, herdr and git" }
+} {
+    Copy-Item -LiteralPath $t.NodeExe -Destination (Join-Path $NpmPrefix 'node.exe') -Force
+    $cur = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $cur) { $cur = '' }
+    # git's cmd folder too, so panes and ttt find git.exe (VM 2026-10-26: the agent fell back to robot_hand for git)
+    foreach ($dir in @($NpmPrefix, (Split-Path -Parent $t.HerdrExe), (Split-Path -Parent $t.GitExe))) {
+        if (($cur -split ';') -notcontains $dir) { $cur = ($cur.TrimEnd(';') + ';' + $dir).TrimStart(';') }
+    }
+    [Environment]::SetEnvironmentVariable('Path', $cur, 'User')
+} {
+    $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+    if (($cur -contains $NpmPrefix) -and ($cur -contains (Split-Path -Parent $t.HerdrExe)) -and ($cur -contains (Split-Path -Parent $t.GitExe))) { "user PATH has npm, herdr and git" }
+}
+
+# Without herdr's pi integration, pi panes never report state to herdr and never join the straw net
+# (GUI shows 0 agents; mac spike finding, confirmed in the Windows VM 2026-10-26).
+Invoke-Stage 'herdr-pi-integration' {
+    if (Test-Path -LiteralPath (Join-Path $AgentDir 'extensions\herdr-agent-state.ts')) { return 'pi integration installed' }
+} {
+    Set-SbdEnv
+    $r = Invoke-Native -File $t.HerdrExe -ArgList @('integration', 'install', 'pi') -TimeoutSec 60
+    if ($r.ExitCode -ne 0) { throw "herdr integration install pi: exit $($r.ExitCode) $($r.StdErr)" }
+} {
+    if (Test-Path -LiteralPath (Join-Path $AgentDir 'extensions\herdr-agent-state.ts')) { 'pi integration installed' }
+}
+
 Invoke-Stage 'profile' {
     $a = Join-Path $AgentDir 'AGENTS.md'
     $m = Join-Path $AgentDir 'herdr-agents\config.json'
@@ -257,6 +292,22 @@ Invoke-Stage 'profile' {
     $ok = @('AGENTS.md', 'herdr-agents\config.json', 'settings.json') | Where-Object { -not (Test-Path -LiteralPath (Join-Path $AgentDir $_)) }
     if ($ok) { throw "missing: $($ok -join ', ')" }
     "agent dir $AgentDir"
+}
+
+# pi looks for Git Bash only under Program Files and on PATH; PortableGit lives in our tools folder,
+# so without shellPath the bash tool is dead (VM 2026-10-26). Merge it into the existing settings.json.
+Invoke-Stage 'pi-shell' {
+    $cfg = Read-JsonFile (Join-Path $AgentDir 'settings.json')
+    if ($cfg -and $cfg.shellPath -eq $t.BashExe) { return "shellPath=$($t.BashExe)" }
+} {
+    $path = Join-Path $AgentDir 'settings.json'
+    $cfg = Read-JsonFile $path
+    if (-not $cfg) { throw 'settings.json missing; run the profile stage first' }
+    $cfg | Add-Member -NotePropertyName shellPath -NotePropertyValue $t.BashExe -Force
+    Write-JsonFile $path $cfg
+} {
+    $cfg = Read-JsonFile (Join-Path $AgentDir 'settings.json')
+    if ($cfg.shellPath -eq $t.BashExe) { "shellPath=$($t.BashExe)" }
 }
 
 # ---- pi packages (team profile) ----
