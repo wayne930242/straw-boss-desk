@@ -239,8 +239,13 @@ Add-Check 'herdr-pane-runs-pi' {
 Add-Check 'gui-answers-200' {
     if (-not (Ensure-Started)) { return (Skip 'stack not started') }
     $r = Invoke-Gui 'page' $null
-    $ev = "GET gui page -> $($r.Json.status) ($($r.Json.bytes) bytes)"
-    if ($r.Json -and $r.Json.status -eq 200) { Pass $ev $r.Json } else { Fail $ev $r.Json }
+    # pi-straw-boss records the owner's start time from `ps` (remote.ts startOf); Windows has no ps, so `started` is probably absent
+    # and no surviving session would adopt the server. Recorded here as a finding, not a failure.
+    $rec = Read-JsonFile $guiJson
+    $hasStarted = [bool]($rec -and $rec.started)
+    $ev = "GET gui page -> $($r.Json.status) ($($r.Json.bytes) bytes); gui.json: port=$($rec.port) version=$($rec.version) started-recorded=$hasStarted (false means no adoption by survivors on Windows)"
+    $data = [ordered]@{ page = $r.Json; guiJsonHasStarted = $hasStarted; guiJsonKeys = @($rec.PSObject.Properties.Name) }
+    if ($r.Json -and $r.Json.status -eq 200) { Pass $ev $data } else { Fail $ev $data }
 }
 
 Add-Check 'new-base-via-gui-api' {

@@ -239,12 +239,22 @@ function Get-OsInfo {
     }
 }
 
+# ConvertFrom-Json turns ISO date strings into DateTime, so a recorded start time can arrive as either; both are compared as instants.
+function ConvertTo-UtcInstant {
+    param($Value)
+    if ($null -eq $Value -or $Value -eq '') { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    return [datetime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
+
 function Test-ProcessAlive {
-    param([int]$ProcessId, [string]$StartTime)
+    param([int]$ProcessId, $StartTime)
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return $false }
-    if ($StartTime) { return ($p.StartTime.ToUniversalTime().ToString('o') -eq $StartTime) }
-    return $true
+    $want = ConvertTo-UtcInstant $StartTime
+    if ($null -eq $want) { return $true }
+    # Get-Process and CIM round differently; a reused pid starts at a very different time.
+    return ([math]::Abs(($p.StartTime.ToUniversalTime() - $want).TotalSeconds) -lt 3)
 }
 
 function Get-ProcessStartIso {
