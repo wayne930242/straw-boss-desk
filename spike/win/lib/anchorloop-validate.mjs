@@ -1,7 +1,7 @@
-// What pi-aaaav's tool_result hook does after a write or edit, run without a model.
-// It copies the spawn from pi-aaaav/pi/validate-tool-use.ts (the file is read first and the call is asserted to be unchanged),
+// What pi-anchorloop's tool_result hook does after a write or edit, run without a model.
+// It copies the spawn from pi-anchorloop/pi/validate-tool-use.ts (the file is read first and the call is asserted to be unchanged),
 // so the message printed is the one pi would append to the tool result on this machine.
-// usage: node aaaav-validate.mjs <pi-aaaav package dir> <file to "write"> <cwd>
+// usage: node anchorloop-validate.mjs <pi-anchorloop package dir> <file to "write"> <cwd>
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";

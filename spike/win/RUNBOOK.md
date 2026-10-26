@@ -105,7 +105,7 @@ It starts the stack itself if it is not running, runs every check once, prints `
 | `paths-chinese-profile` | Node, Git, `pi list`, and bash handle the Chinese profile path and a Chinese folder and file name |
 | `npm-install-fs-errors` | EPERM, ENAMETOOLONG, locked-file lines from all install logs; a 330-character path test; stages slower than 2 minutes |
 | `pi-packages-installed` | All 13 packages at pinned versions, plus the list of npm-versus-fork gaps |
-| `aaaav-write-edit-no-python` | The exact message pi-aaaav appends to a write or edit result when `python3` is missing |
+| `anchorloop-write-edit-no-python` | The exact message pi-anchorloop appends to a write or edit result when `python3` is missing |
 | `claude-sdk-executable` | Which `@anthropic-ai/claude-agent-sdk-win32-*` package is installed, and whether its `claude.exe --version` runs |
 | `stack-start` | `start.ps1` succeeded and what it recorded |
 | `herdr-pane-runs-pi` | The tower pane's agent is `pi`, and the screen has no extension load errors |
@@ -115,7 +115,7 @@ It starts the stack itself if it is not running, runs every check once, prints `
 | `ttt-version-only` | `ttt --help` runs |
 
 `FAIL` on `environment` means the profile name was ASCII; the Chinese-path scenario was then not exercised.
-`aaaav-write-edit-no-python` passes by capturing the message; the finding is the message text itself.
+`anchorloop-write-edit-no-python` passes by capturing the message; the finding is the message text itself.
 
 ## Step 5: GUI screenshots (5 minutes, author optional)
 
@@ -220,7 +220,7 @@ Each is recorded by a check; none is fixed in this repository.
 1. herdr's Windows socket is a named pipe built from `HERDR_SOCKET_PATH`. A path with non-ASCII characters or `AppData` in it is untested. `start.ps1` fails at "herdr server did not answer" if it breaks.
 2. `herdr agent start --kind pi` needs the new pane's shell at a prompt. The default shell on Windows (PowerShell or cmd) decides whether the `STRAW_BOSS_ROLE` env reaches pi.
 3. pi-straw-boss reads the owner's start time with `ps -o lstart`; on Windows `ps` is missing, so `gui.json` has no `started` and a surviving session never adopts the server after its owner ends.
-4. pi-aaaav runs `python3` after every write and edit; without Python (or with the Microsoft Store `python3.exe` stub) every edit result carries a validator warning.
+4. pi-aaaav (now pi-anchorloop) ran `python3` after every write and edit; without Python (or with the Microsoft Store `python3.exe` stub) every edit result carries a validator warning.
 5. Agent SDK platform packages: `@anthropic-ai/claude-agent-sdk-win32-x64` and `-win32-arm64` both exist at 0.3.310 on npm. Under x64 emulation Node reports `x64`, so npm installs the x64 one.
 6. PortableGit 2.56 uses the `ucrt64` layout and ships `git-credential-manager.exe` (a .NET Framework build). Git Credential Manager is therefore available without a separate install.
 7. pi finds `bash.exe` through `where bash.exe`. The private `tools\git\bin` is first on PATH; `C:\Windows\System32\bash.exe` (the WSL launcher) must not win.
@@ -251,7 +251,7 @@ Where pi-straw-boss exposes nothing, the kit uses the thinnest workaround and li
 | 6 | `startOf` uses `ps -o lstart` | Recorded as a finding by `gui-answers-200` | A Windows variant (`Get-CimInstance Win32_Process` or `wmic`) | `src/remote.ts` (`startOf`) |
 | 7 | Stopping the GUI from outside | `stop.ps1` runs `herdr server stop` and kills only recorded pids | Use the existing `POST /api/server/stop` first, then `herdr server stop` | `src/control.ts` (`scope === "server"`) |
 | 8 | `ttt init` prompts | `check-ttt.ps1` tries `ttt init -y` with the key in the environment and falls back to the wizard | Non-interactive flags that do not need a TTY | team-toon-tack `init` |
-| 9 | pi-aaaav needs `python3` | `aaaav-write-edit-no-python` records the message | Port the validator to TypeScript, or skip quietly without Python | `pi/validate-tool-use.ts` |
+| 9 | pi-aaaav (now pi-anchorloop) needed `python3` | `anchorloop-write-edit-no-python` records the message | Port the validator to TypeScript, or skip quietly without Python | `pi/validate-tool-use.ts` |
 
 ## Prototype build notes (Mac)
 

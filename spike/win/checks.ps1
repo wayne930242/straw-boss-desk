@@ -184,19 +184,19 @@ Add-Check 'pi-packages-installed' {
     Pass "$(@($pins.piPackages).Count) pi packages at pinned versions; npm-vs-fork gaps: $($gaps -join ', ')" $data
 }
 
-# ---------------------------------------------------------------- aaaav without python3
-Add-Check 'aaaav-write-edit-no-python' {
-    $pkg = Join-Path $t.AgentNm 'pi-aaaav'
-    if (-not (Test-Path -LiteralPath $pkg)) { return (Fail 'pi-aaaav not installed') }
-    $target = Join-Path $WorkDir 'aaaav-probe.txt'
+# ---------------------------------------------------------------- anchorloop without python3
+Add-Check 'anchorloop-write-edit-no-python' {
+    $pkg = Join-Path $t.AgentNm 'pi-anchorloop'
+    if (-not (Test-Path -LiteralPath $pkg)) { return (Fail 'pi-anchorloop not installed') }
+    $target = Join-Path $WorkDir 'anchorloop-probe.txt'
     Set-Content -LiteralPath $target -Value 'probe' -Encoding UTF8
-    $r = Invoke-Node @((Join-Path $libDir 'aaaav-validate.mjs'), $pkg, $target, $WorkDir)
+    $r = Invoke-Node @((Join-Path $libDir 'anchorloop-validate.mjs'), $pkg, $target, $WorkDir)
     if (-not $r.Json) { return (Fail ("no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $py = (Get-FirstLine (Invoke-Native -File 'where.exe' -ArgList @('python3') -TimeoutSec 15).StdOut)
     $data = [ordered]@{ python3Ran = $j.python3Ran; faithfulToSource = $j.faithfulToSource; python3OnPath = $py; validatorMessage = $j.message }
     $ev = "python3 on PATH='$py'; python3Ran=$($j.python3Ran); message appended to every write/edit result: '$($j.message)'"
-    if (-not $j.faithfulToSource) { return (Skip ("pi-aaaav source changed, replica not faithful. " + $ev)) }
+    if (-not $j.faithfulToSource) { return (Skip ("pi-anchorloop source changed, replica not faithful. " + $ev)) }
     # The behaviour under test is the message itself; with no python it is a warning that lands in the model's context after every edit.
     if ($j.python3Ran) { Pass $ev $data } else { Pass ("(expected gap) " + $ev) $data }
 }
