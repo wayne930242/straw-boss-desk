@@ -1,0 +1,21 @@
+{
+  "name": "straw-boss-desk-proto",
+  "productName": "Straw Boss Desk Proto",
+  "version": "0.0.1",
+  "description": "Windows spike prototype: starts the straw-boss stack through the kit's start.ps1 and loads the GUI it serves",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "pack:win": "node scripts/build-installers.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0",
+    "typescript": "7.0.2"
+  }
+}

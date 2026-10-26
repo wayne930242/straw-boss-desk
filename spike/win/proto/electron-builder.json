@@ -1,0 +1,42 @@
+{
+  "appId": "dev.straw-boss-desk.proto",
+  "productName": "Straw Boss Desk Proto",
+  "files": [
+    "dist/**/*",
+    "src/status.html",
+    "src/status.js",
+    "config.default.json",
+    "package.json"
+  ],
+  "asar": true,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "signAndEditExecutable": false,
+    "artifactName": "${name}-Setup-${version}.${ext}"
+  },
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false,
+    "allowElevation": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "runAfterFinish": true,
+    "deleteAppDataOnUninstall": false
+  },
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "http://192.168.64.1:8099/"
+    }
+  ],
+  "toolsets": {
+    "nsis": "1.2.1"
+  }
+}

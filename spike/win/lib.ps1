@@ -1,0 +1,345 @@
+# Shared helpers for the straw-boss-desk Windows spike kit.
+# Dot-source this file; it never touches anything outside $SbdRoot except the spike workspace in the user's home.
+# Written for Windows PowerShell 5.1 (the OpenSSH default on Windows 11) and PowerShell 7: ASCII only, no ?? or ternary.
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+
+$script:KitDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($env:SBD_ROOT) { $script:SbdRoot = $env:SBD_ROOT } else { $script:SbdRoot = Join-Path $env:LOCALAPPDATA 'straw-boss-desk' }
+$script:Tools     = Join-Path $SbdRoot 'tools'
+$script:AgentDir  = Join-Path $SbdRoot 'agent'
+$script:LogDir    = Join-Path $SbdRoot 'logs'
+$script:StateDir  = Join-Path $SbdRoot 'state'
+$script:ResultDir = Join-Path $SbdRoot 'results'
+$script:HerdrDir  = Join-Path $SbdRoot 'herdr'
+$script:ClaudeDir = Join-Path $SbdRoot 'claude'
+$script:NpmPrefix = Join-Path $Tools 'npm'
+$script:NpmCache  = Join-Path $Tools 'npm-cache'
+$script:DlDir     = Join-Path $Tools 'downloads'
+# The folder panes start in. It sits under the user's profile (the GUI folder picker never leaves home) and keeps the profile's non-ASCII name in play.
+$script:WorkDir   = Join-Path $env:USERPROFILE 'sbd-playground'
+
+foreach ($d in @($SbdRoot, $Tools, $AgentDir, $LogDir, $StateDir, $ResultDir, $HerdrDir, $ClaudeDir, $DlDir)) {
+    if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+}
+
+function Get-Pins { Get-Content -LiteralPath (Join-Path $KitDir 'pins.json') -Raw -Encoding UTF8 | ConvertFrom-Json }
+
+function Get-Utf8NoBom { New-Object System.Text.UTF8Encoding($false) }
+
+function Write-AllTextUtf8 {
+    param([string]$Path, [string]$Text)
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [IO.File]::WriteAllText($Path, $Text, (Get-Utf8NoBom))
+}
+
+# One JSON object per line. $script:LogFile is set by the calling script.
+function Write-Log {
+    param([string]$Stage, [string]$Event, $Data)
+    $o = [ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); stage = $Stage; event = $Event }
+    if ($Data) { foreach ($k in $Data.Keys) { $o[$k] = $Data[$k] } }
+    $line = ($o | ConvertTo-Json -Compress -Depth 6)
+    if ($script:LogFile) {
+        $dir = Split-Path -Parent $script:LogFile
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [IO.File]::AppendAllText($script:LogFile, $line + [Environment]::NewLine, (Get-Utf8NoBom))
+    }
+    $msg = "[$Stage] $Event"
+    if ($Data -and $Data.ContainsKey('detail')) { $msg += ' - ' + $Data['detail'] }
+    if ($Data -and $Data.ContainsKey('ms')) { $msg += ' (' + $Data['ms'] + ' ms)' }
+    Write-Host $msg
+}
+
+function Get-Arch {
+    param([string]$Requested)
+    if ($Requested) { return $Requested }
+    # PROCESSOR_ARCHITEW6432 is set for an x86/emulated process on a 64-bit OS; the VM is ARM64 but PMs use x64, so default to x64.
+    return 'x64'
+}
+
+function Join-ArgString {
+    param([string[]]$ArgList)
+    $parts = foreach ($a in $ArgList) {
+        if ($null -eq $a) { continue }
+        if ($a -eq '') { '""'; continue }
+        if ($a -notmatch '[\s"]') { $a; continue }
+        $q = $a -replace '(\\*)"', '$1$1\"'
+        $q = $q -replace '(\\+)$', '$1$1'
+        '"' + $q + '"'
+    }
+    ($parts -join ' ')
+}
+
+# Runs a program, captures stdout and stderr completely, never throws on a non-zero exit.
+function Invoke-Native {
+    param(
+        [string]$File,
+        [string[]]$ArgList = @(),
+        [string]$Cwd,
+        [int]$TimeoutSec = 600,
+        [string]$StdIn,
+        [hashtable]$Env
+    )
+    $resolved = $File
+    if (-not [IO.Path]::IsPathRooted($File)) {
+        $cmd = Get-Command $File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $cmd) { return [pscustomobject]@{ ExitCode = 9009; StdOut = ''; StdErr = "not found: $File"; Ms = 0; TimedOut = $false; Started = $false } }
+        $resolved = $cmd.Source
+        if (-not $resolved) { $resolved = $cmd.Path }
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $resolved
+    $psi.Arguments = Join-ArgString $ArgList
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = ($null -ne $StdIn -and $StdIn -ne '')
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
+    if ($Cwd) { $psi.WorkingDirectory = $Cwd }
+    if ($Env) { foreach ($k in $Env.Keys) { if ($null -eq $Env[$k]) { [void]$psi.EnvironmentVariables.Remove($k) } else { $psi.EnvironmentVariables[$k] = [string]$Env[$k] } } }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    try { [void]$p.Start() } catch {
+        return [pscustomobject]@{ ExitCode = 9009; StdOut = ''; StdErr = $_.Exception.Message; Ms = 0; TimedOut = $false; Started = $false }
+    }
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    if ($psi.RedirectStandardInput) { $p.StandardInput.Write($StdIn); $p.StandardInput.Close() }
+    $timedOut = $false
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        $timedOut = $true
+        try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+    }
+    $p.WaitForExit()
+    $sw.Stop()
+    [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $outTask.Result; StdErr = $errTask.Result; Ms = [int]$sw.ElapsedMilliseconds; TimedOut = $timedOut; Started = $true }
+}
+
+# Filesystem trouble that Defender, long paths, or locked files cause during installs.
+function Get-FsErrors {
+    param([string]$Text)
+    if (-not $Text) { return @() }
+    $hits = @()
+    foreach ($m in [regex]::Matches($Text, '(EPERM|ENAMETOOLONG|EBUSY|EACCES|EMFILE|ENOTEMPTY|ENOSPC)[^\r\n]{0,160}')) { $hits += $m.Value }
+    foreach ($m in [regex]::Matches($Text, '[^\r\n]{0,80}(Access is denied|path is too long|being used by another process|virus|Operation did not complete successfully)[^\r\n]{0,80}')) { $hits += $m.Value }
+    return @($hits | Select-Object -First 20)
+}
+
+function Get-Sha256 {
+    param([string]$Path)
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Save-Download {
+    param([string]$Url, [string]$Dest, [string]$Sha256)
+    if (Test-Path -LiteralPath $Dest) {
+        if ((Get-Sha256 $Dest) -eq $Sha256.ToLowerInvariant()) { return 'cached' }
+        Remove-Item -LiteralPath $Dest -Force
+    }
+    $part = $Dest + '.part'
+    if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        $r = Invoke-Native -File $curl.Source -ArgList @('-fL', '--retry', '3', '--retry-delay', '2', '-sS', '-o', $part, $Url) -TimeoutSec 1800
+        if ($r.ExitCode -ne 0) { throw "download failed ($($r.ExitCode)): $Url $($r.StdErr)" }
+    } else {
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $part
+    }
+    $got = Get-Sha256 $part
+    if ($got -ne $Sha256.ToLowerInvariant()) {
+        Remove-Item -LiteralPath $part -Force
+        throw "SHA256 mismatch for $Url`n  expected $Sha256`n  got      $got"
+    }
+    Move-Item -LiteralPath $part -Destination $Dest -Force
+    return 'downloaded'
+}
+
+# Windows 11 ships bsdtar (tar.exe), which reads zip and is far faster than Expand-Archive on Windows PowerShell 5.1.
+function Expand-Zip {
+    param([string]$Zip, [string]$Dest)
+    if (-not (Test-Path -LiteralPath $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
+    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (Test-Path -LiteralPath $tar) {
+        $r = Invoke-Native -File $tar -ArgList @('-xf', $Zip, '-C', $Dest) -TimeoutSec 900
+        if ($r.ExitCode -eq 0) { return 'tar.exe' }
+    }
+    Expand-Archive -LiteralPath $Zip -DestinationPath $Dest -Force
+    return 'Expand-Archive'
+}
+
+function Get-ToolPaths {
+    $node = Join-Path $Tools 'node'
+    $git = Join-Path $Tools 'git'
+    [pscustomobject]@{
+        Node      = $node
+        NodeExe   = Join-Path $node 'node.exe'
+        NpmCmd    = Join-Path $node 'npm.cmd'
+        Git       = $git
+        GitExe    = Join-Path $git 'cmd\git.exe'
+        BashExe   = Join-Path $git 'bin\bash.exe'
+        Gcm       = Join-Path $git 'ucrt64\bin\git-credential-manager.exe'
+        Herdr     = Join-Path $Tools 'herdr'
+        HerdrExe  = Join-Path $Tools 'herdr\herdr.exe'
+        Npm       = $NpmPrefix
+        PiCmd     = Join-Path $NpmPrefix 'pi.cmd'
+        TttCmd    = Join-Path $NpmPrefix 'ttt.cmd'
+        PwCmd     = Join-Path $NpmPrefix 'playwriter.cmd'
+        PiModules = Join-Path $NpmPrefix 'node_modules'
+        AgentNm   = Join-Path $AgentDir 'npm\node_modules'
+    }
+}
+
+# Puts the private tools first on PATH and points every tool's state at the private folders, for this process and its children only.
+function Set-SbdEnv {
+    $t = Get-ToolPaths
+    $dirs = @($t.Node, $NpmPrefix, (Join-Path $t.Git 'cmd'), (Join-Path $t.Git 'bin'), $t.Herdr)
+    $existing = @($dirs | Where-Object { Test-Path -LiteralPath $_ })
+    $clean = @(($env:PATH -split ';') | Where-Object { $_ -and ($existing -notcontains $_) })
+    $env:PATH = (($existing + $clean) -join ';')
+    $env:PI_CODING_AGENT_DIR = $AgentDir
+    $env:NPM_CONFIG_PREFIX = $NpmPrefix
+    $env:NPM_CONFIG_CACHE = $NpmCache
+    $env:NPM_CONFIG_UPDATE_NOTIFIER = 'false'
+    $env:NPM_CONFIG_FUND = 'false'
+    $env:NPM_CONFIG_AUDIT = 'false'
+    $env:HERDR_CONFIG_PATH = Join-Path $HerdrDir 'config.toml'
+    $env:HERDR_SOCKET_PATH = Join-Path $HerdrDir 'herdr.sock'
+    $env:HERDR_DISABLE_SOUND = '1'
+    $env:CLAUDE_CONFIG_DIR = $ClaudeDir
+    $env:GIT_CONFIG_GLOBAL = Join-Path $SbdRoot 'gitconfig'
+    $env:GCM_INTERACTIVE = 'true'
+    # A pi started from another pi session would make every pane's pi act as a subagent (pi-straw-boss AGENTS.md).
+    foreach ($v in @('PI_SUBAGENT_ID', 'PI_INTERCOM_SESSION_ID', 'HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_SESSION', 'STRAW_BOSS_ROLE')) {
+        Remove-Item -Path ("Env:" + $v) -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-OsInfo {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $isArm = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+    [ordered]@{
+        caption = $os.Caption
+        build = $os.BuildNumber
+        osArchitecture = $os.OSArchitecture
+        processorArchitecture = $env:PROCESSOR_ARCHITECTURE
+        processorArchitectureW6432 = $env:PROCESSOR_ARCHITEW6432
+        hostIsArm64 = $isArm
+        psVersion = $PSVersionTable.PSVersion.ToString()
+        user = $env:USERNAME
+        userProfile = $env:USERPROFILE
+        localAppData = $env:LOCALAPPDATA
+        profileIsNonAscii = [bool]($env:USERPROFILE -match '[^\u0000-\u007f]')
+        sbdRoot = $SbdRoot
+    }
+}
+
+# ConvertFrom-Json turns ISO date strings into DateTime, so a recorded start time can arrive as either; both are compared as instants.
+function ConvertTo-UtcInstant {
+    param($Value)
+    if ($null -eq $Value -or $Value -eq '') { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    return [datetime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
+
+function Test-ProcessAlive {
+    param([int]$ProcessId, $StartTime)
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $false }
+    $want = ConvertTo-UtcInstant $StartTime
+    if ($null -eq $want) { return $true }
+    # Get-Process and CIM round differently; a reused pid starts at a very different time.
+    return ([math]::Abs(($p.StartTime.ToUniversalTime() - $want).TotalSeconds) -lt 3)
+}
+
+function Get-ProcessStartIso {
+    param([int]$ProcessId)
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($p) { return $p.StartTime.ToUniversalTime().ToString('o') }
+    return $null
+}
+
+# Descendants of a process, by parent id, with creation times so a reused pid is never mistaken for ours.
+function Get-ProcessTree {
+    param([int]$RootPid)
+    $all = @(Get-CimInstance Win32_Process)
+    $found = @()
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($RootPid)
+    while ($queue.Count -gt 0) {
+        $id = $queue.Dequeue()
+        foreach ($c in ($all | Where-Object { $_.ParentProcessId -eq $id })) {
+            $found += [pscustomobject]@{ Pid = [int]$c.ProcessId; Name = $c.Name; Created = $c.CreationDate.ToUniversalTime().ToString('o') }
+            $queue.Enqueue([int]$c.ProcessId)
+        }
+    }
+    return $found
+}
+
+function Read-JsonFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try { Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+}
+
+function Write-JsonFile {
+    param([string]$Path, $Object, [int]$Depth = 8)
+    Write-AllTextUtf8 -Path $Path -Text ($Object | ConvertTo-Json -Depth $Depth)
+}
+
+function Get-FirstLine {
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    ($Text -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+}
+
+# Reads a secret without echoing it; returns a plain string for the caller to place in a child's environment only.
+function Read-HiddenText {
+    param([string]$Prompt)
+    $s = Read-Host -Prompt $Prompt -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+# Two-column evidence in a results file: PASS | FAIL | SKIP.
+function New-Result {
+    param([string]$Name, [string]$Status, [string]$Evidence, $Data)
+    $o = [ordered]@{ name = $Name; status = $Status; evidence = $Evidence }
+    if ($Data) { $o['data'] = $Data }
+    [pscustomobject]$o
+}
+
+# ---- account checks: steps with PASS/FAIL/SKIP, whether they needed the person, and evidence; secrets never enter a step ----
+$script:AcctName = ''
+$script:AcctSteps = New-Object System.Collections.ArrayList
+function Start-AccountCheck {
+    param([string]$Name)
+    $script:AcctName = $Name
+    $script:LogFile = Join-Path $LogDir "$Name.jsonl"
+    Set-SbdEnv
+    Write-Host ''
+    Write-Host "=== $Name ==="
+}
+function Add-Step {
+    param([string]$Step, [string]$Status, [string]$Evidence, [bool]$Interactive = $false, [int]$Ms = 0)
+    [void]$script:AcctSteps.Add([pscustomobject]@{ step = $Step; status = $Status; interactive = $Interactive; ms = $Ms; evidence = $Evidence })
+    Write-Host ("{0,-4} {1,-28} {2}{3}" -f $Status, $Step, $Evidence, $(if ($Interactive) { '  [needed the person]' } else { '' }))
+    Write-Log $script:AcctName $Step @{ status = $Status; interactive = $Interactive; ms = $Ms; evidence = $Evidence }
+}
+function Save-AccountResult {
+    $file = Join-Path $ResultDir ("$($script:AcctName)-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
+    Write-JsonFile $file ([ordered]@{ check = $script:AcctName; at = (Get-Date).ToUniversalTime().ToString('o'); os = (Get-OsInfo); steps = $script:AcctSteps }) 8
+    Write-JsonFile (Join-Path $ResultDir "$($script:AcctName)-latest.json") ([ordered]@{ check = $script:AcctName; steps = $script:AcctSteps }) 8
+    Write-Host "results -> $file"
+    if (@($script:AcctSteps | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { exit 1 }
+}
+function Confirm-Prompt {
+    param([string]$Text)
+    $a = Read-Host -Prompt "$Text [y/N]"
+    return ($a -match '^(y|yes)$')
+}
