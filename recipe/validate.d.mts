@@ -28,7 +28,7 @@ export const MAX_RECIPE_BYTES: number;
 export const PROFILE_PACKAGE: string;
 export const KNOWN_FIELDS: Record<string, string[]>;
 export interface ValidateOptions {
-  /** Package names the app installs itself (the names in stack.json); a recipe may not list them. */
-  reservedPackages?: Iterable<string>;
+  /** Package names the app installs itself (the names in stack.json); a recipe may not list them. Required: pass `[]` for none. A string or a missing option throws a TypeError. */
+  reservedPackages: Iterable<string>;
 }
-export function validateRecipe(input: unknown, options?: ValidateOptions): RecipeResult;
+export function validateRecipe(input: unknown, options: ValidateOptions): RecipeResult;
