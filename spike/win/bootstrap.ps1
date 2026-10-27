@@ -80,11 +80,28 @@ function Install-Archive {
     return $dest
 }
 
+# A failed `npm view` is a registry or network problem, not an integrity mismatch: name it as what it is (VM 2026-10-27: an ETIMEDOUT
+# and a registry 404 were both reported as "registry integrity mismatch"). Only a registry answer that differs from the pin is a mismatch.
+function Get-NpmFailureKind {
+    param([string]$Text)
+    if ($Text -match 'ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPROTO|ERR_SOCKET|CERT_|UNABLE_TO_VERIFY|network') { return 'network failure' }
+    if ($Text -match 'E404|\b404\b|Not Found') { return 'registry returned 404 (package or version not found, or the registry or a proxy failed)' }
+    if ($Text -match 'E401|E403|\b40[13]\b') { return 'registry refused the request (401/403)' }
+    if ($Text -match 'E50\d|\b50[0-4]\b') { return 'registry server error (5xx)' }
+    return 'npm view failed'
+}
+
 function Assert-NpmIntegrity {
     param([string]$Name, [string]$Version, [string]$Integrity)
     $r = Invoke-Native -File $t.NpmCmd -ArgList @('view', "$Name@$Version", 'dist.integrity') -TimeoutSec 120
     $got = (Get-FirstLine $r.StdOut).Trim()
-    if ($r.ExitCode -ne 0 -or $got -ne $Integrity) { throw "registry integrity mismatch for $Name@$Version`n  pinned $Integrity`n  registry $got $($r.StdErr)" }
+    if ($r.TimedOut) { throw "registry lookup for $Name@$Version timed out after 120 s (network failure, not an integrity mismatch)" }
+    if ($r.ExitCode -ne 0) {
+        $detail = (($r.StdErr + "`n" + $r.StdOut) -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 6) -join ' | '
+        throw "registry lookup failed for $Name@$Version: $(Get-NpmFailureKind ($r.StdErr + ' ' + $r.StdOut)) (npm view exit $($r.ExitCode); this is not an integrity mismatch): $detail"
+    }
+    if (-not $got) { throw "registry answered without dist.integrity for $Name@$Version (npm view printed nothing; not an integrity mismatch)" }
+    if ($got -ne $Integrity) { throw "registry integrity mismatch for $Name@$Version`n  pinned $Integrity`n  registry $got" }
 }
 
 function Install-NpmGlobal {
