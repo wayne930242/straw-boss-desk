@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Stops only what start.ps1 started (herdr server, the panes under it), using the pids and start times it recorded.
+  Stops only what start.ps1 started (the sb server, the herdr server, the panes under it), using the pids and start times it recorded.
+  Order: `cli.mjs stop` for the kit's own state folder and Herdr socket first, then the workspaces, then `herdr server stop`.
 #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
 $script:LogFile = Join-Path $LogDir 'start.jsonl'
@@ -17,6 +18,28 @@ $tree = @()
 if ($alive) { $tree = @(Get-ProcessTree $serverPid) }
 $known = @($tree) + @($s.tree)
 Write-Log 'stop' 'begin' @{ serverPid = $serverPid; alive = $alive; children = @($tree).Count }
+
+# The sb server (pi-straw-boss 0.45.0+) is created outside the herdr server's process tree (WMI breakaway on Windows), so
+# `herdr server stop` never reaches it. `cli.mjs stop` works from the kit's state folder and socket (the environment Set-SbdEnv
+# set) and needs no running herdr. Its pid comes from start.json, else from `cli.mjs status`.
+$sbCli = Join-Path $t.AgentNm 'pi-straw-boss\dist\server\cli.mjs'
+$sbPid = 0
+$sbStart = $null
+if ($s.sbServerPid) { $sbPid = [int]$s.sbServerPid; $sbStart = $s.sbServerStart }
+if ((Test-Path -LiteralPath $sbCli) -and (Test-Path -LiteralPath $t.NodeExe)) {
+    if ($sbPid -eq 0) {
+        $st = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'status') -TimeoutSec 30
+        try { $sj = ($st.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json; if ($sj.pid) { $sbPid = [int]$sj.pid; $sbStart = Get-ProcessStartIso $sbPid } } catch { }
+    }
+    $sr = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'stop') -TimeoutSec 60
+    Write-Log 'stop' 'sb-server-stop' @{ exit = $sr.ExitCode; pid = $sbPid; detail = (Get-FirstLine ($sr.StdOut + $sr.StdErr)) }
+}
+if ($sbPid -gt 0) {
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+}
 
 # herdr restores workspaces and resumes pi panes on its next start, but straw-boss's roles (workspace `tower` token,
 # pane sb_role) do not come back with them, so every restored session lands as a member (VM 2026-10-26; upstream gap).
@@ -65,6 +88,13 @@ if (Test-Path -LiteralPath $brokerPidFile) {
 }
 Start-Sleep -Milliseconds 700
 $still = @()
+# The recorded sb server pid must be gone; one that ignored `stop` is ours (same start time) and goes now.
+if ($sbPid -gt 0 -and (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) {
+    & taskkill.exe /PID $sbPid /T /F 2>&1 | Out-Null
+    $left += "$sbPid sb-server"
+    Start-Sleep -Milliseconds 500
+    if (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart) { $still += "$sbPid sb-server" }
+}
 foreach ($k in $known) { if ($k -and $k.Pid -and (Test-ProcessAlive -ProcessId ([int]$k.Pid) -StartTime $k.Created)) { $still += $k.Pid } }
 if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) { $still += $serverPid }
 

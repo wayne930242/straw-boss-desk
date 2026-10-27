@@ -64,10 +64,20 @@ function Ensure-Started {
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     if ($s -and $s.url -and (Test-ProcessAlive -ProcessId ([int]$s.serverPid) -StartTime $s.serverStart)) { $script:Ctx.Started = $true; return $true }
     if ($NoStart) { return $false }
+    # start.ps1 leaves a herdr server behind. Run through Invoke-Native (redirected pipes), that server held the pipes open after
+    # start.ps1 exited and ReadToEnd/WaitForExit never returned. So the child gets no inherited handles: cmd.exe is started through
+    # ShellExecute (Start-Process without a redirect), and cmd itself sends start.ps1's output to a file.
     $ps = (Get-Command powershell.exe).Source
-    $r = Invoke-Native -File $ps -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $KitDir 'start.ps1')) -TimeoutSec 400
-    $script:Ctx.StartOut = ($r.StdOut + $r.StdErr)
-    $script:Ctx.Started = ($r.ExitCode -eq 0)
+    $startOut = Join-Path $LogDir 'checks-start.out.log'
+    if (Test-Path -LiteralPath $startOut) { Remove-Item -LiteralPath $startOut -Force -ErrorAction SilentlyContinue }
+    $inner = '"' + $ps + '" -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $KitDir 'start.ps1') + '" > "' + $startOut + '" 2>&1'
+    $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
+    $null = $cmd.Handle
+    $startExit = $null
+    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { & taskkill.exe /PID $cmd.Id /T /F 2>&1 | Out-Null }
+    $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -ErrorAction SilentlyContinue)
+    if ($null -eq $startExit) { $script:Ctx.StartOut = 'start.ps1 timed out after 400 s. ' + $script:Ctx.StartOut }
+    $script:Ctx.Started = ($startExit -eq 0)
     return $script:Ctx.Started
 }
 
@@ -116,7 +126,7 @@ Add-Check 'bash-found-by-pi' {
     if (-not $r.Json) { return (Fail ("pi-shell.mjs printed no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $isPrivate = ($j.shell -like (Join-Path $t.Git '*'))
-    $ev = "pi resolves shell=$($j.shell) args=$($j.args -join ' ') private=$isPrivate probeStatus=$($j.probeStatus) :: $(($j.probeOut -split "`r?`n" | Where-Object { $_ }) -join ' | ')"
+    $ev = "pi resolves shell=$($j.shell) (settings shellPath=$($j.settingsShellPath); where bash.exe=$(@($j.whereBash) -join ' ; ')) args=$($j.args -join ' ') private=$isPrivate probeStatus=$($j.probeStatus) :: $(($j.probeOut -split "`r?`n" | Where-Object { $_ }) -join ' | ')"
     if ($j.probeStatus -ne 0) { return (Fail $ev $j) }
     if (-not $isPrivate) { return (Fail ("pi picked a different bash than the private PortableGit. " + $ev) $j) }
     Pass $ev $j
@@ -128,6 +138,8 @@ Add-Check 'paths-chinese-profile' {
     $n = Invoke-Node @((Join-Path $libDir 'pathcheck.mjs'), $WorkDir)
     $zhName = ([string][char]0x4E2D) + [char]0x6587 + [char]0x5C08 + [char]0x6848
     $repo = Join-Path $WorkDir $zhName
+    # A repo left by an earlier run would make `git commit` exit 1 with "nothing to commit" (VM 2026-10-27): start from nothing.
+    if (Test-Path -LiteralPath $repo) { Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue }
     $steps = [ordered]@{}
     $steps['node'] = if ($n.Json) { $n.Json } else { "no json: $($n.Raw.StdErr)" }
     $g = $t.GitExe
@@ -170,18 +182,30 @@ Add-Check 'npm-install-fs-errors' {
 
 # ---------------------------------------------------------------- pi packages loaded
 Add-Check 'pi-packages-installed' {
+    # The pins come from pins.json beside this script (the kit copy in the VM), so a stale kit copy checks stale versions: the
+    # evidence names the pins file. settings.json is read too: pi loads what it lists, and `pi install` of a new pin can leave the
+    # old `npm:<name>@<old version>` entry beside the new one.
     $pins = Get-Pins
+    $pinsFile = Join-Path $KitDir 'pins.json'
     $missing = @()
     $gaps = @()
+    $stale = @()
+    $cfg = Read-JsonFile (Join-Path $AgentDir 'settings.json')
+    $listed = @()
+    if ($cfg -and $cfg.packages) { $listed = @($cfg.packages | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_.source } }) }
     foreach ($pk in $pins.piPackages) {
         $o = Read-JsonFile (Join-Path $t.AgentNm ((($pk.name) -replace '/', '\') + '\package.json'))
-        if (-not $o -or $o.version -ne $pk.version) { $missing += "$($pk.name)@$($pk.version)" }
+        if (-not $o -or $o.version -ne $pk.version) { $missing += "$($pk.name)@$($pk.version) (installed: $(if ($o) { $o.version } else { 'none' }))" }
+        $want = "npm:$($pk.name)@$($pk.version)"
+        if ($listed -notcontains $want) { $missing += "$want not in settings.json" }
+        foreach ($l in $listed) { if ($l -like "npm:$($pk.name)@*" -and $l -ne $want) { $stale += $l } }
         if ($pk.gap) { $gaps += $pk.name }
     }
     $list = Invoke-Native -File $t.PiCmd -ArgList @('list') -TimeoutSec 120
-    $data = [ordered]@{ missing = $missing; gapsVersusAuthor = $gaps; piList = $list.StdOut }
-    if ($missing.Count) { return (Fail ("missing: $($missing -join ', ')") $data) }
-    Pass "$(@($pins.piPackages).Count) pi packages at pinned versions; npm-vs-fork gaps: $($gaps -join ', ')" $data
+    $intercom = @($pins.piPackages | Where-Object { $_.name -eq 'pi-intercom' })[0].version
+    $data = [ordered]@{ pinsFile = $pinsFile; missing = $missing; staleSettingsEntries = $stale; gapsVersusAuthor = $gaps; piList = $list.StdOut }
+    if ($missing.Count -or $stale.Count) { return (Fail ("pins=$pinsFile; missing: $($missing -join ', '); stale settings entries: $($stale -join ', ')") $data) }
+    Pass "$(@($pins.piPackages).Count) pi packages at pinned versions (pi-intercom $intercom); npm-vs-fork gaps: $($gaps -join ', ')" $data
 }
 
 # ---------------------------------------------------------------- anchorloop without python3
@@ -219,7 +243,7 @@ Add-Check 'stack-start' {
     $ok = Ensure-Started
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     if (-not $ok) { return (Fail ("start.ps1 failed. " + (Get-FirstLine $script:Ctx.StartOut) + ' see logs\start.jsonl')) }
-    Pass "herdr server pid=$($s.serverPid) tower pane=$($s.paneId) url=$($s.url) totalMs=$($s.totalMs)" $s
+    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) url=$($s.url) totalMs=$($s.totalMs)" $s
 }
 
 Add-Check 'herdr-pane-runs-pi' {

@@ -84,10 +84,23 @@ What this step records without any extra work:
 ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\start.ps1"
 ```
 
-Expected last line: `GUI_URL=http://127.0.0.1:<port>/<token>/`.
-`start.ps1` starts `herdr server` with a private socket and config, creates a `tower` workspace whose shell has `STRAW_BOSS_ROLE=tower`, starts pi in it with `herdr agent start`, types `/boss gui`, and waits for `gui.json`.
+Expected last line: `GUI_URL=http://127.0.0.1:<port>/<token>/`. A clean start took 34 s in the 0.45.0 VM pass.
+`start.ps1` runs in this order, and the order matters:
+
+1. `herdr server` with the kit's private socket and config. It is started through ShellExecute (no `-RedirectStandard*`), so it inherits none of the caller's pipes.
+2. The sb server: `node <agent dir>\npm\node_modules\pi-straw-boss\dist\server\cli.mjs up --timeout 90`. The pid, start time and `log` path from its JSON line go into `state\start.json` (`sbServerPid`, `sbServerStart`, `sbServerLog`, `sbServerRecord`).
+3. The tower: a `tower` workspace whose shell has `STRAW_BOSS_ROLE=tower`, with pi started by `herdr agent start` (a tower restored by herdr is reused).
+4. Wait until pi's UI is painted: the tower pane shows pi's editor rules (a run of `U+2500`) or the context-use footer (`12.3%/200k`) on two reads in a row. Typing before this leaves the text stuck in the editor. pi needed 59 s to paint on a cold start in the VM (24 s warm); if it never paints within 120 s the start fails with exit 9 and `logs\start-tower-pane-ready.txt` holds the screen.
+5. ONE `/boss gui`, typed with `herdr agent prompt`, then wait for `gui.json`. Only if `gui.json` stays away for half of `-GuiTimeoutSec` is the editor cleared (`ctrl+u`, `ctrl+k`) and `/boss gui` sent once more.
+
+`gui.json` (`<agent dir>\straw-boss\gui.json`) is still written by the tower's `/boss gui`; the sb server does not host the GUI yet (`url` is `null` in its `up` output until pi-straw-boss B2).
 A browser window may open on the interactive desktop because `/boss gui` calls the default browser; that is a known gap (see upstream seams).
-Failure output: `logs\start.jsonl`, `logs\start-tower-pane.txt`, `logs\start-tower-pane-after.txt` (what the tower pane showed).
+
+The kit's Herdr socket is not Herdr's default, so the sb server lives in a secondary slot, not in `<agent dir>\straw-boss\`:
+`<agent dir>\straw-boss\servers\<first 16 hex of sha256(HERDR_SOCKET_PATH)>\` holds `server.json` (the record: pid, version, socket, `stopped`), `server.lock`, `start-error.json`, `server.log`.
+Find the folder through the `log` field of `up` or `status` (`node cli.mjs status` prints one JSON line; `server.json` is beside the log) rather than computing the hash.
+Exit codes of `start.ps1`: 2 a tool is missing (run bootstrap), 3 stale stack (run stop first), 4 herdr server silent, 5/6 tower, 7 no GUI, 8 `cli.mjs up` failed, 9 pi UI never painted.
+Failure output: `logs\start.jsonl`, `logs\start-tower-pane.txt`, `logs\start-tower-pane-ready.txt`, `logs\start-tower-pane-after.txt` (what the tower pane showed).
 
 ## Step 4: unattended checks (4 to 8 minutes)
 
@@ -95,7 +108,7 @@ Failure output: `logs\start.jsonl`, `logs\start-tower-pane.txt`, `logs\start-tow
 ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\checks.ps1"
 ```
 
-It starts the stack itself if it is not running, runs every check once, prints `PASS`, `FAIL`, or `SKIP` with evidence, and writes `results\checks-<time>.json` and `checks-latest.json`.
+It starts the stack itself if it is not running (through `cmd.exe` with start.ps1's output in `logs\checks-start.out.log`, so the herdr server it leaves behind cannot hold a pipe open), runs every check once, prints `PASS`, `FAIL`, or `SKIP` with evidence, and writes `results\checks-<time>.json` and `checks-latest.json`.
 
 | Check | What it proves |
 | --- | --- |
@@ -104,7 +117,7 @@ It starts the stack itself if it is not running, runs every check once, prints `
 | `bash-found-by-pi` | pi's own `getShellConfig()` picks the private PortableGit `bash.exe`, and a command through it works |
 | `paths-chinese-profile` | Node, Git, `pi list`, and bash handle the Chinese profile path and a Chinese folder and file name |
 | `npm-install-fs-errors` | EPERM, ENAMETOOLONG, locked-file lines from all install logs; a 330-character path test; stages slower than 2 minutes |
-| `pi-packages-installed` | All 13 packages at pinned versions, plus the list of npm-versus-fork gaps |
+| `pi-packages-installed` | All 13 packages at the versions in the kit's `pins.json` (for example pi-intercom 0.18.1), listed in `settings.json` as `npm:<name>@<version>` with no stale entry for an older pin, plus the list of npm-versus-fork gaps. A stale kit copy checks stale pins: the evidence names the `pins.json` it read |
 | `anchorloop-write-edit-no-python` | The exact message pi-anchorloop appends to a write or edit result when `python3` is missing |
 | `claude-sdk-executable` | Which `@anthropic-ai/claude-agent-sdk-win32-*` package is installed, and whether its `claude.exe --version` runs |
 | `stack-start` | `start.ps1` succeeded and what it recorded |
@@ -127,7 +140,9 @@ It starts the stack itself if it is not running, runs every check once, prints `
 ## Step 6: stop, then the prototype installer (15 minutes, needs the VM display)
 
 Stop the stack so the prototype starts it itself: `ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\stop.ps1"`.
-Expected output `stopped`; `STILL RUNNING:` means a recorded process survived and the script exits 1.
+`stop.ps1` runs `node cli.mjs stop` first (for the kit's own state folder and socket, so only the kit's sb server stops), waits until the recorded sb server pid is gone, then closes the workspaces and runs `herdr server stop`.
+The sb server is not in the herdr server's process tree (it is created outside the job on Windows), so `herdr server stop` alone leaves it running.
+Expected output `stopped`; `STILL RUNNING:` means a recorded process (the sb server pid included) survived and the script exits 1.
 
 On the VM display:
 
@@ -206,7 +221,7 @@ Also copy the Edge and SmartScreen screenshots taken from UTM.
 ## Step 11: cleanup (5 minutes)
 
 1. Account scripts: confirm each printed its `cleanup:*` rows as `PASS`. Then revoke on the provider side: the Claude session (claude.ai, Settings, Claude Code sessions), GitHub (Settings, Applications, Authorized OAuth Apps: Git Credential Manager), the GitLab PAT, the Linear API key.
-2. `stop.ps1`, then confirm no leftover: `ssh VM "tasklist /fi \"imagename eq herdr.exe\""`.
+2. `stop.ps1`, then confirm no leftover: `ssh VM "tasklist /fi \"imagename eq herdr.exe\""`, and that the sb server pid in `state\start.json` (read before stop) is gone: `ssh VM "tasklist /fi \"pid eq <pid>\""`.
 3. Uninstall the prototype from Settings, or run its `Uninstall Straw Boss Desk Proto.exe` in the install folder.
 4. Remove the kit state if the VM is kept: `%LOCALAPPDATA%\straw-boss-desk`, `%USERPROFILE%\sbd-kit`, `%USERPROFILE%\sbd-playground`, `%USERPROFILE%\sbd-shots`, `%APPDATA%\straw-boss-desk-proto`.
 5. Mac: `MonitorStop` the feed server; confirm nothing listens on 8099 (`lsof -nP -iTCP:8099 -sTCP:LISTEN`).
@@ -243,13 +258,13 @@ Where pi-straw-boss exposes nothing, the kit uses the thinnest workaround and li
 
 | # | Gap | Spike hack | Proposed upstream API | Where |
 | --- | --- | --- | --- | --- |
-| 1 | The GUI starts only when a session types `/boss gui` | `start.ps1` types `/boss gui` into the tower with `herdr agent prompt` | A desk mode: env `STRAW_BOSS_DESK=1` makes a tower start the GUI on `session_start` through `host.restore`/`share` | `src/host.ts`, `src/session.ts` (the `session_start` handler) |
+| 1 | The GUI starts only when a session types `/boss gui` | `start.ps1` types `/boss gui` into the tower with `herdr agent prompt`, once pi's UI is painted | A desk mode: env `STRAW_BOSS_DESK=1` makes a tower start the GUI on `session_start` through `host.restore`/`share` | `src/host.ts`, `src/session.ts` (the `session_start` handler) |
 | 2 | `/boss gui` opens the default browser | Ignored; a browser window may pop up | Env `STRAW_BOSS_NO_BROWSER=1`, or a `Deps.openUrl` override from the environment | `src/index.ts` (`openUrl = openBrowser`), `src/gui.ts` (`openBrowser`) |
 | 3 | There is no headless way to start a tower; `ensureTower` runs only inside a pi session | `start.ps1` creates a herdr workspace with `STRAW_BOSS_ROLE=tower` and starts pi in it with `herdr agent start` | A published CLI such as `pi-straw-boss tower --cwd <dir>` that wraps `src/towertab.ts` `ensureTower` and prints the `gui.json` path | `src/towertab.ts`, `src/tower.ts` |
 | 4 | The URL is only in `gui.json` | `start.ps1` reads `port` and `token` from `gui.json` | `gui.json` documented as the contract, with a `schemaVersion` | `src/handover.ts` (`GuiRecord`) |
 | 5 | Folder picking is limited to the home folder and hidden folders are refused | The kit's playground sits under the profile | Allow a list of extra roots from the desk (native dialog result) | `src/spawn.ts` (`pickable`) |
 | 6 | `startOf` uses `ps -o lstart` | Recorded as a finding by `gui-answers-200` | A Windows variant (`Get-CimInstance Win32_Process` or `wmic`) | `src/remote.ts` (`startOf`) |
-| 7 | Stopping the GUI from outside | `stop.ps1` runs `herdr server stop` and kills only recorded pids | Use the existing `POST /api/server/stop` first, then `herdr server stop` | `src/control.ts` (`scope === "server"`) |
+| 7 | Stopping the GUI from outside | `stop.ps1` runs `cli.mjs stop` (sb server), then `herdr server stop`, and kills only recorded pids | Use the existing `POST /api/server/stop` first, then `herdr server stop` | `src/control.ts` (`scope === "server"`) |
 | 8 | `ttt init` prompts | `check-ttt.ps1` tries `ttt init -y` with the key in the environment and falls back to the wizard | Non-interactive flags that do not need a TTY | team-toon-tack `init` |
 | 9 | pi-aaaav (now pi-anchorloop) needed `python3` | `anchorloop-write-edit-no-python` records the message | Port the validator to TypeScript, or skip quietly without Python | `pi/validate-tool-use.ts` |
 

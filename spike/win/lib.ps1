@@ -253,8 +253,18 @@ function Test-ProcessAlive {
     if (-not $p) { return $false }
     $want = ConvertTo-UtcInstant $StartTime
     if ($null -eq $want) { return $true }
+    # A process that exits between Get-Process and this read has a null StartTime (VM 2026-10-27: stop.ps1 died with InvokeMethodOnNull here
+    # while it waited for the sb server pid to go): gone is not alive.
+    $started = $null
+    try { $started = $p.StartTime } catch { }
+    if ($null -eq $started) {
+        $again = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if (-not $again) { return $false }
+        try { if ($again.HasExited) { return $false } } catch { }
+        return $true
+    }
     # Get-Process and CIM round differently; a reused pid starts at a very different time.
-    return ([math]::Abs(($p.StartTime.ToUniversalTime() - $want).TotalSeconds) -lt 3)
+    return ([math]::Abs(($started.ToUniversalTime() - $want).TotalSeconds) -lt 3)
 }
 
 function Get-ProcessStartIso {
