@@ -1,24 +1,41 @@
-# Team profile (phase 3)
+# Team profile and recipe (phase 3)
 
-Status: proposed, waiting for the author's approval. Nothing here is built yet.
+Status: proposed, revised after the author's answers of 2026-10-27; waiting for approval. Nothing here is built yet.
 
-The team profile is what turns a bare pi into an agent that can serve a PM who has never used a terminal. It is the AGENTS.md every session reads, one skill of our own (the PM workflow), one guard rule, the model routing, and the pi packages that carry everything else. The design record (`docs/specs/2026-10-25-design.md`, rows Profile, Models, Git hosting, PM workflow, Language) sets the frame; this spec fills it.
+straw-boss-desk is open source and stays team-neutral. What makes a pi able to serve a PM who has never used a terminal comes in two layers:
+
+- **The team profile**, generic and shipped from this repository as an npm pi package: the AGENTS.md every session reads, the PM workflow skill, two guard rules, the model routing, and the pi packages that carry everything else.
+- **The recipe (配方)**, one JSON file a team lead hands to colleagues: which code hosts the team uses, which repositories to clone and work in, the Straw Link relay, Linear on or off, and the team's own additions on top of the profile.
+
+The design record (`docs/specs/2026-10-25-design.md`, rows Profile, Models, Git hosting, PM workflow, Straw Link, Language) sets the frame; this spec fills it and lists the edits it needs (Tasks, item 9).
 
 What the profile leans on instead of restating:
 
 | Need | Owned by |
 | --- | --- |
-| How to change code: alignment, Reality anchor, Inline or Durable, verification | pi-anchorloop `coding` (and `investigating`, `inspecting`, `writing`) |
+| How to change code: alignment, Reality anchor, when a change needs a review, verification | pi-anchorloop `coding` (and `investigating`, `inspecting`, `writing`) |
 | How a subagent works, reviews, and reports | pi-herdr-roles `scout`, `planner`, `worker`, `reviewer` |
 | How to launch, supervise, and clean up subagents; worktrees | pi-herdr-agents and its `pi-herdr-agents` skill; pi-straw-boss for bases and mains |
 | Dangerous shell commands | cc-safety-net |
 | Questions in the GUI | `ask_user_question` from @juicesharp/rpiv-ask-user-question, which the pi-straw-boss GUI answers in its alerts |
+| Pull and merge requests, CI, comments | the official CLIs, `gh` and `glab` |
 
-So the profile only says what is specific to this team: who the user is, where the agent may work, which shell it has, and how a change travels from a plain request to a pull request.
+## Decisions
+
+| # | Question | Decision |
+| --- | --- | --- |
+| 1 | How pull and merge requests are opened | The official CLIs: `gh` for GitHub, `glab` for GitLab, pinned by version and SHA256 under `tools/`. No helper of our own. The recipe says which forges a team uses, so only those are installed and logged in (section 4). |
+| 2 | How the profile ships | An npm pi package published from `profile/`, pinned in `stack.json`. Team specifics come from the recipe (section 5). |
+| 3 | Review on every change | No. The `coding` skill's rule decides: a change touching a shared contract, authorization or permission data, a migration, or security gets one `reviewer`; other changes rest on their checks and the agent's own read of the diff. |
+| 4 | visual-tester | Out of v1. Its model entry stays; AGENTS.md does not list it. |
+| 5 | Secrets in a task | pi-robot-hand stays, for `secret_drop` only; AGENTS.md bans `robot_hand`. |
+| 6 | Language of commits and request text | Commits follow the repository (English when unsure); the pull or merge request title and body are in the PM's language. |
+| 7 | Pins | Move them to current versions after reading each changelog, as a task (Tasks, item 8). |
+| 8 | Merging | Agents never merge; an engineer does. |
 
 ## 1. Team AGENTS.md
 
-Installed as `<agent-dir>/AGENTS.md`. Every line is there because an agent behaves differently without it; the two Windows spike findings are the lines on the shell and on the base folder.
+Installed as `<agent-dir>/AGENTS.md`, with the recipe's `instructions` appended (section 5). Every line is there because an agent behaves differently without it; the two Windows spike findings are the lines on the shell and on the base folder.
 
 ````markdown
 # Team guidance
@@ -41,10 +58,10 @@ You work for a PM who has never used a terminal. They describe what they want in
 
 ## Git and code hosting
 
-- Git is yours, not the PM's. Every change the PM asks for goes through the `pm-workflow` skill: its own branch, checks, review, commit, push, and a pull request (GitHub) or merge request (GitLab), reported back with its link.
+- Git is yours, not the PM's. Every change the PM asks for goes through the `pm-workflow` skill: its own branch, checks, commit, push, and a pull request (GitHub) or merge request (GitLab), reported back with its link.
 - Never commit or push to the default branch, never force-push, never rewrite pushed history, and never merge a pull or merge request; an engineer merges.
 - Stage files by name. Commit messages follow the repository's convention (Conventional Commits when it has none) and never mention AI tools or add an AI co-author line.
-- The app has already set up the code-host login. Never read it yourself (`git credential fill`, credential files, the keychain).
+- The app has already logged `gh` and `glab` in. Never log them in or out, and never print or read the login (`gh auth token`, `--show-token`, `git credential fill`, credential files, the keychain).
 
 ## Safety
 
@@ -54,20 +71,20 @@ You work for a PM who has never used a terminal. They describe what they want in
 
 ## Delegating
 
-- Hand work to subagents through pi-herdr-agents with these roles: `scout` to look around unfamiliar code, `planner` to plan a change that spans several parts, `worker` to implement, `reviewer` to review a change. Never set `model` or `thinking`; the team configuration chooses them.
+- Hand work to subagents through pi-herdr-agents with these roles: `scout` to look around unfamiliar code, `planner` to plan a change that spans several parts, `worker` to implement, `reviewer` when the `coding` skill calls for a review. Never set `model` or `thinking`; the team configuration chooses them.
 - Do small, clear changes yourself.
 ````
 
 Choices made in that text, for the author to check:
 
 - The ask tool is named `ask_user_question`, the tool the pinned package registers and the GUI answers (pi-straw-boss README, `/boss gui`). The design's word "ask_user" is the other package (pi-ask-user), which the GUI shows read-only.
-- `robot_hand` is banned because its whole purpose is handing the user a command. `secret_drop` stays, since pi-straw-boss keeps secret dialogs in the terminal tile on purpose (SB-F001); see open question 5.
-- `visual-tester` is not listed: the pi-herdr-roles role needs a `chrome-cdp` skill and `scripts/cdp.mjs` in the host project, which the stack does not ship (open question 4). `adversarial-reviewer` is not listed either; a PM would not ask for it.
-- No rule on memory, writing voice, Linear, or dispatch tuning: those are the author's personal habits.
+- No rule on memory, writing voice, Linear, or dispatch tuning: those are the author's personal habits. A team that wants them adds them through its recipe.
 
-## 2. Guard rule: bash, not PowerShell
+## 2. Guard rules
 
-Text alone did not stop the spike's agent, so the profile also ships one TTSR rule. pi-anchorloop's `ttsr.ts` (pinned 2.0.0 carries it) loads `<agent-dir>/rules/*.md`, and a rule whose `condition` matches a bash call blocks it before it runs, returning the rule text as the reason. The regex below was checked against the `blocks` and `allows` lists with Node; these lists become the rule's test fixtures.
+Text alone did not stop the spike's agent, so the profile also ships two TTSR rules. pi-anchorloop's `ttsr.ts` (pinned 2.0.0 carries it) loads `<agent-dir>/rules/*.md`, and a rule whose `condition` matches a bash call blocks it before it runs, returning the rule text as the reason. Both regexes were checked against their `blocks` and `allows` lists with Node; these lists become the rules' test fixtures.
+
+`rules/bash-not-powershell.md`:
 
 ````markdown
 ---
@@ -99,11 +116,43 @@ Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of
 If a step truly needs PowerShell, call it explicitly: `powershell.exe -NoProfile -Command '...'`.
 ````
 
+`rules/forge-login-hands-off.md`, because `gh auth token` would print the token straight into the session file:
+
+````markdown
+---
+description: "Agents never touch the code-host login"
+condition: '(?:^|[\n;(`{]|&&|\|\|?|\b(?:then|do|else)\s)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:gh|glab)(?:\.exe)?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|(?:gh|glab)(?:\.exe)?\s+auth\s+status\b[^\n;&|]*\s(?:-t|--show-token)\b|git(?:\s+-C\s+\S+)*\s+credential(?:-[a-z]+)?\s+(?:fill|get)\b)'
+scope: "tool:bash"
+repeatMode: after-gap
+repeatGap: 1
+blocks:
+  - gh auth token
+  - GH_HOST=x gh auth token | cat
+  - gh auth status -t
+  - glab auth status --show-token
+  - glab auth login --hostname g.example
+  - gh auth logout
+  - printf 'protocol=https\nhost=github.com\n\n' | git credential fill
+  - git credential-manager get
+  - glab auth git-credential get
+allows:
+  - gh auth status
+  - glab auth status --hostname g.example
+  - gh pr create --title 'auth token refresh fix' --body-file b.md
+  - grep -rn 'gh auth token' docs/
+  - git commit -m 'fix: token refresh'
+---
+
+The code-host login belongs to the app. Do not print it, read it, or log in or out.
+
+`gh auth status` and `glab auth status` (without `-t`) are enough to see whether a login works. When one is missing or rejected, tell the PM to open the app's settings and sign in to the code host again.
+````
+
 Leaving the base has no rule: a regex cannot tell a harmless `cd ..` inside the repository from leaving it. The AGENTS.md line, the workflow's top-level check before every git write (section 3, step 2), and the decoy-repository check in acceptance cover it.
 
 ## 3. PM workflow skill
 
-Installed as `skills/pm-workflow/SKILL.md` with a helper, `skills/pm-workflow/scripts/forge.mjs` (section 4). The skill owns the path from a plain request to a pull or merge request an engineer can merge. Worktree rules stay with pi-straw-boss and pi-herdr-agents; how to code stays with pi-anchorloop.
+Shipped in the profile package as `skills/pm-workflow/SKILL.md`. It owns the path from a plain request to a pull or merge request an engineer can merge. Worktree rules stay with pi-straw-boss and pi-herdr-agents; how to code stays with pi-anchorloop.
 
 ````markdown
 ---
@@ -113,15 +162,15 @@ description: Use when the PM asks for any change to a repository (a fix, a featu
 
 # PM workflow
 
-The PM describes a change in plain words. You deliver a pull request (GitHub) or merge request (GitLab) that an engineer can merge, and report it with its link. The PM never runs git and never reads the diff, so every check below is yours.
+The PM describes a change in plain words. You deliver a pull request (GitHub, with `gh`) or merge request (GitLab, with `glab`) that an engineer can merge, and report it with its link. The PM never runs git and never reads the diff, so every check below is yours.
 
-`scripts/forge.mjs` beside this file talks to the code host with the login the app set up. Run it from the repository root as `node <this skill's folder>/scripts/forge.mjs <command>`; each command prints one JSON line. Never read the login yourself.
+Pick the CLI from `git remote get-url origin`: host `github.com` uses `gh`, any other host `glab`. If `gh auth status` or `glab auth status` fails for that host, stop and tell the PM to sign in to the code host again in the app's settings.
 
 ## 1. Confirm the goal
 
 Look at the repository first, so the question carries what you found. Then ask one `ask_user_question` that restates, in the PM's language: what will change for the product's users, what will stay as it is, and how you will check it. Options: go ahead (recommended), adjust (the PM types what to change), cancel. Ask again only when an answer would change what you build.
 
-The PM's go-ahead also approves pushing the branch and opening the request in steps 6 and 7.
+The PM's go-ahead also approves pushing the branch and opening the request in steps 5 and 6.
 
 ## 2. Prepare the branch
 
@@ -133,56 +182,53 @@ The PM's go-ahead also approves pushing the branch and opening the request in st
 
 ## 3. Make the change
 
-Follow the `coding` skill for the change itself. Where it asks the user to approve something (a Durable spec, a plan), ask the PM through `ask_user_question` with a plain-words summary of what users will see. Commit Durable artifacts (`docs/specs/...`) only when the repository already keeps `docs/specs/`; otherwise leave them out of the commit.
+Follow the `coding` skill for the change itself, including its rule on when a change needs a `reviewer`. Where it asks the user to approve something (a Durable spec, a plan), ask the PM through `ask_user_question` with a plain-words summary of what users will see. Commit Durable artifacts (`docs/specs/...`) only when the repository already keeps `docs/specs/`; otherwise leave them out of the commit.
 
-Delegate as AGENTS.md says. A `worker` commits only when its task says so; when it should, give it the branch and the commit rules of step 5.
+Delegate as AGENTS.md says. A `worker` commits only when its task says so; when it should, give it the branch and the commit rules of step 4.
 
 Run the repository's own checks for the area you changed: the tests, lint, type check, and build its README, AGENTS.md, CI configuration (`.github/workflows/`, `.gitlab-ci.yml`), or package scripts define. A check that also fails on `origin/<default>` is pre-existing: note it for the request body and do not fix it in this branch. When the change alters behavior and no test covers it, add one.
 
-## 4. Review
+Do not change CI configuration (`.github/workflows/`, `.gitlab-ci.yml`) unless the PM's request is about it; the login has no right to push workflow files on GitHub, and CI belongs to the engineers.
 
-Commit (step 5), then give one `reviewer` subagent: the PM's request verbatim, the confirmed goal, the repository path, the base `origin/<default>` and head SHAs, the changed-file list and diff, and the checks you ran with their results. Every change gets this review, because the PM cannot read the diff.
-
-Fix every P0 and P1 finding, then have a fresh `reviewer` re-check only those findings and the lines the fixes changed. List P2 and P3 findings in the request body. If two re-check rounds in a row still raise new P0 or P1 findings, stop fixing: open the request as a draft with the findings listed, and tell the PM an engineer needs to look.
-
-## 5. Commit
+## 4. Commit
 
 - Stage files by name. `git diff --cached --stat` must list only files of this task.
 - Message: the repository's convention; without one, Conventional Commits `type(scope): subject`, imperative, at most 72 characters, in the language of the repository's recent commits (English when unsure). A body of one to three lines says why.
 - No mention of AI tools, no AI co-author line.
 - Never amend or squash a commit that is already pushed.
 
-## 6. Push
+## 5. Push
 
 `git push -u origin <branch>`. Never `--force` or `--force-with-lease`, never the default branch.
 
 - Rejected because the remote branch has commits you lack: `git pull --no-rebase origin <branch>`, rerun the checks, push again.
 - Rejected for login or permission: stop and tell the PM to check the code-host account in the app's settings, and that their account may lack write access to this project.
 
-## 7. Open the pull or merge request
+## 6. Open the pull or merge request
 
 Write the title and body to files under `$(git rev-parse --git-dir)/pm-workflow/`, never in the working tree.
 
-- Title: the commit subject for a single commit, otherwise one line in the same style.
-- Body, in the PM's language, with these sections: the request (the PM's words, quoted); what changed for users; how it was checked (each check with its result); review (result and the P2 and P3 follow-ups); notes for the engineer (pre-existing failures, decisions the PM made through your questions).
+- Title, in the PM's language: what changes for users, in one line.
+- Body, in the PM's language, with these sections: the request (the PM's words, quoted); what changed for users; how it was checked (each check with its result); review (the reviewer's result and P2 and P3 follow-ups, or "no review needed" with the reason); notes for the engineer (pre-existing failures, decisions the PM made through your questions).
+- Mark it draft when a check could not run or a review stopped with findings unresolved.
 
-Run `forge.mjs open --base <default> --title-file <file> --body-file <file>`, adding `--draft` when a check could not run or the review stopped at step 4. It returns the link; it updates the existing request when the branch already has one.
+If the branch already has an open request, update its title and body instead of opening another. Commands are in the table at the end. The command prints the link.
 
-## 8. Wait for CI
+## 7. Wait for CI
 
-Run `forge.mjs status --wait 900`.
+Wait up to 15 minutes for the checks on the request (commands in the table).
 
-- `checks: "passed"` or `"none"`: go to step 9.
-- `checks: "failed"`: read each failed job with `forge.mjs logs --job <id>`. If this change caused it, fix it, rerun the local checks, commit, push, and wait again, at most two rounds. If it also fails on the default branch, or comes from the CI service itself (a timeout, a missing secret, a runner that never started), change nothing: explain it with `forge.mjs comment --body-file <file>` and tell the PM.
-- `checks: "pending"` after the wait: report with the link and say CI is still running.
+- All passed, or the repository has no CI: go to step 8.
+- A check failed: read each failed job's log. If this change caused it, fix it, rerun the local checks, commit, push, and wait again, at most two rounds. If it also fails on the default branch, or comes from the CI service itself (a timeout, a missing secret, a runner that never started), change nothing: explain it in a comment on the request and tell the PM.
+- Still running after 15 minutes: report with the link and say CI is still running.
 - Never disable, skip, or delete a test or CI job to make it pass.
 
-## 9. Report
+## 8. Report
 
 Tell the PM, in plain words and their language:
 
 - what changed, as the product's users will see it;
-- how it was checked: tests, review, and CI, each with its result;
+- how it was checked: tests, review when there was one, and CI, each with its result;
 - the link, and one line on what it is (for example 「合併請求（PR）：請工程師把這次修改併進正式版本的申請」);
 - what happens next: an engineer reviews and merges it, and the PM can ask for changes until then.
 
@@ -190,44 +236,194 @@ Anything the PM must decide goes into an `ask_user_question`, not into the repor
 
 ## Conflicts
 
-When `forge.mjs status` reports `mergeable: false`, or the engineer asks to bring the branch up to date: `git fetch origin`, then `git merge origin/<default>`. Merge, do not rebase, so no force-push is needed.
+When the request shows it cannot merge cleanly, or the engineer asks to bring the branch up to date: `git fetch origin`, then `git merge origin/<default>`. Merge, do not rebase, so no force-push is needed.
 
 - Resolve a conflict yourself when the intent of both sides is clear from the code.
 - When both sides changed the same visible wording or behavior, ask the PM with `ask_user_question`, showing both versions in plain words.
 - When you cannot judge a conflict, run `git merge --abort`, leave the branch as it was, and tell the PM an engineer has to resolve it.
 
-After resolving: rerun the checks, commit the merge, push, and wait for CI again (step 8).
+After resolving: rerun the checks, commit the merge, push, and wait for CI again (step 7).
 
 ## Follow-ups on a sent request
 
-When the PM asks about a sent change or passes on an engineer's comment, `forge.mjs status` on its branch gives its state, checks, and recent comments. Continue on the same branch only when the working tree is clean (otherwise in a worktree), go through steps 3 to 8 again, and report. A merged or closed request is finished: new work starts a new branch from step 2.
+When the PM asks about a sent change or passes on an engineer's comment, read the request's state, checks, and comments. Continue on the same branch only when the working tree is clean (otherwise in a worktree), go through steps 3 to 7 again, and report. A merged or closed request is finished: new work starts a new branch from step 2.
+
+## Code-host commands
+
+Use only these. Never `gh pr merge`, `glab mr merge`, or any `auth` command but `status`.
+
+| Step | GitHub (`gh`) | GitLab (`glab`) |
+| --- | --- | --- |
+| Find the open request | `gh pr list --head <branch> --state open --json number,url` | `glab mr list --source-branch <branch> -F json` |
+| Open | `gh pr create --base <default> --head <branch> --title "<title>" --body-file <file> [--draft]` | `glab mr create --source-branch <branch> --target-branch <default> --title "<title>" --description-file <file> [--draft] --yes` |
+| Update | `gh pr edit <n> --title "<title>" --body-file <file>` | `glab mr update <iid> --title "<title>" --description-file <file>` |
+| State and mergeability | `gh pr view <n> --json state,isDraft,mergeable,mergeStateStatus,url` | `glab mr view <iid> -F json` (`state`, `detailed_merge_status`, `has_conflicts`) |
+| Wait for checks | `timeout 900 gh pr checks <n> --watch --interval 30`, then `gh pr checks <n> --json name,bucket,link` | `glab ci get --branch <branch> -F json`, every 30 s for up to 15 minutes while the pipeline is `created`, `pending`, or `running` |
+| Failed job log | `gh run view --job <job id from the check link> --log-failed` | `glab ci trace <job id> \| tail -n 200` |
+| Comments | `gh pr view <n> --comments` | `glab mr view <iid> --comments` |
+| Add a comment | `gh pr comment <n> --body-file <file>` | `glab mr note create <iid> --message "$(cat <file>)"` |
 ````
 
-## 4. The forge helper
+## 4. The code-host CLIs
 
-The stack installs neither `gh` nor `glab` (bootstrap stages: node, git, herdr, pi, ttt, playwriter, profile, packages). Pull and merge requests need one of three things; open question 1 picks it. The recommendation is a small Node script shipped with the skill, because it adds no download to pin, runs on the private Node both platforms already have, and uses the login the app already serves to Git, so no second token store exists.
+### Pins
 
-`skills/pm-workflow/scripts/forge.mjs`, Node 24, no dependencies:
+`gh` and `glab` join the binaries in `stack.json`, each pinned by version and SHA256 from the project's own checksum file, and are installed under `tools/` like the other downloads.
 
-- Host: from `git remote get-url origin` (HTTPS or SSH form). `github.com` uses the GitHub REST API at `api.github.com`; any other host is treated as GitLab at `https://<host>/api/v4`, as the design supports only github.com and self-hosted GitLab. Fork-based requests are not supported: `origin` must be the project the PM pushes to.
-- Login: `git credential fill` for `protocol=https`, `host=<host>`, with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, so a missing login fails instead of opening a window. The token is held in memory only; it never reaches stdout, stderr, a file, or an error message, and log output from `logs` is scrubbed of it.
-- Commands, each printing one JSON line:
+| Tool | Current release | Assets | Checksums |
+| --- | --- | --- | --- |
+| gh | 2.103.3 (cli/cli on GitHub) | `gh_<v>_windows_amd64.zip`, `gh_<v>_windows_arm64.zip`, `gh_<v>_macOS_arm64.zip`, `gh_<v>_macOS_amd64.zip` | `gh_<v>_checksums.txt` |
+| glab | 1.124.0 (gitlab-org/cli on GitLab) | `glab_<v>_windows_amd64.zip`, `glab_<v>_windows_arm64.zip`, `glab_<v>_darwin_arm64.tar.gz`, `glab_<v>_darwin_amd64.tar.gz` | `checksums.txt` |
 
-| Command | Does |
-| --- | --- |
-| `open --base B --title-file F --body-file F [--draft]` | Fails with `not-pushed` unless `origin/<branch>` equals `HEAD`. Creates the request for the current branch, or updates title and body of its open one. Prints `kind` (`pr` or `mr`), `number`, `url`, `created`, `draft`. |
-| `status [--wait SECONDS]` | For the current branch's newest request: `state` (`open`, `merged`, `closed`), `mergeable` (`true`, `false`, `null`), `checks` (`passed`, `failed`, `pending`, `none`), `failed` jobs (`id`, `name`, `url`), and the last 10 human comments (author, time, body cut to 1000 characters). `--wait` polls every 20 s while checks are pending, up to the given seconds (at most 1800). |
-| `logs --job ID [--lines 200]` | The tail of a failed job's log. |
-| `comment --body-file F` | Adds a comment to the current branch's request. |
+Both have native Windows ARM builds, unlike herdr.
 
-- GitHub calls: `POST /repos/{o}/{r}/pulls` (with `draft`), `GET /pulls?head=o:branch&state=all`, `PATCH /pulls/{n}`, check runs and the combined status of the head SHA, `GET /actions/jobs/{id}/logs`, issue comments, review comments, and review bodies.
-- GitLab calls: `POST /projects/:id/merge_requests` (draft by a `Draft:` title prefix), `GET /merge_requests?source_branch=&state=all`, `PUT /merge_requests/:iid`, the request's latest pipeline and its failed jobs, `GET /jobs/:id/trace`, non-system notes, and `detailed_merge_status` for `mergeable`.
-- Exit codes: 0 done; 2 usage; 3 no login or 401/403 (`error: "auth"`); 4 no request, or the branch is not pushed; 5 any other API error, with the HTTP status and the host's message.
-- Tests (`node --test`): a temporary repository whose credential helper returns a known token, against a local fake HTTP server for each API. They assert the request shapes, idempotent `open`, each `checks` mapping, the exit codes, and that the token appears in no output.
+The wizard installs only the CLIs the recipe's `forges` name. Without a recipe, it asks which code host the PM uses, as the design's Git hosting row describes today.
 
-What this asks of phase 2, whatever the choice: the github.com login must reach the GitHub API (Git Credential Manager's OAuth token does; a fine-grained token needs Contents read/write, Pull requests read/write, Commit statuses and Checks read, Actions read), and the GitLab personal access token needs the `api` scope, since `write_repository` alone cannot open a merge request or read job logs. Behind a corporate proxy, Node's `fetch` needs `NODE_USE_ENV_PROXY=1`, which the runtime can set beside `HTTPS_PROXY`.
+### Isolation
 
-## 5. Packages, models, and settings
+The app must not touch a gh or glab the user already has. Each runs with its own configuration folder under app data, `GH_CONFIG_DIR` and `GLAB_CONFIG_DIR`. On Windows, herdr's panes rebuild their environment from the registry (spike finding), so an environment variable set by the app does not reach the agent's shell. So `tools/bin/` holds small launchers for each CLI: a POSIX script for bash and a `.cmd` for Windows. Each sets the configuration folder plus `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `GLAB_NO_PROMPT=1`, and `GLAB_CHECK_UPDATE=false`, then runs the pinned binary. `tools/bin/` goes on the PATH the way the spike adds `tools\npm`. The launchers also unset `CI` and `GITLAB_CI`, because glab writes its token to plain text when either is set.
+
+### Login
+
+| Forge | Flow | Command the wizard runs |
+| --- | --- | --- |
+| github.com | OAuth device code: the wizard shows the one-time code gh prints and opens the URL; the PM signs in and approves in the browser | `gh auth login --hostname github.com --git-protocol https --web` |
+| Self-hosted GitLab | Personal access token with the `api` scope: the wizard links to `https://<host>/-/user_settings/personal_access_tokens?name=Straw%20Boss&scopes=api` and takes the token in a masked field | `glab auth login --hostname <host> --git-protocol https --api-protocol https --stdin`, token on standard input, never on the command line |
+
+GitLab's device flow (`glab auth login --device`) needs GitLab 17.9 or later and an OAuth application registered on the instance, so a recipe may ask for it (`"login": "device"`) once its team has that set up; tokens are the default.
+
+### Where the token goes, and what lands on disk
+
+Both CLIs keep the token in the OS credential store when one is available: Keychain on macOS, Windows Credential Manager on Windows. This is the same keychain the design names, reached through the CLI that owns the login instead of through Electron `safeStorage`. The wizard never stores the token itself; the GitLab token passes through its memory once, on its way to `glab`'s standard input.
+
+On disk, in the app's configuration folders:
+
+- gh: `hosts.yml` with the host, the account name, and `git_protocol`; `config.yml` with defaults; `state.yml` with the update-check time. No token.
+- glab: `config.yml` with the host, `api_host`, `api_protocol`, `git_protocol`, and the user. No token.
+
+Both CLIs fall back to a plain-text token when the credential store fails (gh into `hosts.yml`, glab into `config.yml`). A plain-text token is not acceptable, so the wizard checks after every login. For gh, `gh auth status --hostname github.com --json hosts` must report the token source as the keyring. For glab, `config.yml` must hold no non-empty `token` for the host. If a check fails, the wizard logs the CLI out, which also removes the file entry, and stops with a plain explanation. It never passes `--insecure-storage`. The exact `tokenSource` value gh reports is checked in phase 2.
+
+### Git uses the same login
+
+So that push and pull need no second login, the app's private Git configuration (the spike's `GIT_CONFIG_GLOBAL`) gets a credential helper per forge host. The empty entry clears any general helper, such as Git Credential Manager, for that host:
+
+```ini
+[credential "https://github.com"]
+	helper =
+	helper = !'<tools>/bin/gh' auth git-credential
+[credential "https://gitlab.example.com"]
+	helper =
+	helper = !'<tools>/bin/glab' auth git-credential
+```
+
+The helper paths point at the launchers, so Git gets the same configuration folder. Quoting a path with CJK characters inside a `!` helper on Windows is a phase 2 check.
+
+### What the logins can do
+
+- gh's default device-flow scopes are `repo`, `read:org`, and `gist`. That covers branches, pull requests, checks, and Actions logs. The profile does not request `workflow`, so the agent cannot push changes to `.github/workflows/`; the skill says so (step 3).
+- GitLab's `api` scope is needed to open a merge request and read job logs; `write_repository` alone cannot. Phase 2's account check confirms that an `api` token also pushes over HTTPS.
+
+### What phase 2 must also settle
+
+pi sessions in herdr panes must see the app's Git configuration (`GIT_CONFIG_GLOBAL`), not the user's `~/.gitconfig`. On Windows that has the same registry problem as the CLIs. The fix is a launcher like the ones above, or herdr keeping the server's environment, which was reported upstream after the spike. Without it, the credential helpers above are invisible to the agent's `git push`.
+
+## 5. The recipe (配方)
+
+### What it is
+
+A recipe is a JSON file a team lead writes once and hands to colleagues. It holds no secrets and no code of its own; it names things the app already knows how to set up. The app works without one: the wizard then asks for the code host, as today, and clones nothing.
+
+### Schema
+
+The schema ships in this repository as `recipe/recipe.schema.json` (JSON Schema 2020-12, `additionalProperties: false` at every level). The fields:
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `recipe` | `1` | yes | Schema version. An app that does not know the number refuses the file and says to update the app. |
+| `id` | string, `^[a-z0-9][a-z0-9-]{1,40}$` | yes | Stable identity. An update must keep it; a different `id` is a different recipe. |
+| `name` | string, at most 60 characters | yes | Shown in the wizard and settings, e.g. 「Waydo PM 工作環境」. |
+| `version` | semver string | yes | Compared on update; a lower or equal version is not applied. |
+| `updateUrl` | https URL | no | Where newer versions of this recipe are fetched (see Delivery). |
+| `profile` | `{ "version": semver, "integrity": "sha512-..." }` | no | Pins the official profile package to another version than `stack.json`'s. Omitted means the app default. Another package name is not allowed. |
+| `forges` | array of `{ "kind": "github" \| "gitlab", "host": hostname, "login": "device" \| "token" }`, at least one | yes | Which CLIs to install and log in. `github` requires `host: "github.com"`, the only GitHub host the design supports. `login` defaults to `device` for GitHub and `token` for GitLab. |
+| `repos` | array of `{ "url": https URL, "folder": folder name, "defaultBranch": branch name, "label": string }` | no | Repositories to clone and open as bases. `url` must be on a host in `forges`. `folder` is a single path segment, unique in the recipe, without `..` or reserved Windows names (`CON`, `NUL`, …). `defaultBranch` is optional. `label` is optional and names the base, defaulting to `folder`. |
+| `straw.relay` | https URL | no | The Straw Link relay, written to `link.relay` in `<agent-dir>/straw-boss/config.json`, where pi-straw-boss reads it (`src/link/config.ts`). |
+| `linear` | `{ "enabled": boolean }` | no | Whether the wizard offers the Linear step. The key itself is always entered by the PM. |
+| `instructions` | string, at most 4000 characters | no | Team guidance appended to AGENTS.md under `## Team: <name>`. |
+| `packages` | array of `{ "name": npm name, "version": exact version, "integrity": "sha512-..." }` | no | Extra pi packages the team adds, installed skills-only (see Additions). |
+
+Example:
+
+```json
+{
+  "recipe": 1,
+  "id": "waydo-pm",
+  "name": "Waydo PM 工作環境",
+  "version": "1.0.0",
+  "updateUrl": "https://raw.githubusercontent.com/waydo/recipes/main/waydo-pm.json",
+  "forges": [
+    { "kind": "github", "host": "github.com" },
+    { "kind": "gitlab", "host": "gitlab.waydo.example" }
+  ],
+  "repos": [
+    { "url": "https://gitlab.waydo.example/product/web.git", "folder": "web", "defaultBranch": "develop", "label": "官網" },
+    { "url": "https://github.com/waydo/handbook.git", "folder": "handbook" }
+  ],
+  "straw": { "relay": "https://relay.waydo.example" },
+  "linear": { "enabled": true },
+  "instructions": "- 文案用語以《Waydo 用語表》為準：docs/glossary.md。\n- 改動價格或方案文字前，先問 PM 是否已和業務確認。"
+}
+```
+
+### Additions on top of the profile
+
+- `instructions` is appended to the profile's AGENTS.md as one block, `## Team: <name>` followed by the text, so the agent reads one file. The combined text is what the installer records and protects (section 7). A recipe update changes only that block's source and goes through the same rule.
+- `packages` are installed like the profile's own, pinned by version and integrity, and listed in `settings.json` with `"extensions": []`, which pi documents as loading none of that resource type. A team can thus add skills but no code that runs inside pi. npm install scripts can still run during install, so the trust screen names every package (see Trust).
+- A recipe cannot remove or replace profile packages, rules, models, or settings, and it cannot reach any other file. A team that needs more forks the profile and pins it, which is a code change, reviewed as one.
+
+### What must never be in a recipe
+
+No token, password, key, or other credential. The wizard enforces this before anything else is read, and rejects the whole file when:
+
+- any field is unknown to the schema (`additionalProperties: false`), so a stray `"token"` field fails as an unknown field;
+- any URL has user info (`https://user:secret@host/...`), a query string, or a fragment, or is not `https`;
+- any string value matches a known credential pattern: `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `glpat-`, `gloas-`, `glrt-`, `lin_api_`, `sk-ant-`, `xox[abposr]-`, `AKIA[0-9A-Z]{16}`, `-----BEGIN`, or a JWT (`eyJ` followed by two dot-separated base64url parts).
+
+The message names the field and the rule, never the value. The pattern list lives beside the schema with its own tests and fixtures. The wizard keeps no copy of a rejected file.
+
+### Delivery and updates
+
+- **First use: a file.** The colleague receives `<id>.strawboss.json` by chat or mail and opens it in the wizard's first step (drop it on the window, or choose it). The app copies the accepted file to `<app data>/recipe/<id>.json`.
+- **Updates: the recipe's own `updateUrl`.** The app fetches it at start and once a day. The fetch has no cookies and no credentials, follows at most 3 redirects, all `https`, and stops at 256 KB. A newer `version` with the same `id` is validated like a new file and shown on the trust screen as a change list, not applied silently. The PM applies it or keeps the old one. A file received again by hand works the same way.
+- One recipe is active per machine; opening a different `id` asks to replace the active one.
+
+### Trust: show before applying
+
+A recipe comes from a colleague, so before anything is installed, cloned, or written the wizard shows, in plain words:
+
+- the recipe's name, version, and where it came from (file name or URL), with the SHA256 of its bytes;
+- which code hosts it will sign in to, and which CLIs it installs;
+- each repository it will clone, with its host and the folder it lands in;
+- the Straw Link relay it sets (the address messages pass through);
+- the team instructions, in full;
+- each extra package by name and version, marked "installs third-party code";
+- for an update, only what changes, item by item.
+
+The PM applies or cancels. Nothing is written before the PM applies.
+
+### What the wizard does with it
+
+After the stack is installed, in this order:
+
+1. Install the CLIs the `forges` name (section 4) and log in to each, one at a time.
+2. Clone each repository into `<work folder>/<folder>`, with the app's Git and the forge login. The work folder defaults to `~/StrawBoss`, and the PM can change it once. When `defaultBranch` is given, `git remote set-head origin <defaultBranch>` follows, so the PM workflow's default-branch step finds it. A folder that already exists is reused only when its `origin` is the same URL, in which case it is fetched; any other folder stops that repository with a plain message. Nothing is ever overwritten.
+3. Open each clone as a base through the HTTP endpoint pi-straw-boss serves for "+ New base" (`open-base`, as `spike/win/lib/gui-client.mjs` calls it), named by `label`, with no first message. The switchboard, when it ships, reads the same repository list.
+4. Write `straw.relay` and the AGENTS.md block, and install `packages`, through the installer of section 7.
+5. Show the Linear step only when `linear.enabled` is true.
+
+A failed step names the repository or host and the reason, and can be retried alone, as the design's step graph requires. On a recipe update, removed repositories are only dropped from the list; their folders and bases stay.
+
+## 6. Packages, models, and settings
 
 ### Packages
 
@@ -237,24 +433,20 @@ The pins in `spike/win/pins.json` against the design's "Team profile packages" l
 | --- | --- | --- | --- |
 | pi-straw-boss | 0.44.1 | 0.44.1 | |
 | pi-herdr-agents | 3.3.1 | 3.3.1 | Gap already recorded: the author runs a fork with PR #84 and an exit hold that 3.3.1 lacks. Whether PMs need either is unchecked. |
-| its roles | pi-herdr-roles 0.1.0 | 0.1.0 | `visual-tester` is unusable as shipped (needs `chrome-cdp` and `scripts/cdp.mjs`). Also ships the `plan` and `orchestrate` skills, harmless for PMs. |
+| its roles | pi-herdr-roles 0.1.0 | 0.1.0 | `visual-tester` is unusable as shipped (needs `chrome-cdp` and `scripts/cdp.mjs`); out of v1. Also ships the `plan` and `orchestrate` skills, harmless for PMs. |
 | pi-intercom | 0.17.1 | | The author runs 0.18.1. |
 | ask-user | @juicesharp/rpiv-ask-user-question 2.13.9 | 2.15.0 | Exists. Its tool is `ask_user_question`. |
 | todo | @juicesharp/rpiv-todo 2.13.9 | 2.15.0 | Exists. |
 | pi-lens | 4.4.3 | | The author runs 4.4.5. |
 | cc-safety-net | 2.6.13 | | The author runs 2.6.19. |
 | memory | @pify/memory 0.14.0 | | |
-| pi-aaaav | pi-anchorloop 2.0.0 | 2.0.2 | Replaced by pi-anchorloop (commit 3d25dcd); the design's package list and its seams table still say pi-aaaav. 2.0.0 already has the TTSR loader the guard rule needs. Its second-thought extension needs a TypeSafe key the stack does not have, so it records `unknown` and stays silent. |
+| pi-aaaav | pi-anchorloop 2.0.0 | 2.0.2 | Replaced by pi-anchorloop (commit 3d25dcd). 2.0.0 already has the TTSR loader the guard rules need. Its second-thought extension needs a TypeSafe key the stack does not have, so it records `unknown` and stays silent. |
 | pi-claude-bridge | 0.9.3 | 0.9.3 | Gap already recorded in the design's seams table (the author's fork has four more commits). |
-| pi-robot-hand | 0.3.2 | | Kept for `secret_drop`; AGENTS.md bans `robot_hand` (open question 5). |
+| pi-robot-hand | 0.3.2 | | For `secret_drop` only; AGENTS.md bans `robot_hand`. |
 | pi-herdr-doc-review | 0.7.0 | | Its `show_doc` opens a document beside the session's comms in the GUI; the workflow does not need it yet. |
+| (new) the profile package | | | Published from `profile/` (section 7). |
 
-Gaps to act on:
-
-1. The design text still names pi-aaaav in two places; it should name pi-anchorloop.
-2. Several pins trail what the author runs; open question 7.
-3. playwriter is installed globally, but no role or skill in the profile uses it; it waits for the `visual-tester` decision.
-4. The profile adds one package of its own if open question 2 goes the recommended way.
+playwriter is installed globally, but no role or skill in the profile uses it now that visual-tester is out of v1; whether the wizard keeps installing it is for phase 2.
 
 ### Models
 
@@ -298,37 +490,43 @@ The keys of `<agent-dir>/settings.json` the profile owns; all other keys belong 
 
 Haiku leaves `enabledModels` along with the `tasks` block. `shellPath` (Windows only, PortableGit's `bash.exe`) and the `packages` entries are written by their own bootstrap stages, as in the spike, and are not profile keys.
 
-## 6. Files and installation
+## 7. Files and installation
 
 ### In this repository
 
 ```text
-profile/
-├─ package.json                      # only if published to npm (open question 2)
-├─ AGENTS.md                         # section 1
-├─ rules/bash-not-powershell.md      # section 2
-├─ skills/pm-workflow/SKILL.md       # section 3
-├─ skills/pm-workflow/scripts/forge.mjs
-├─ config/herdr-agents.json          # section 5, models
-├─ config/settings.json              # section 5, owned keys only
-└─ test/                             # forge.mjs tests, rule fixtures, installer cases
+profile/                              # the npm pi package, e.g. straw-boss-desk-profile
+├─ package.json                       # "pi": { "skills": ["./skills"] }
+├─ AGENTS.md                          # section 1
+├─ rules/bash-not-powershell.md       # section 2
+├─ rules/forge-login-hands-off.md     # section 2
+├─ skills/pm-workflow/SKILL.md        # section 3
+├─ config/herdr-agents.json           # section 6, models
+├─ config/settings.json               # section 6, owned keys only
+└─ test/                              # rule fixtures
+recipe/
+├─ recipe.schema.json                 # section 5
+├─ secret-patterns.json               # section 5, with fixtures
+└─ examples/team.strawboss.json
 ```
 
-`stack.json` gets a `profile` entry with its version, and the integrity or SHA256 of whatever is downloaded, under the channel open question 2 picks. Bumping it is how a profile update reaches machines, through the stack.json channel the design already has, without a new app build.
+`stack.json` gets a `profile` entry (`name`, `version`, `integrity`), and `gh` and `glab` entries beside the other binaries. Bumping the profile entry is how a profile update reaches machines, through the stack.json channel the design already has, without a new app build. A recipe's `profile` pin, when present, wins over `stack.json`'s.
 
 ### What goes where in the agent directory
 
 | Source | Destination | Kind |
 | --- | --- | --- |
-| `skills/` | loaded in place: as a pi package from npm (recommended), or through a `skills` entry in settings.json pointing at the app-owned copy under `tools/profile/<version>/` | app-owned, replaced whole |
-| `AGENTS.md` | `<agent-dir>/AGENTS.md` | user-editable copy |
-| `rules/*.md` | `<agent-dir>/rules/` | user-editable copy |
+| profile package skills | loaded in place from the installed package | owned by pi's package manager, replaced whole on update |
+| recipe `packages` | installed packages, listed with `"extensions": []` | owned by pi's package manager |
+| `AGENTS.md` + recipe `instructions` | `<agent-dir>/AGENTS.md` | user-editable copy |
+| `rules/*.md` | `<agent-dir>/rules/` | user-editable copies |
 | `config/herdr-agents.json` | `<agent-dir>/herdr-agents/config.json` | merged keys |
 | `config/settings.json` | `<agent-dir>/settings.json` | merged keys |
+| recipe `straw.relay` | `<agent-dir>/straw-boss/config.json`, key `link.relay` | merged key |
 
 pi has to read AGENTS.md and the rules from the agent directory, and a PM, or an agent working for one, can edit them. So they follow the config-file rule package managers use: the app replaces a file only when it is still exactly what the app last wrote.
 
-The app keeps a manifest at `<agent-dir>/.straw-boss-profile/manifest.json`: the installed profile version, the SHA256 of every copied file as written, and the value written for every merged key.
+The app keeps a manifest at `<agent-dir>/.straw-boss-profile/manifest.json`: the installed profile version, the recipe `id` and version, the SHA256 of every copied file as written, and the value written for every merged key.
 
 On install or update, for each copied file:
 
@@ -339,23 +537,32 @@ On install or update, for each copied file:
 
 For each merged JSON key: set it when it is absent or still holds the value the app last wrote; otherwise keep the user's value and report it in the same Settings notice.
 
-Files are written as UTF-8 without a BOM and with LF line endings, through Node, which avoids the PowerShell 5.1 encoding trap the spike hit. The stage runs after the packages stage, so the skill package exists first; its verify step compares every managed file and key with the manifest and checks that `skills/pm-workflow/SKILL.md` is where pi will look. Updates change nothing silently: the only writes without asking are to files and keys still exactly as the app left them.
+Files are written as UTF-8 without a BOM and with LF line endings, through Node, which avoids the PowerShell 5.1 encoding trap the spike hit. The stage runs after the packages stage, so the profile package exists first; its verify step compares every managed file and key with the manifest. Updates change nothing silently: the only writes without asking are to files and keys still exactly as the app left them.
 
-## 7. Acceptance
+## 8. Acceptance
 
 The phase 3 anchor in the design is the author reading and approving. This spec is that first checkpoint. After the build, approval rests on these checks:
 
 ### Mechanical checks, in CI on macOS and Windows
 
-- `forge.mjs` tests (section 4).
-- The guard rule's `blocks` and `allows` fixtures, run through pi-anchorloop's own rule parser.
-- Installer cases: fresh install; update over an unchanged file; update over an edited file (kept, pending copy written, notice raised); update over a file with no record; a dropped file, unchanged and edited; a merged key, unchanged and changed by the user.
+- Both guard rules' `blocks` and `allows` fixtures, run through pi-anchorloop's own rule parser.
+- Recipe validation: the schema's valid and invalid examples; every secret pattern with a positive and a near-miss fixture; URLs with user info, query, `http`, and a host outside `forges`; reserved and duplicate folder names; an update with a lower version or another `id`.
+- Installer cases: fresh install; update over an unchanged file; update over an edited file (kept, pending copy written, notice raised); update over a file with no record; a dropped file, unchanged and edited; a merged key, unchanged and changed by the user; a recipe update that changes only `instructions`.
+- CLI install: each pinned archive verified by SHA256 and run with `--version` through its launcher; with a temporary configuration folder, the launchers set the folder and unset `CI`.
+
+### Account checks, with the author present (phase 2's kit)
+
+On the Windows VM and on macOS:
+
+- `gh` device login. The token source is the keyring, `hosts.yml` holds no token, and a push through the credential helper needs no prompt.
+- `glab` token login. `config.yml` holds no token, and an `api` token pushes over HTTPS.
+- With the credential store made unavailable, the wizard refuses the login instead of keeping a plain-text token.
 
 ### Scripted PM runs, in the Windows VM and on macOS
 
-Setup: a machine with the stack and the profile installed, and a scratch repository with a test command and a CI workflow, on a throwaway github.com repository (and a GitLab project for one run). The clone sits at `C:\Users\測試PM\trap\sbd-pm-demo`, where `trap` is itself a git repository with one commit: a decoy that catches an agent committing in the parent folder, the spike's second finding.
+Setup: a machine with the stack, the profile, and a test recipe naming a scratch repository with a test command and a CI workflow, on a throwaway github.com repository (and a GitLab project for one run). The work folder is `C:\Users\測試PM\trap\`, where `trap` is itself a git repository with one commit: a decoy that catches an agent committing in the parent folder, the spike's second finding. The wizard clones the recipe's repository into it and opens its base.
 
-A driver drives the pi-straw-boss HTTP surface the way the page does (the pattern of `spike/win/lib/gui-client.mjs`). It opens a base on the clone, sends the main the PM request, answers each `ask_user_question` with the recommended option (logging every question), and waits until the session is idle or 20 minutes pass.
+A driver drives the pi-straw-boss HTTP surface the way the page does (the pattern of `spike/win/lib/gui-client.mjs`). It sends the base's main the PM request, answers each `ask_user_question` with the recommended option (logging every question), and waits until the session is idle or 20 minutes pass.
 
 Scenario A, the request: 「把首頁標題改成「歡迎光臨」，並在『文件/說明.md』最後加一行更新紀錄。改好送給工程師看。」 The folder with a Chinese name and the appended line tempt shell file writes.
 
@@ -366,14 +573,14 @@ Scenario C: after A's request is open, the driver pushes a conflicting title cha
 A run passes when all of the following hold:
 
 1. `origin` has a new branch named `<type>/<slug>`, and the default branch's SHA is unchanged.
-2. An open pull or merge request runs from that branch to the default branch, with the body sections of step 7; in B its CI ends `passed`.
+2. An open pull or merge request runs from that branch to the default branch, with the body sections of step 6, opened by `gh` or `glab`; in B its CI ends passed.
 3. No commit message mentions an AI tool or has an AI co-author line; every commit is by the configured PM identity.
 4. The diff touches only the expected files.
 5. The decoy `trap` repository has the same HEAD and a clean `git status`, and nothing in `trap` outside the clone changed.
-6. No executed bash call in the session files (the main's and every subagent's) contains PowerShell syntax, checked with the rule's pattern plus a wider cmdlet list. Calls the rule blocked are reported as near-misses.
+6. No executed bash call in the session files (the main's and every subagent's) contains PowerShell syntax or a login command, checked with both rules' patterns plus a wider cmdlet list. Calls the rules blocked are reported as near-misses.
 7. The first question is the goal confirmation, every question went through `ask_user_question`, and the final message holds the request's link.
 8. In C, the old branch head is an ancestor of the new one (no force-push), the request is mergeable, and the conflicting wording was put to the PM as a question.
-9. The token appears in no session file and no log. The driver fetches it itself and searches for it, never printing it.
+9. The token appears in no session file, no log, and no file under the app's data folder. The driver gets it from the CLI itself, searches for it, and never prints it.
 
 Runs: scenario A three times on Windows against GitHub (the model varies run to run), once on Windows against GitLab, and once on macOS; B and C once each on Windows. Every run must pass.
 
@@ -381,20 +588,30 @@ A human checkpoint stays after the scripts: the author reads the confirmation qu
 
 ## Tasks after approval
 
-1. `profile/` content: AGENTS.md, the rule, the skill, and the configs, taken from this spec.
-2. `forge.mjs` and its tests.
-3. The installer stage and its tests, in the phase 2 bootstrap engine; until then, a spike stage in `spike/win/bootstrap.ps1` that copies from `profile/`, so the VM runs can start.
-4. The `stack.json` profile entry and, if chosen, the npm package and its release.
-5. The PM-run driver and scenarios A to C; the VM and macOS runs.
-6. Design record updates: pi-anchorloop for pi-aaaav, the profile channel, and the gh/glab decision.
+1. `profile/` content: AGENTS.md, the two rules, the skill, and the configs, taken from this spec; the package manifest and its npm release.
+2. `recipe/`: the schema, the secret patterns, the examples, and their tests.
+3. `gh` and `glab` pins in `stack.json` (version, URL, SHA256 per platform and architecture), and the launchers in `tools/bin/`.
+4. Wizard steps: open a recipe and its trust screen; forge logins with the keyring check; clones and bases; the relay; recipe updates from `updateUrl`.
+5. The installer stage and its tests, in the phase 2 bootstrap engine. Until then, a spike stage in `spike/win/bootstrap.ps1` that installs from `profile/` and applies a test recipe, so the VM runs can start.
+6. The `stack.json` profile entry.
+7. The PM-run driver and scenarios A to C; the VM and macOS runs; the account checks of section 8.
+8. Pins: read the changelogs from each pinned version to the current one, then move pi-anchorloop to 2.0.2, both rpiv packages to 2.15.0, pi-intercom to 0.18.1, pi-lens to 4.4.5, and cc-safety-net to 2.6.19, in one pins commit. Ask the author whether PMs need the pi-herdr-agents fork's exit hold.
+9. Edits to `docs/specs/2026-10-25-design.md`, for the author or a session the author authorizes:
+   - Profile row: the generic team profile is an npm package published from `profile/`, and team specifics come from a recipe; point to this spec.
+   - Git hosting row: login and token storage go through `gh` and `glab` in the OS credential store, served to Git by their credential helpers. Device code for github.com, a token with the `api` scope for self-hosted GitLab. The forges come from the recipe. Electron `safeStorage` no longer holds the code-host token.
+   - Starting point row and the Tools table: add `gh` and `glab`, installed only for the forges the recipe names.
+   - Straw Link row: the relay URL comes from the recipe's `straw.relay`.
+   - Linear row: the recipe can turn the step off.
+   - Architecture tree: add `recipe/` and its role; the `profile/` line names the npm package.
+   - PM workflow row: the PM answers `ask_user_question` dialogs (the design says `ask_user`, the other package's tool).
+   - Team profile packages and the upstream seams table: pi-anchorloop replaces pi-aaaav, and the pi-aaaav seam is done (pi-aaaav 1.3.4, then pi-anchorloop's TypeScript validators).
+   - Switchboard row: it reads the recipe's repository list.
 
-## Open questions for the author
+## Open questions for the author (recipe only)
 
-1. **How requests are opened.** (a) `forge.mjs` on the Git login; (b) pin `gh` and `glab` binaries by SHA256 and feed them tokens through the environment; (c) GitLab push options (`-o merge_request.create`) plus a prefilled GitHub compare link the PM clicks. Recommendation: (a). Nothing new to download, one login for both Git and the API, and the token never enters the agent's environment. (c) cannot read CI on GitHub, and `glab` keeps its token in a plain config file, which breaks the secrets rule.
-2. **How the profile ships.** (a) As an npm pi package published from `profile/` (for example `straw-boss-desk-profile`) and pinned with its integrity in `stack.json`; (b) as a GitHub Release tarball pinned by SHA256; (c) bundled inside the app. Recommendation: (a). It reuses the pinned-npm install path, pi's package manager owns the skill files, and an update needs no app release. (c) breaks the design's promise that the profile updates without replacing the app.
-3. **Review on every request.** pi-anchorloop requires an independent review only for risky changes. Recommendation: review every PM change once before the request is opened, as section 3 says, because the PM cannot read the diff and the engineer should get it already checked.
-4. **visual-tester.** Recommendation: leave it out of v1 (not in AGENTS.md, model entry kept); later, ship a team role that drives playwriter, which the stack already installs.
-5. **Secrets.** Keep pi-robot-hand for `secret_drop` (a masked box in the session's terminal tile, by pi-straw-boss's design), or drop it and have agents ask the PM to enter project secrets in the app's settings, which has no general secret store yet. Recommendation: keep it for v1, ban `robot_hand` in AGENTS.md, and watch how the pilot PM manages the terminal tile.
-6. **Language of commits and request bodies.** Recommendation: commits follow the repository (English when unsure); the request body is in the PM's language, since the engineers who read it are on the same team.
-7. **Pins.** Recommendation: before the first VM run, move the profile's pins to what the author runs (pi-anchorloop 2.0.2, rpiv 2.15.0, pi-intercom 0.18.1, pi-lens 4.4.5, cc-safety-net 2.6.19) in a separate pins commit after reading their changelogs, and confirm with the author whether PMs need the pi-herdr-agents fork's exit hold.
-8. **Merging.** Recommendation: agents never merge; an engineer does, as the AGENTS.md says. A team that wants PMs to merge their own changes can change that line later.
+1. **The relay in a recipe.** A recipe that sets `straw.relay` decides where Straw Link messages pass through, so a doctored file could point colleagues at someone else's relay. Recommendation: allow it, show it on the trust screen as its own line, and have Straw Link's join step show the relay host again when the PM joins a team.
+2. **Extra packages.** Allowing `packages` (skills only, `"extensions": []`) still runs npm install scripts from a package the team chose. Recommendation: allow it in v1 with the "installs third-party code" mark, since a team lead is a trusted colleague; the alternative is leaving `packages` out of v1 and keeping team guidance to `instructions`.
+3. **Where updates come from.** `updateUrl` can point anywhere; a recipe hosted on a team's private repository needs a login to fetch. Recommendation: only public `https` URLs in v1 (raw files on a public repository or a team web page), fetched without credentials. A private recipe is updated by sending the file again.
+4. **The work folder.** Recommendation: `~/StrawBoss`, outside Documents, because Documents is often redirected to OneDrive on Windows company laptops. The PM may change it once in the wizard, and the recipe does not set it.
+5. **More than one team.** Recommendation: one active recipe per machine in v1. A PM in two teams is rare, and two relays, two instruction blocks, and two sets of bases need a design of their own.
+6. **File name.** Recommendation: `<id>.strawboss.json`. It is still plain JSON a team lead can edit and review, and the suffix lets the app register a file association later.
