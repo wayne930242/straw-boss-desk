@@ -126,7 +126,7 @@ Add-Check 'bash-found-by-pi' {
     if (-not $r.Json) { return (Fail ("pi-shell.mjs printed no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $isPrivate = ($j.shell -like (Join-Path $t.Git '*'))
-    $ev = "pi resolves shell=$($j.shell) args=$($j.args -join ' ') private=$isPrivate probeStatus=$($j.probeStatus) :: $(($j.probeOut -split "`r?`n" | Where-Object { $_ }) -join ' | ')"
+    $ev = "pi resolves shell=$($j.shell) (settings shellPath=$($j.settingsShellPath); where bash.exe=$(@($j.whereBash) -join ' ; ')) args=$($j.args -join ' ') private=$isPrivate probeStatus=$($j.probeStatus) :: $(($j.probeOut -split "`r?`n" | Where-Object { $_ }) -join ' | ')"
     if ($j.probeStatus -ne 0) { return (Fail $ev $j) }
     if (-not $isPrivate) { return (Fail ("pi picked a different bash than the private PortableGit. " + $ev) $j) }
     Pass $ev $j
@@ -138,6 +138,8 @@ Add-Check 'paths-chinese-profile' {
     $n = Invoke-Node @((Join-Path $libDir 'pathcheck.mjs'), $WorkDir)
     $zhName = ([string][char]0x4E2D) + [char]0x6587 + [char]0x5C08 + [char]0x6848
     $repo = Join-Path $WorkDir $zhName
+    # A repo left by an earlier run would make `git commit` exit 1 with "nothing to commit" (VM 2026-10-27): start from nothing.
+    if (Test-Path -LiteralPath $repo) { Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue }
     $steps = [ordered]@{}
     $steps['node'] = if ($n.Json) { $n.Json } else { "no json: $($n.Raw.StdErr)" }
     $g = $t.GitExe

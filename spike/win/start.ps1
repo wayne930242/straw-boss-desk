@@ -14,7 +14,7 @@ param(
     [int]$ServerTimeoutSec = 45,
     [int]$SbServerTimeoutSec = 90,
     [int]$RestoreTimeoutSec = 90,
-    [int]$UiReadyTimeoutSec = 60,
+    [int]$UiReadyTimeoutSec = 120,
     [int]$GuiTimeoutSec = 120,
     [switch]$NoGui
 )
