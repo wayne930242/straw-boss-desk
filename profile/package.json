@@ -1,0 +1,23 @@
+{
+  "name": "straw-boss-desk-profile",
+  "version": "0.1.0",
+  "description": "Team profile for straw-boss-desk: the AGENTS.md, guard rules, PM workflow skill, and model and settings configs a PM's pi sessions run with.",
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wayne930242/straw-boss-desk.git",
+    "directory": "profile"
+  },
+  "files": [
+    "AGENTS.md",
+    "config/",
+    "rules/",
+    "skills/"
+  ],
+  "pi": {
+    "skills": ["./skills"]
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

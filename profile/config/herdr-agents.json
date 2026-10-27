@@ -1,0 +1,17 @@
+{
+  "status": { "enabled": true },
+  "models": {
+    "default": "claude-bridge/claude-sonnet-5-5",
+    "agents": {
+      "scout": "claude-bridge/claude-sonnet-5-5",
+      "planner": "claude-bridge/claude-opus-5-5",
+      "worker": "claude-bridge/claude-sonnet-5-5",
+      "reviewer": "claude-bridge/claude-opus-5-5",
+      "adversarial-reviewer": "claude-bridge/claude-opus-5-5",
+      "visual-tester": "claude-bridge/claude-sonnet-5-5"
+    }
+  },
+  "persistent": { "maxAgents": 3 },
+  "supervision": { "forcePolling": false, "hangWarningMinutes": 15 },
+  "panes": { "mode": "split", "direction": "right", "maxPerTab": 4 }
+}

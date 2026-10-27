@@ -1,0 +1,9 @@
+{
+  "defaultProvider": "claude-bridge",
+  "defaultModel": "claude-sonnet-5-5",
+  "defaultThinkingLevel": "medium",
+  "enabledModels": ["claude-bridge/claude-sonnet-5-5", "claude-bridge/claude-opus-5-5"],
+  "enableInstallTelemetry": false,
+  "collapseChangelog": true,
+  "quietStartup": "header"
+}
