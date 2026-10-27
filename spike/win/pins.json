@@ -41,7 +41,7 @@
   ],
   "piPackages": [
     { "name": "pi-straw-boss",                       "version": "0.45.0", "integrity": "sha512-pDfaXQX6WM9MHyToq+hAPCgTF39SLjV/1gRd517RfTbxTAiKhunyTA8sYbRmUIVyE7U1BirrmUaDlExzDTRlSA==" },
-    { "name": "pi-intercom",                         "version": "0.17.1", "integrity": "sha512-I9bu30/cTK8cMWgpe7eNWMY7oQIQTVbY6kwgBcJmzqGFkJiMqeuotijMwm6LHqCwrLkST/mfLJCQ/JMgjQ5WpQ==" },
+    { "name": "pi-intercom",                         "version": "0.18.1", "integrity": "sha512-hY3y+vF6CrkpV0N/55pEsl3DSVjGerlTCQDY2mt37o0jQj8SLW+GmQoKyAEgCyfcxrqJb+Tx4hp4eXqM2hLYgg==" },
     { "name": "pi-herdr-agents",                     "version": "3.3.1",  "integrity": "sha512-c0s1zKTc5EpLibHkLM/ZZxiYNuPfyQgR/t1WWNmLuYG2FafDjPw8p4z8UFQv1dB+Rfsax/d/vTuiYnMZqqYFUw==", "gap": "Author pins a git fork (wayne930242/pi-herdr-agents@4f37f3e: upstream 3.2.1 + open PR #84 + fork-only exit hold). The npm release 3.3.1 does not carry PR #84 or the exit hold." },
     { "name": "pi-herdr-roles",                      "version": "0.1.0",  "integrity": "sha512-6pJqj6wiph06mpn6hvRFoAd4tyc/RmvAnZA7+E9GLcILY9zKsaTZH59wEOhTqgnCQkzbg2l4SoH+HGjAp8efMg==" },
     { "name": "@juicesharp/rpiv-ask-user-question",  "version": "2.13.9", "integrity": "sha512-vx9CIkRHbzavPr7DFYUjorfaYErAVwurZOs2tKC5kQFv5y05CShlxf3qQ7k67lqvODdz8j/sbMIaj6szgLyCEg==" },
