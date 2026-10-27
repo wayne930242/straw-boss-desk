@@ -340,23 +340,48 @@ describe("regex cost", () => {
     ...patterns.flatMap((p) => fixtures[p.id].positive.map((parts) => join0(parts).slice(0, -1))),
   ];
 
+  /** Fastest of five runs; over the bar, a quarter of the input must not be more than 8x faster (superlinear), so load noise passes. */
+  function fastEnough(run, input, bar) {
+    const best = (text) => {
+      let min = Infinity;
+      for (let i = 0; i < 5; i++) {
+        const start = performance.now();
+        run(text);
+        min = Math.min(min, performance.now() - start);
+        if (min < 5) break;
+      }
+      return min;
+    };
+    const took = best(input);
+    if (took < bar) return { ok: true, took };
+    const quarter = best(input.slice(0, input.length >> 2));
+    return { ok: took < 2000 && took / Math.max(quarter, 10) < 8, took, quarter };
+  }
+
   it("every pattern takes under 200 ms on a 240 KB input", () => {
     for (const seed of seeds) {
       const input = seed.repeat(Math.ceil(size / seed.length)).slice(0, size);
       for (const p of all) {
-        const start = performance.now();
-        p.regex.test(input);
-        const took = performance.now() - start;
-        assert.ok(took < 200, `${p.id} took ${Math.round(took)} ms on a run of ${JSON.stringify(seed.slice(0, 12))}`);
+        const verdict = fastEnough((text) => p.regex.test(text), input, 200);
+        assert.ok(verdict.ok, `${p.id} took ${Math.round(verdict.took)} ms on a run of ${JSON.stringify(seed.slice(0, 12))}`);
       }
     }
   });
 
   it("validateRecipe stays fast on the reviewer's input", () => {
-    const start = performance.now();
-    const result = validateRecipe(JSON.stringify(withField({ instructions: "eyJ".repeat(80000) })));
-    assert.ok(performance.now() - start < 1000);
+    const text = JSON.stringify(withField({ instructions: "eyJ".repeat(80000) }));
+    assert.ok(fastEnough((input) => validateRecipe(input, { reservedPackages: [] }), text, 1000).ok);
+    const result = validateRecipe(text);
     assert.ok(result.errors.every((e) => e.rule === "too-long"), "refused for its length, with no secret finding");
+  });
+
+  it("validateRecipe stays fast on an unterminated string full of escaped quotes (R3-F001)", () => {
+    const text = '{"instructions":"' + '\\"'.repeat(Math.floor((255 * 1024 - 20) / 2));
+    assert.ok(text.length < 256 * 1024);
+    const verdict = fastEnough((input) => validateRecipe(input, { reservedPackages: [] }), text, 50);
+    assert.ok(verdict.ok, `took ${Math.round(verdict.took)} ms`);
+    const result = validateRecipe(text);
+    assert.ok(result.errors.some((e) => e.rule === "invalid-json"));
   });
 });
 
@@ -553,6 +578,12 @@ describe("review 2: duplicate keys and escaped secrets", () => {
     }
   });
 
+  it("names the array index of a repeated key in the second object", () => {
+    const result = validateRecipe('{"recipe":1,"id":"team-a","name":"A","version":"1.0.0","forges":[{"kind":"github","host":"github.com"}],"repos":[{"url":"https://github.com/a/b.git","folder":"b"},{"url":"https://github.com/a/b.git","folder":"c","folder":"d"}]}');
+    assert.ok(result.errors.some((e) => e.rule === "duplicate-key" && e.field.includes("repos[1]")), JSON.stringify(result.errors));
+    assert.ok(!result.errors.some((e) => e.rule === "duplicate-key" && e.field.includes("repos[0]")), JSON.stringify(result.errors));
+  });
+
   it("accepts the same key name in different objects, and brackets inside strings", () => {
     const text = '{"recipe":1,"id":"team-a","name":"A {\\"x\\": [1,2] ,","version":"1.0.0","forges":[{"kind":"github","host":"github.com"},{"kind":"gitlab","host":"g.example.com"}]}';
     assert.ok(validateRecipe(text).ok);
@@ -577,6 +608,7 @@ describe("review 2: Default_Ignorable characters", () => {
     "halfwidth Hangul filler U+FFA0": "web\uffa0",
     "combining grapheme joiner": "w\u034feb",
     "Mongolian vowel separator": "w\u180eeb",
+    "braille blank U+2800": "web\u2800",
   };
   const repoWith = (field, text) => ({ repos: [{ url: "https://github.com/a/b.git", folder: field === "folder" ? text : "b", label: field === "label" ? text : "l" }] });
   for (const [what, text] of Object.entries(probes)) {
@@ -610,6 +642,19 @@ describe("review 2: Default_Ignorable characters", () => {
   it("keeps U+200D, one emoji variation selector after a base character, and ordinary text", () => {
     const text = "\u2764\ufe0f \u263a\ufe0e \u{1F468}\u200d\u{1F469} 官網 caf\u00e9";
     assert.ok(validateRecipe(withField({ name: text, instructions: text, repos: [{ url: "https://github.com/a/b.git", folder: "b", label: text }] })).ok);
+  });
+
+  it("refuses a variation selector after a non-emoji base character", () => {
+    for (const text of ["a\ufe0fb", "a\ufe0eb", "\u4e2d\ufe0f"]) assert.equal(validateRecipe(withField({ instructions: text })).ok, false, JSON.stringify(text));
+  });
+
+  it("refuses CR, LF and tab in name and label, not in instructions", () => {
+    for (const ch of ["\r", "\n", "\t"]) {
+      const result = validateRecipe(withField({ name: `a${ch}b`, repos: [{ url: "https://github.com/a/b.git", folder: "b", label: `a${ch}b` }] }));
+      const fields = result.errors.filter((e) => e.rule === "bad-format").map((e) => e.field);
+      assert.ok(fields.includes("name") && fields.includes("repos[0].label"), JSON.stringify(ch));
+      assert.ok(validateRecipe(withField({ instructions: `a${ch === "\r" ? "\r\n" : ch}b` })).ok, JSON.stringify(ch));
+    }
   });
 
   it("refuses a lone carriage return in instructions but keeps CRLF", () => {

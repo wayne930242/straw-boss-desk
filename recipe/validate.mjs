@@ -1,8 +1,9 @@
 // Recipe validator (team profile spec, section 5). Dependency-free so the shell can import it.
 //
-// validateRecipe(input) takes the file's text or an already parsed value and returns
+// validateRecipe(input, options) takes the file's text or an already parsed value and returns
 // { ok: true, recipe } or { ok: false, errors }. Each error is { field, rule, message }.
-// An error names the field and the rule it broke, never the value: a recipe may have been
+// The shell must pass the file's text, not parsed JSON: duplicate keys, escaped credentials and the size limit
+// can only be checked on the text. An error names the field and the rule it broke, never the value: a recipe may have been
 // pasted with a credential, and the message ends up in logs and on screen.
 import secretPatterns from "./secret-patterns.json" with { type: "json" };
 
@@ -35,23 +36,26 @@ const FORBIDDEN_FOLDER_CHARS = /[\u0000-\u001f<>:"/\\|?*]/;
 // C0 controls except tab, line feed and carriage return; format characters (bidi controls, zero-width
 // characters, joiners) except U+200D, which emoji sequences need; the tag block U+E0000-E007F; and every
 // other Default_Ignorable_Code_Point (Hangul fillers, variation selectors, ...) except a single U+FE0E or
-// U+FE0F right after a base character, which emoji need. The trust screen shows these fields in full,
+// U+FE0F right after an emoji base character, which emoji need, and U+2800 (braille blank). The trust screen shows these fields in full,
 // so none may carry text the PM cannot see.
 // eslint-disable-next-line no-control-regex
-const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?!\u200d)\p{Cf}|[\u{E0000}-\u{E007F}]/u;
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?!\u200d)\p{Cf}|[\u{E0000}-\u{E007F}]|\u2800/u;
+const LINE_BREAKS = /[\t\n\r]/;
+const EMOJI = /^\p{Emoji}$/u;
 const IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
 
-function hasHiddenChars(text) {
-  if (HIDDEN_CHARS.test(text)) return true;
-  let previousIgnorable = true; // nothing before the first character, so a selector there has no base
+/** `singleLine` also refuses tab, line feed and carriage return, for fields shown on one line. */
+function hasHiddenChars(text, singleLine = false) {
+  if (HIDDEN_CHARS.test(text) || (singleLine && LINE_BREAKS.test(text))) return true;
+  let previous = ""; // nothing before the first character, so a selector there has no base
   for (const ch of text) {
     const ignorable = IGNORABLE.test(ch);
     if (ignorable) {
       const cp = ch.codePointAt(0);
-      const selectorAfterBase = (cp === 0xfe0e || cp === 0xfe0f) && !previousIgnorable;
+      const selectorAfterBase = (cp === 0xfe0e || cp === 0xfe0f) && previous !== "" && EMOJI.test(previous);
       if (cp !== 0x200d && !selectorAfterBase) return true;
     }
-    previousIgnorable = ignorable;
+    previous = ignorable ? "" : ch;
   }
   return false;
 }
@@ -82,9 +86,9 @@ function secretIdsIn(text) {
   return SECRETS.filter((p) => forms.some((form) => p.regex.test(form))).map((p) => p.id);
 }
 
-/** The ids found in the raw JSON text and in each of its string literals decoded, so `ghp\u005f...` is seen as `ghp_...`. */
-function secretIdsInRawText(text) {
-  const ids = new Set(secretIdsIn(text));
+/** The ids found in each string literal of valid JSON text, decoded, so `ghp\u005f...` is seen as `ghp_...`. Run only after JSON.parse succeeds: on an unterminated string the literal regex is quadratic. */
+function secretIdsInDecodedLiterals(text) {
+  const ids = new Set();
   for (const [literal] of text.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
     if (!literal.includes("\\")) continue; // an unescaped literal is already part of the raw text
     let decoded;
@@ -228,7 +232,6 @@ function privateOrLocalHost(hostname) {
     a === 0 || a === 10 || a === 127 || a >= 224 || // this host, private, loopback, multicast, reserved and broadcast
     (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
     (a === 192 && b === 0 && c === 0) || // IETF protocol assignments, 192.0.0.0/24
-   
     (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))
   );
 }
@@ -350,7 +353,7 @@ function validateRepos(value, forgeHosts, errors) {
       errors.add(`${at}.defaultBranch`, "bad-format", "must be a valid git branch name");
     }
     const label = optionalString(repo, "label", at, errors, { max: 60 });
-    if (label !== undefined && hasHiddenChars(label)) errors.add(`${at}.label`, "bad-format", "must not contain control or invisible characters");
+    if (label !== undefined && hasHiddenChars(label, true)) errors.add(`${at}.label`, "bad-format", "must not contain control or invisible characters");
     return { url: href, folder, ...(branch !== undefined && { defaultBranch: branch }), label: label ?? folder };
   });
 }
@@ -395,7 +398,7 @@ function validateStructure(data, errors, reserved) {
   const id = requireString(data, "id", "", errors);
   checkPattern(id, ID, "id", errors, "2 to 41 characters of lowercase letters, digits, and hyphens, not starting with a hyphen");
   const name = requireString(data, "name", "", errors, { max: 60 });
-  if (name !== undefined && hasHiddenChars(name)) errors.add("name", "bad-format", "must not contain control or invisible characters");
+  if (name !== undefined && hasHiddenChars(name, true)) errors.add("name", "bad-format", "must not contain control or invisible characters");
   const version = requireString(data, "version", "", errors, { max: 64 });
   checkPattern(version, SEMVER, "version", errors, "a semantic version such as 1.0.0");
   Object.assign(out, { id, name, version });
@@ -461,15 +464,18 @@ export function validateRecipe(input, options) {
     // A repeated key keeps only its last value in the parsed data, so a credential under the first
     // one would pass the scan below and still be saved with the file. Scan the raw text too, and
     // each string literal decoded, so `\u005f` cannot hide a character from the patterns.
-    for (const id of secretIdsInRawText(text)) errors.add("(file)", "secret-pattern", `looks like a credential (${id}); a recipe must not carry one`);
+    const secretIds = new Set(secretIdsIn(text));
     try {
       data = JSON.parse(text);
     } catch (error) {
       // The parser's own message quotes the text around the error, so only the position is kept.
       const at = /line (\d+) column (\d+)/.exec(String(error?.message));
+      for (const id of secretIds) errors.add("(file)", "secret-pattern", `looks like a credential (${id}); a recipe must not carry one`);
       errors.add("(file)", "invalid-json", at ? `is not valid JSON (line ${at[1]}, column ${at[2]})` : "is not valid JSON");
       return { ok: false, errors: errors.list };
     }
+    for (const id of secretIdsInDecodedLiterals(text)) secretIds.add(id);
+    for (const id of secretIds) errors.add("(file)", "secret-pattern", `looks like a credential (${id}); a recipe must not carry one`);
     for (const path of duplicateKeyPaths(text)) errors.add(path, "duplicate-key", "is given more than once");
   }
   scanForSecrets(data, "(recipe)", errors);
