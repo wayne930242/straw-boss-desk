@@ -1,6 +1,6 @@
 # Team profile and recipe (phase 3)
 
-Status: proposed, revised after the author's answers of 2026-10-27; waiting for approval. Nothing here is built yet.
+Status: approved 2026-10-27 (the author's answers to both question rounds). Nothing here is built yet.
 
 straw-boss-desk is open source and stays team-neutral. What makes a pi able to serve a PM who has never used a terminal comes in two layers:
 
@@ -32,6 +32,12 @@ What the profile leans on instead of restating:
 | 6 | Language of commits and request text | Commits follow the repository (English when unsure); the pull or merge request title and body are in the PM's language. |
 | 7 | Pins | Move them to current versions after reading each changelog, as a task (Tasks, item 8). |
 | 8 | Merging | Agents never merge; an engineer does. |
+| 9 | The relay in a recipe | Allowed. The trust screen shows `straw.relay` as its own line, and Straw Link's join step shows the relay host again when the PM joins a team. |
+| 10 | Extra packages in a recipe | Allowed in v1 (skills only), marked "installs third-party code" on the trust screen. |
+| 11 | Where recipe updates come from | `updateUrl` takes public `https` URLs only, fetched without credentials. A private recipe is updated by sending the file again. |
+| 12 | The work folder | `~/StrawBoss`. The PM may change it once in the wizard; the recipe does not set it. |
+| 13 | More than one team | One active recipe per machine in v1. |
+| 14 | Recipe file name | `<id>.strawboss.json`. |
 
 ## 1. Team AGENTS.md
 
@@ -607,11 +613,6 @@ A human checkpoint stays after the scripts: the author reads the confirmation qu
    - Team profile packages and the upstream seams table: pi-anchorloop replaces pi-aaaav, and the pi-aaaav seam is done (pi-aaaav 1.3.4, then pi-anchorloop's TypeScript validators).
    - Switchboard row: it reads the recipe's repository list.
 
-## Open questions for the author (recipe only)
+## Open questions
 
-1. **The relay in a recipe.** A recipe that sets `straw.relay` decides where Straw Link messages pass through, so a doctored file could point colleagues at someone else's relay. Recommendation: allow it, show it on the trust screen as its own line, and have Straw Link's join step show the relay host again when the PM joins a team.
-2. **Extra packages.** Allowing `packages` (skills only, `"extensions": []`) still runs npm install scripts from a package the team chose. Recommendation: allow it in v1 with the "installs third-party code" mark, since a team lead is a trusted colleague; the alternative is leaving `packages` out of v1 and keeping team guidance to `instructions`.
-3. **Where updates come from.** `updateUrl` can point anywhere; a recipe hosted on a team's private repository needs a login to fetch. Recommendation: only public `https` URLs in v1 (raw files on a public repository or a team web page), fetched without credentials. A private recipe is updated by sending the file again.
-4. **The work folder.** Recommendation: `~/StrawBoss`, outside Documents, because Documents is often redirected to OneDrive on Windows company laptops. The PM may change it once in the wizard, and the recipe does not set it.
-5. **More than one team.** Recommendation: one active recipe per machine in v1. A PM in two teams is rare, and two relays, two instruction blocks, and two sets of bases need a design of their own.
-6. **File name.** Recommendation: `<id>.strawboss.json`. It is still plain JSON a team lead can edit and review, and the suffix lets the app register a file association later.
+None. The recipe questions were answered on 2026-10-27 (Decisions 9 to 14). Still open inside Tasks, item 8: whether PMs need the pi-herdr-agents fork's exit hold.
