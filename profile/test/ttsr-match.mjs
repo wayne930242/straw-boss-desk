@@ -84,6 +84,7 @@ export function loadRule(path) {
     repeatMode: data.repeatMode === "after-gap" ? "after-gap" : "once",
     blocks: toList(data.blocks),
     allows: toList(data.allows),
+    falsePositives: toList(data.falsePositives),
     data,
   };
 }

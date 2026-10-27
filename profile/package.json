@@ -19,5 +19,8 @@
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "pi-anchorloop": "2.0.0"
   }
 }
