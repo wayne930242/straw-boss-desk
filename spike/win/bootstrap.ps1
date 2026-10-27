@@ -98,7 +98,7 @@ function Assert-NpmIntegrity {
     if ($r.TimedOut) { throw "registry lookup for $Name@$Version timed out after 120 s (network failure, not an integrity mismatch)" }
     if ($r.ExitCode -ne 0) {
         $detail = (($r.StdErr + "`n" + $r.StdOut) -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 6) -join ' | '
-        throw "registry lookup failed for $Name@$Version: $(Get-NpmFailureKind ($r.StdErr + ' ' + $r.StdOut)) (npm view exit $($r.ExitCode); this is not an integrity mismatch): $detail"
+        throw "registry lookup failed for ${Name}@${Version}: $(Get-NpmFailureKind ($r.StdErr + ' ' + $r.StdOut)) (npm view exit $($r.ExitCode); this is not an integrity mismatch): $detail"
     }
     if (-not $got) { throw "registry answered without dist.integrity for $Name@$Version (npm view printed nothing; not an integrity mismatch)" }
     if ($got -ne $Integrity) { throw "registry integrity mismatch for $Name@$Version`n  pinned $Integrity`n  registry $got" }
@@ -218,7 +218,7 @@ foreach ($pkg in $pins.npmGlobal) {
 # and straw-boss's + New base. A node.exe next to the npm shims makes them use the private Node whatever else is on PATH.
 Invoke-Stage 'user-path' {
     # pi-intercom's broker runs `herdr api snapshot` by name, so herdr's folder must be on the user PATH too
-    # (without it every session shows 不在網中 / herdr_unavailable; VM 2026-10-26).
+    # (without it every session shows "not in network" and herdr_unavailable; VM 2026-10-26).
     $npmNode = Join-Path $NpmPrefix 'node.exe'
     $herdrBin = Split-Path -Parent $t.HerdrExe
     $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
