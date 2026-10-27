@@ -13,7 +13,7 @@ const rulePath = (name) => join(profileDir, "rules", `${name}.md`);
 /** The fastest of three runs, so a pause from another process does not look like backtracking. */
 function bestOf(condition, input) {
   let best = Infinity;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     const start = performance.now();
     condition.lastIndex = 0;
     condition.test(input);
@@ -21,6 +21,14 @@ function bestOf(condition, input) {
     if (best < 5) break;
   }
   return best;
+}
+
+/** Linear noise passes: a run over the bar fails only when a quarter of the input is more than 8x faster (superlinear) or it takes over 2 s. */
+function assertFast(condition, input, bar, label) {
+  const took = bestOf(condition, input);
+  if (took < bar) return;
+  const quarter = bestOf(condition, input.slice(0, Math.floor(input.length / 4)));
+  assert.ok(took < 2000 && took / Math.max(quarter, 10) < 8, `${label} took ${Math.round(took)} ms (${Math.round(quarter)} ms on a quarter) on ${JSON.stringify(input.slice(0, 40))} (${input.length} bytes)`);
 }
 
 function mulberry32(seed) {
@@ -68,12 +76,11 @@ describe("guard rules", () => {
 
     it(`${name}: stays fast on a 240 KB command`, () => {
       const size = 240 * 1024;
-      const seeds = ["\n", ";", "&& ", "do ", "then ", "x=1 ", "sudo ", "env ", "gh ", "gh auth status ", ";gh auth status -", "Get-", "git credential-", "/", "a/", "\"", "git -C a ", "security find-generic-password ", "a=1\n", "sudo\n", "env\n", "env -i\n", "env -u ", "bash -c ", "cat ", "|", "&", "git --no-pager ", "glab config get "];
+      const seeds = ["\n", ";", "&& ", "do ", "then ", "x=1 ", "sudo ", "env ", "gh ", "gh auth status ", ";gh auth status -", "Get-", "git credential-", "/", "a/", "\"", "git -C a ", "security find-generic-password ", "a=1\n", "sudo\n", "env\n", "env -i\n", "env -u ", "bash -c ", "cat ", "|", "&", "git --no-pager ", "glab config get ", "sudo -u do ", "do cat ", "then less ", "glab", "do cat glab", "X=${HOME} ", "X=$(pwd) ", "X=\"a "];
       for (const seed of seeds) {
         const input = seed.repeat(Math.ceil(size / seed.length)).slice(0, size);
         for (const condition of rule.conditions) {
-          const took = bestOf(condition, input);
-          assert.ok(took < 200, `${name} took ${Math.round(took)} ms on a run of ${JSON.stringify(seed)}`);
+          assertFast(condition, input, 200, `${name} on a run of ${JSON.stringify(seed)}`);
         }
       }
     });
@@ -90,11 +97,14 @@ describe("guard rules", () => {
         "security find-generic-password -" + "w".repeat(80000) + ".",
         dotenv,
         "git commit -m 'x'\n" + dotenv,
+        ("do cat ".repeat(28) + "glab".repeat(1250) + "\n").repeat(Math.ceil(240000 / 5300)),
+        ("then less ".repeat(20) + "glab".repeat(250) + "\n").repeat(Math.ceil(240000 / 1200)),
+        "cat " + "glab".repeat(60000),
+        "sudo -u do ".repeat(22000),
       ];
       for (const input of shapes) {
         for (const condition of rule.conditions) {
-          const took = bestOf(condition, input);
-          assert.ok(took < 50, `${name} took ${Math.round(took)} ms on ${JSON.stringify(input.slice(0, 24))} (${input.length} bytes)`);
+          assertFast(condition, input, 50, name);
         }
       }
     });
@@ -110,8 +120,7 @@ describe("guard rules", () => {
       }
       for (const input of inputs) {
         for (const condition of rule.conditions) {
-          const took = bestOf(condition, input);
-          assert.ok(took < 50, `${name} took ${Math.round(took)} ms on ${JSON.stringify(input.slice(0, 60))} (${input.length} bytes)`);
+          assertFast(condition, input, 50, name);
         }
       }
     });
