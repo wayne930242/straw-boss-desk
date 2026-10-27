@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/wayne930242/straw-boss-desk/recipe/recipe.schema.json",
   "title": "straw-boss-desk team recipe",
-  "description": "Team profile spec, section 5. validate.mjs is the enforcing implementation; it adds checks JSON Schema cannot express (credential patterns, URL user info and query, a repository host that is one of the forges, unique and reserved folder names, a valid default branch name).",
+  "description": "Team profile spec, section 5. validate.mjs is the enforcing implementation; it adds checks JSON Schema cannot express (credential patterns, URL user info and query, a repository host that is one of the forges, unique and reserved folder names, a valid default branch name, no invisible characters in text fields, a public host for updateUrl, and package names the app reserves).",
   "type": "object",
   "additionalProperties": false,
   "required": ["recipe", "id", "name", "version", "forges"],
@@ -34,7 +34,7 @@
           "login": { "enum": ["device", "token"] }
         },
         "if": { "properties": { "kind": { "const": "github" } } },
-        "then": { "properties": { "host": { "const": "github.com" } } }
+        "then": { "properties": { "host": { "const": "github.com" }, "login": { "const": "device" } } }
       }
     },
     "repos": {

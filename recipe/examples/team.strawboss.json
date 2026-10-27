@@ -3,7 +3,7 @@
   "id": "waydo-pm",
   "name": "Waydo PM 工作環境",
   "version": "1.0.0",
-  "updateUrl": "https://raw.githubusercontent.com/waydo/recipes/main/waydo-pm.json",
+  "updateUrl": "https://example.com/recipes/waydo-pm.json",
   "forges": [
     { "kind": "github", "host": "github.com" },
     { "kind": "gitlab", "host": "gitlab.waydo.example" }

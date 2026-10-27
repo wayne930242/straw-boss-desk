@@ -28,22 +28,40 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[
 const INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/;
 const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
-const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/;
+// A field name is echoed in an error only when it reads like a short field name; a longer or odder key could be a credential.
+const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,23}$/;
 const RESERVED_WINDOWS = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 const FORBIDDEN_FOLDER_CHARS = /[\u0000-\u001f<>:"/\\|?*]/;
+// C0 controls except tab, line feed and carriage return; format characters (bidi controls, zero-width
+// characters, joiners) except U+200D, which emoji sequences need; and the tag block U+E0000-E007F.
+// The trust screen shows these fields in full, so none may carry text the PM cannot see.
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?!\u200d)\p{Cf}|[\u{E0000}-\u{E007F}]/u;
 
 const isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 const length = (s) => [...s].length;
 
 /** A key is safe to show when it reads like a field name and matches no credential shape. */
 function displayKey(key) {
-  return SAFE_KEY.test(key) && !secretIdsIn(key).length ? key : "<unnamed key>";
+  return SAFE_KEY.test(key) && !secretIdsIn(key).length ? key : "(unknown field)";
+}
+
+/** The text and its percent-decoded forms, so `ghp%5F...` in a URL is seen as `ghp_...`. */
+function decodedForms(text) {
+  const forms = [text];
+  let current = text;
+  for (let i = 0; i < 3 && current.includes("%"); i++) {
+    const next = current.replace(/%([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (next === current) break;
+    forms.push(next);
+    current = next;
+  }
+  return forms;
 }
 
 function secretIdsIn(text) {
-  return SECRETS.filter((p) => p.regex.test(text)).map((p) => p.id);
+  const forms = decodedForms(text);
+  return SECRETS.filter((p) => forms.some((form) => p.regex.test(form))).map((p) => p.id);
 }
 
 class Errors {
@@ -118,16 +136,26 @@ function checkPattern(value, regex, at, errors, what) {
   return true;
 }
 
+// Lexical only: a name that resolves to a private address (127.0.0.1.nip.io) passes. The fetcher
+// must check the address it connects to and every redirect (spec section 5, Delivery).
+const LOCAL_SUFFIXES = [".localhost", ".local", ".lan", ".home.arpa", ".internal"];
+
 function privateOrLocalHost(hostname) {
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) return true;
   if (hostname.startsWith("[")) return true; // an IPv6 literal is never a public recipe host
+  if (hostname.endsWith(".")) return true; // `localhost.` and `intranet.` are the same hosts with a root dot
+  if (!hostname.includes(".")) return true; // localhost, intranet, and every other single-label name
+  if (LOCAL_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) return true;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
   if (!v4) return false;
   const [a, b] = [Number(v4[1]), Number(v4[2])];
-  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  return (
+    a === 0 || a === 10 || a === 127 || a >= 224 || // this host, private, loopback, multicast, reserved and broadcast
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))
+  );
 }
 
-/** Check one URL field; returns the parsed URL, or undefined after recording why it was refused. */
+/** Check one URL field; returns the parsed URL (use its `href`, the normalized form), or undefined after recording why it was refused. */
 function checkUrl(value, at, errors, { publicHost = false } = {}) {
   if (value === undefined) return undefined;
   if (/[\s\u0000-\u001f]/.test(value)) {
@@ -198,6 +226,10 @@ function validateForges(value, errors) {
     else if (login !== "device" && login !== "token") {
       errors.add(`${at}.login`, "bad-format", 'must be "device" or "token"');
       login = undefined;
+    } else if (kind === "github" && login === "token") {
+      // A pasted classic token can carry scopes (workflow) that undo the profile's limits; no flow is defined yet.
+      errors.add(`${at}.login`, "login-not-supported", 'github.com supports only "device" for now');
+      login = undefined;
     }
     out.push({ kind, host, login });
   });
@@ -224,10 +256,12 @@ function validateRepos(value, forgeHosts, errors) {
     const url = requireString(repo, "url", at, errors, { max: 2048 });
     const parsed = checkUrl(url, `${at}.url`, errors);
     if (parsed && forgeHosts.size > 0 && !forgeHosts.has(parsed.host)) errors.add(`${at}.url`, "url-host-not-allowed", "must be on a host listed in forges");
+    const href = parsed?.href ?? url;
     const folder = requireString(repo, "folder", at, errors, { max: 64 });
     if (folder !== undefined) {
       const f = `${at}.folder`;
-      if (FORBIDDEN_FOLDER_CHARS.test(folder) || folder === "." || folder === "..") errors.add(f, "bad-format", "must be a single folder name without separators or reserved characters");
+      if (HIDDEN_CHARS.test(folder)) errors.add(f, "bad-format", "must not contain control or invisible characters");
+      else if (FORBIDDEN_FOLDER_CHARS.test(folder) || folder === "." || folder === "..") errors.add(f, "bad-format", "must be a single folder name without separators or reserved characters");
       else if (/^\s|[\s.]$/.test(folder)) errors.add(f, "bad-format", "must not start with a space or end with a space or dot");
       else if (RESERVED_WINDOWS.test(folder)) errors.add(f, "reserved-name", "is a reserved Windows name");
       else if (folders.has(folder.toLowerCase())) errors.add(f, "duplicate", "is used by another repository");
@@ -238,12 +272,12 @@ function validateRepos(value, forgeHosts, errors) {
       errors.add(`${at}.defaultBranch`, "bad-format", "must be a valid git branch name");
     }
     const label = optionalString(repo, "label", at, errors, { max: 60 });
-    if (label !== undefined && CONTROL_CHARS.test(label)) errors.add(`${at}.label`, "bad-format", "must not contain control characters");
-    return { url, folder, ...(branch !== undefined && { defaultBranch: branch }), label: label ?? folder };
+    if (label !== undefined && HIDDEN_CHARS.test(label)) errors.add(`${at}.label`, "bad-format", "must not contain control or invisible characters");
+    return { url: href, folder, ...(branch !== undefined && { defaultBranch: branch }), label: label ?? folder };
   });
 }
 
-function validatePackages(value, errors) {
+function validatePackages(value, errors, reserved) {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     errors.add("packages", "wrong-type", "must be an array");
@@ -256,6 +290,7 @@ function validatePackages(value, errors) {
     const name = requireString(pkg, "name", at, errors, { max: 214 });
     if (checkPattern(name, NPM_NAME, `${at}.name`, errors, "a valid npm package name")) {
       if (name === PROFILE_PACKAGE) errors.add(`${at}.name`, "duplicate", "is the official profile package, which a recipe cannot replace");
+      else if (reserved.has(name)) errors.add(`${at}.name`, "reserved-package", "is a package the app installs itself, which a recipe cannot replace");
       else if (names.has(name)) errors.add(`${at}.name`, "duplicate", "is listed twice");
       else names.add(name);
     }
@@ -267,7 +302,7 @@ function validatePackages(value, errors) {
   });
 }
 
-function validateStructure(data, errors) {
+function validateStructure(data, errors, reserved) {
   if (!checkObject(data, "(recipe)", TOP_FIELDS, errors)) return undefined;
   if (data.recipe === undefined) {
     errors.add("recipe", "missing-field", "is required");
@@ -282,14 +317,14 @@ function validateStructure(data, errors) {
   const id = requireString(data, "id", "", errors);
   checkPattern(id, ID, "id", errors, "2 to 41 characters of lowercase letters, digits, and hyphens, not starting with a hyphen");
   const name = requireString(data, "name", "", errors, { max: 60 });
-  if (name !== undefined && CONTROL_CHARS.test(name)) errors.add("name", "bad-format", "must not contain control characters");
+  if (name !== undefined && HIDDEN_CHARS.test(name)) errors.add("name", "bad-format", "must not contain control or invisible characters");
   const version = requireString(data, "version", "", errors, { max: 64 });
   checkPattern(version, SEMVER, "version", errors, "a semantic version such as 1.0.0");
   Object.assign(out, { id, name, version });
 
   const updateUrl = optionalString(data, "updateUrl", "", errors, { max: 2048 });
-  checkUrl(updateUrl, "updateUrl", errors, { publicHost: true });
-  if (updateUrl !== undefined) out.updateUrl = updateUrl;
+  const updateParsed = checkUrl(updateUrl, "updateUrl", errors, { publicHost: true });
+  if (updateUrl !== undefined) out.updateUrl = updateParsed?.href ?? updateUrl;
 
   if (data.profile !== undefined && checkObject(data.profile, "profile", FIELDS.profile, errors)) {
     const pv = requireString(data.profile, "version", "profile", errors, { max: 64 });
@@ -306,8 +341,8 @@ function validateStructure(data, errors) {
 
   if (data.straw !== undefined && checkObject(data.straw, "straw", FIELDS.straw, errors)) {
     const relay = optionalString(data.straw, "relay", "straw", errors, { max: 2048 });
-    checkUrl(relay, "straw.relay", errors);
-    if (relay !== undefined) out.straw = { relay };
+    const relayParsed = checkUrl(relay, "straw.relay", errors);
+    if (relay !== undefined) out.straw = { relay: relayParsed?.href ?? relay };
   }
   if (data.linear !== undefined && checkObject(data.linear, "linear", FIELDS.linear, errors)) {
     if (typeof data.linear.enabled !== "boolean") errors.add("linear.enabled", data.linear.enabled === undefined ? "missing-field" : "wrong-type", "must be true or false");
@@ -315,28 +350,35 @@ function validateStructure(data, errors) {
   }
   const instructions = optionalString(data, "instructions", "", errors, { max: 4000 });
   if (instructions !== undefined) {
-    if (CONTROL_CHARS.test(instructions)) errors.add("instructions", "bad-format", "must not contain control characters");
+    if (HIDDEN_CHARS.test(instructions)) errors.add("instructions", "bad-format", "must not contain control or invisible characters");
     out.instructions = instructions;
   }
-  const packages = validatePackages(data.packages, errors);
+  const packages = validatePackages(data.packages, errors, reserved);
   if (packages) out.packages = packages;
   return out;
 }
 
 /**
  * @param {unknown} input the recipe file's text, or its parsed JSON
+ * @param {{ reservedPackages?: Iterable<string> }} [options] `reservedPackages`: the package names in stack.json,
+ *   which the shell passes in so a recipe cannot replace or switch off one of them
  * @returns {{ ok: true, recipe: object } | { ok: false, errors: { field: string, rule: string, message: string }[] }}
  */
-export function validateRecipe(input) {
+export function validateRecipe(input, { reservedPackages = [] } = {}) {
   const errors = new Errors();
+  const reserved = new Set(reservedPackages);
   let data = input;
   if (typeof input === "string") {
     if (new TextEncoder().encode(input).length > MAX_RECIPE_BYTES) {
       errors.add("(file)", "too-large", `must be at most ${MAX_RECIPE_BYTES / 1024} KB`);
       return { ok: false, errors: errors.list };
     }
+    const text = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
+    // A repeated key keeps only its last value in the parsed data, so a credential under the first
+    // one would pass the scan below and still be saved with the file. Scan the raw text too.
+    for (const id of secretIdsIn(text)) errors.add("(file)", "secret-pattern", `looks like a credential (${id}); a recipe must not carry one`);
     try {
-      data = JSON.parse(input.charCodeAt(0) === 0xfeff ? input.slice(1) : input);
+      data = JSON.parse(text);
     } catch (error) {
       // The parser's own message quotes the text around the error, so only the position is kept.
       const at = /line (\d+) column (\d+)/.exec(String(error?.message));
@@ -346,7 +388,7 @@ export function validateRecipe(input) {
   }
   scanForSecrets(data, "(recipe)", errors);
   if (errors.list.length > 0) return { ok: false, errors: errors.list };
-  const recipe = validateStructure(data, errors);
+  const recipe = validateStructure(data, errors, reserved);
   if (errors.list.length > 0 || recipe === undefined) return { ok: false, errors: errors.list };
   return { ok: true, recipe };
 }
