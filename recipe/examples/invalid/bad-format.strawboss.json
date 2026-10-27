@@ -1,0 +1,1 @@
+{ "recipe": 1, "id": "bad", "name": "Bad", "version": "1.0.0", "forges": [{ "kind": "github", "host": "github.com" }], "repos": [{ "url": "https://github.com/acme/a.git", "folder": "../LEAKCHECK123" }] }

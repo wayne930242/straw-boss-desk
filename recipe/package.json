@@ -1,0 +1,9 @@
+{
+  "name": "straw-boss-desk-recipe",
+  "private": true,
+  "type": "module",
+  "description": "Recipe schema and validator for straw-boss-desk (team profile spec, section 5).",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

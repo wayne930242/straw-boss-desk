@@ -1,0 +1,1 @@
+{ "recipe": 1, "id": "bad", "name": "Bad", "version": "1.0.0", "forges": [{ "kind": "gitlab", "host": "git.example.com" }], "repos": [{ "url": "https://alice:LEAKCHECK123@git.example.com/a/b.git", "folder": "b" }] }
