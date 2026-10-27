@@ -10,6 +10,31 @@ const profileDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ruleFiles = ["bash-not-powershell", "forge-login-hands-off"];
 const rulePath = (name) => join(profileDir, "rules", `${name}.md`);
 
+/** The fastest of three runs, so a pause from another process does not look like backtracking. */
+function bestOf(condition, input) {
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const start = performance.now();
+    condition.lastIndex = 0;
+    condition.test(input);
+    best = Math.min(best, performance.now() - start);
+    if (best < 5) break;
+  }
+  return best;
+}
+
+function mulberry32(seed) {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const fuzzTokens = ["\n", "\n", " ", " ", "\t", ";", "|", "&", "&&", "||", "a=1", "x=", "env", "sudo", "time", "command", "nohup", "-i", "-u", "-t", "-w", "-g", "-", "t", "w", "gh", "glab", "auth", "status", "token", "git", "credential", "-manager", "get", "config", "security", "find-generic-password", "Get-", "Set-Item", "Where-", "$env:", "'", '"', "(", "`", "{", "then ", "do ", "/", "\\", "bash -c ", "eval ", "cat ", "hosts.yml", "--show-token", "--no-pager", "-C ", ".exe", "\r"];
+
 describe("guard rules", () => {
   for (const name of ruleFiles) {
     const rule = loadRule(rulePath(name));
@@ -43,16 +68,61 @@ describe("guard rules", () => {
 
     it(`${name}: stays fast on a 240 KB command`, () => {
       const size = 240 * 1024;
-      const seeds = ["\n", ";", "&& ", "do ", "then ", "x=1 ", "sudo ", "env ", "gh ", "gh auth status ", ";gh auth status -", "Get-", "git credential-", "/", "a/", "\"", "git -C a ", "security find-generic-password "];
+      const seeds = ["\n", ";", "&& ", "do ", "then ", "x=1 ", "sudo ", "env ", "gh ", "gh auth status ", ";gh auth status -", "Get-", "git credential-", "/", "a/", "\"", "git -C a ", "security find-generic-password ", "a=1\n", "sudo\n", "env\n", "env -i\n", "env -u ", "bash -c ", "cat ", "|", "&", "git --no-pager ", "glab config get "];
       for (const seed of seeds) {
         const input = seed.repeat(Math.ceil(size / seed.length)).slice(0, size);
         for (const condition of rule.conditions) {
-          const start = performance.now();
-          condition.test(input);
-          const took = performance.now() - start;
+          const took = bestOf(condition, input);
           assert.ok(took < 200, `${name} took ${Math.round(took)} ms on a run of ${JSON.stringify(seed)}`);
         }
       }
+    });
+
+    it(`${name}: stays fast on the reviewer's shapes and a realistic .env heredoc`, () => {
+      const dotenv = "cat > .env <<'EOF'\n" + "DATABASE_URL=postgres://u:p@localhost/db\nexport API_HOST=api.example.com\nFEATURE_FLAG=1\n# comment line\n".repeat(2800) + "EOF\n";
+      assert.ok(dotenv.length > 120 * 1024);
+      const shapes = [
+        "a=1\n".repeat(80000),
+        "env\n".repeat(80000),
+        "sudo\n".repeat(50000),
+        "env -i\n".repeat(40000),
+        "gh auth status -" + "t".repeat(80000) + ".",
+        "security find-generic-password -" + "w".repeat(80000) + ".",
+        dotenv,
+        "git commit -m 'x'\n" + dotenv,
+      ];
+      for (const input of shapes) {
+        for (const condition of rule.conditions) {
+          const took = bestOf(condition, input);
+          assert.ok(took < 50, `${name} took ${Math.round(took)} ms on ${JSON.stringify(input.slice(0, 24))} (${input.length} bytes)`);
+        }
+      }
+    });
+
+    it(`${name}: no input in a seeded fuzz takes 50 ms`, () => {
+      const random = mulberry32(0x5eed);
+      const pick = () => fuzzTokens[Math.floor(random() * fuzzTokens.length)];
+      const inputs = [];
+      for (let i = 0; i < 1200; i++) inputs.push(Array.from({ length: 200 + Math.floor(random() * 2500) }, pick).join(""));
+      for (let i = 0; i < 300; i++) {
+        const unit = Array.from({ length: 1 + Math.floor(random() * 3) }, pick).join("");
+        inputs.push(unit.repeat(Math.ceil(30000 / Math.max(unit.length, 1))));
+      }
+      for (const input of inputs) {
+        for (const condition of rule.conditions) {
+          const took = bestOf(condition, input);
+          assert.ok(took < 50, `${name} took ${Math.round(took)} ms on ${JSON.stringify(input.slice(0, 60))} (${input.length} bytes)`);
+        }
+      }
+    });
+
+    it(`${name}: the rule text is one readable message`, () => {
+      // pi-anchorloop's render() expands a dollar sign followed by a backtick through String.replaceAll, so such a pair corrupts the text at runtime.
+      assert.ok(!rule.content.includes("$`"), "the body contains a dollar sign followed by a backtick");
+      assert.ok(!rule.content.includes("$'") && !rule.content.includes("$&") && !rule.content.includes("$$"), "the body contains another replace pattern");
+      const paragraphs = rule.content.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+      assert.equal(new Set(paragraphs).size, paragraphs.length, "a paragraph is repeated");
+      assert.ok(paragraphs.every((p) => !p.includes("`\n") && (p.match(/`/g) ?? []).length % 2 === 0), "a code span is cut");
     });
   }
 });

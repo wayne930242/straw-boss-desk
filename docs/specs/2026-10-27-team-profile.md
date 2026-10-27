@@ -90,7 +90,9 @@ Choices made in that text, for the author to check:
 
 Text alone did not stop the spike's agent, so the profile also ships two TTSR rules. pi-anchorloop's `ttsr.ts` (pinned 2.0.0 carries it) loads `<agent-dir>/rules/*.md`, and a rule whose `condition` matches a bash call blocks it before it runs, returning the rule text as the reason. Both regexes are checked against their `blocks` and `allows` lists in CI, through the real `ttsr.ts` from the pinned `pi-anchorloop@2.0.0` (a devDependency of `profile/`, so the check never depends on what is installed on the machine); each match must also `interrupts(rule, "tool")`, so a rule cannot be softened to a reminder. A rule's `falsePositives` list names the commands it still blocks by mistake, and a test keeps that list true.
 
-Known limit: a regex cannot tell a cmdlet name inside a quoted string from a command. `bash-not-powershell` therefore still blocks `echo 'a; Get-ChildItem'`, text with `$env:` that does not start right after a quote, and a multi-line commit message with a line that starts with a cmdlet. Its rule text tells the agent how to search PowerShell text without tripping it.
+Known limit: a regex cannot tell a cmdlet name inside a quoted string from a command. `bash-not-powershell` therefore still blocks `echo 'a; Get-ChildItem'`, text with `$env:` that does not start right after a quote, a multi-line commit message with a line that starts with a cmdlet, a heredoc body with a cmdlet at the start of a line (`cat > a.ps1 <<'EOF'` then `Write-Host hi`), and a Markdown line that starts with `Get-Started`. Its rule text tells the agent how to search PowerShell text without tripping it. An unspaced `|` or a single `&` before a cmdlet counts as a command start only when the cmdlet name is not followed by a quote, so `grep -E 'a|Get-Date' f` passes.
+
+The forge rule also has known misses: a login read through `xargs` (`echo gh | xargs -I{} {} auth token`), and anything built at run time (variables, `$(…)` pieces). It does see through `env`/`sudo` options with an argument, `\gh`, `gh.EXE`, and `bash -c '…'`/`eval '…'` wrappers. Its known false positive is a file named `hosts.yml` read with `cat`, `less`, `head`, `tail` or `grep`, which the rule cannot tell from gh's own. The rule also blocks `gh config get oauth_token` and `glab config get token` (whether glab prints the keyring token there is unverified, so the rule errs on the safe side), and reading gh's `hosts.yml` or glab's `config.yml`. Every regex is linear by construction: a prefix of at most 8 words (`env`, `sudo`, `VAR=value`, `bash -c`, …) and runs of at most 200 characters, so a longer chain is not seen; a seeded fuzz in `rules.test.mjs` keeps each condition under 50 ms.
 
 Upstream seam: `TtsrManager.#eligible` applies the repeat policy to blocking tool-call matches. Once a rule has fired it is silent until a turn ends (`repeatGap: 1`), so a second matching call in the same assistant message is not blocked (`gh auth status -t`, then `glab auth status -t`), and after a resume the first turn is not covered either. The fix belongs in pi-anchorloop (a blocking tool-call match skips the repeat policy, or a `repeatMode: always`); it is listed in the design record's upstream seams table, and two `todo` tests in `profile/test/rules.test.mjs` run the real manager and start passing when it ships. Until then the AGENTS.md line and the keyring are the main protection, and acceptance check 9 (the token appears in no file) is what catches a miss.
 
@@ -99,7 +101,7 @@ Upstream seam: `TtsrManager.#eligible` applies the repeat policy to blocking too
 ````markdown
 ---
 description: "The shell is bash, on Windows too"
-condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|env|command|sudo|time|exec|nohup)(?:\s+-[A-Za-z-]+)*\s+)*(?:(?:Add|Approve|Assert|Backup|Block|Checkpoint|Clear|Close|Compare|Complete|Compress|Confirm|Connect|Convert|ConvertFrom|ConvertTo|Copy|Debug|Deny|Disable|Disconnect|Dismount|Edit|Enable|Enter|Exit|Expand|Export|Find|Format|Get|Grant|Group|Hide|Import|Initialize|Install|Invoke|Join|Limit|Lock|Measure|Merge|Mount|Move|New|Open|Optimize|Out|Ping|Pop|Protect|Publish|Push|Read|Receive|Redo|Register|Remove|Rename|Repair|Request|Reset|Resize|Resolve|Restart|Restore|Resume|Revoke|Save|Search|Select|Send|Set|Show|Skip|Sort|Split|Start|Step|Stop|Submit|Suspend|Switch|Sync|Tee|Test|Trace|Unblock|Undo|Uninstall|Unlock|Unprotect|Unpublish|Unregister|Update|Use|Wait|Watch|Write|ForEach|Where)-[A-Z][A-Za-z0-9]+\b)|(?<!\x27)\$env:[A-Za-z_]'
+condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?=((?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|(){}<>\x60]{0,200}|env|command|sudo|time|exec|nohup)(?:[ \t]+-[A-Za-z-]{1,40}){0,6}[ \t]+){0,8}))\1(?:(?:Add|Approve|Assert|Backup|Block|Checkpoint|Clear|Close|Compare|Complete|Compress|Confirm|Connect|Convert|ConvertFrom|ConvertTo|Copy|Debug|Deny|Disable|Disconnect|Dismount|Edit|Enable|Enter|Exit|Expand|Export|Find|Format|Get|Grant|Group|Hide|Import|Initialize|Install|Invoke|Join|Limit|Lock|Measure|Merge|Mount|Move|New|Open|Optimize|Out|Ping|Pop|Protect|Publish|Push|Read|Receive|Redo|Register|Remove|Rename|Repair|Request|Reset|Resize|Resolve|Restart|Restore|Resume|Revoke|Save|Search|Select|Send|Set|Show|Skip|Sort|Split|Start|Step|Stop|Submit|Suspend|Switch|Sync|Tee|Test|Trace|Unblock|Undo|Uninstall|Unlock|Unprotect|Unpublish|Unregister|Update|Use|Wait|Watch|Write|ForEach|Where)-[A-Z][A-Za-z0-9]+\b)|(?:\|\|?|&)[ \t\r]*(?=[A-Za-z\\/.~$"\x27_])(?=((?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|(){}<>\x60]{0,200}|env|command|sudo|time|exec|nohup)(?:[ \t]+-[A-Za-z-]{1,40}){0,6}[ \t]+){0,8}))\2(?:(?:Add|Approve|Assert|Backup|Block|Checkpoint|Clear|Close|Compare|Complete|Compress|Confirm|Connect|Convert|ConvertFrom|ConvertTo|Copy|Debug|Deny|Disable|Disconnect|Dismount|Edit|Enable|Enter|Exit|Expand|Export|Find|Format|Get|Grant|Group|Hide|Import|Initialize|Install|Invoke|Join|Limit|Lock|Measure|Merge|Mount|Move|New|Open|Optimize|Out|Ping|Pop|Protect|Publish|Push|Read|Receive|Redo|Register|Remove|Rename|Repair|Request|Reset|Resize|Resolve|Restart|Restore|Resume|Revoke|Save|Search|Select|Send|Set|Show|Skip|Sort|Split|Start|Step|Stop|Submit|Suspend|Switch|Sync|Tee|Test|Trace|Unblock|Undo|Uninstall|Unlock|Unprotect|Unpublish|Unregister|Update|Use|Wait|Watch|Write|ForEach|Where)-[A-Z][A-Za-z0-9]+)\b(?=[\s;&|)]|$)|(?<!\x27)\$env:[A-Za-z_]'
 scope: "tool:bash"
 repeatMode: after-gap
 repeatGap: 1
@@ -120,6 +122,11 @@ blocks:
   - env FOO=1 Join-Path a b
   - Set-Item -Path env:X -Value 1
   - "git status\nGet-ChildItem"
+  - ls|Get-ChildItem
+  - ls |Select-Object -First 1
+  - ls&Get-Date
+  - sleep 1 & Get-Process
+  - echo hi| Where-Object x
 allows:
   - printf 'hi\n' > a.txt
   - grep -rn 'Set-Content' scripts/
@@ -133,10 +140,17 @@ allows:
   - grep -c Get-Process setup.ps1
   - ls | sort
   - curl -H 'Set-Cookie: a=b' https://example.com
+  - grep -E 'Get-Date|Get-Item' notes.txt
+  - grep -c 'a&Get-Date' notes.txt
+  - ls > out.txt 2>&1
+  - sleep 1 & echo done
 falsePositives:
   - echo 'a; Get-ChildItem'
   - grep -n 'path $env:PATH' x.ps1
   - "git commit -m \"docs: notes\nGet-Content is slow\""
+  - "cat > a.ps1 <<'EOF'\nWrite-Host hi\nEOF"
+  - "cat > notes.md <<'EOF'\nGet-Started with the app\nEOF"
+  - grep -E 'a|Get-Date -x' notes.txt
 ---
 
 This shell is bash (Git Bash on Windows), not PowerShell: PowerShell commands fail here or do something else.
@@ -145,12 +159,7 @@ Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of
 
 If a step truly needs PowerShell, call it explicitly: `powershell.exe -NoProfile -Command '...'`.
 
-To search PowerShell text in files, use the `grep` tool, or run `grep` with the cmdlet name in quotes and without the `
-This shell is bash (Git Bash on Windows), not PowerShell: PowerShell commands fail here or do something else.
-
-Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of `Set-Content`, `ls` instead of `Get-ChildItem`, `"$HOME"` or `"$USERPROFILE"` instead of `$env:USERPROFILE`, `rm` instead of `Remove-Item`, `test -e` instead of `Test-Path`.
-
- of `$env:`. A command that merely mentions a cmdlet at the start of a line or after `;` is blocked even inside quotes, so keep such text out of `echo` and out of the lines of a multi-line commit message.
+To search PowerShell text in files, use the `grep` tool, or run `grep` with the cmdlet name in quotes and without the leading dollar sign of `$env:`. A command that merely mentions a cmdlet at the start of a line or after `;` is blocked even inside quotes, so keep such text out of `echo`, out of heredoc bodies, and out of the lines of a multi-line commit message.
 ````
 
 `rules/forge-login-hands-off.md`, because `gh auth token` would print the token straight into the session file:
@@ -158,7 +167,7 @@ Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of
 ````markdown
 ---
 description: "Agents never touch the code-host login"
-condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|env|command|sudo|time|exec|nohup)(?:\s+-[A-Za-z-]+)*\s+)*(?:["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?(?:gh|glab)(?:\.exe)?["\x27]?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?(?:gh|glab)(?:\.exe)?["\x27]?\s+auth\s+status\b[^\n;&|]*\s(?:-[A-Za-z]*t[A-Za-z]*|--show-token)(?=\s|$)|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?git["\x27]?(?:\s+(?:-C|-c)\s+\S+)*\s+credential(?:-[a-z]+)*\s+(?:fill|get)\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?git-credential-\S+\s+get\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?security["\x27]?\s+find-(?:generic|internet)-password\b[^\n;&|]*\s-[A-Za-z]*[wg][A-Za-z]*(?=\s|$))'
+condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?=((?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|(){}<>\x60]{0,200}|(?:env|command|sudo|time|exec|nohup)(?:[ \t]+-[A-Za-z-]{1,40}(?:[ \t]+(?!(?:env|command|sudo|time|exec|nohup|gh|glab|git|security)\b)[^\s=;&|(){}<>\x60-][^\s=;&|(){}<>\x60]{0,200})?){0,6})[ \t]+|(?:eval|(?:ba|z|da)?sh[ \t]+-[A-Za-z]*c)[ \t]+["\x27]?){0,8}))\1(?:["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+auth\s+status\b[^\n;&|({\x60]{0,200}\s(?:-[A-Za-su-z]*t[A-Za-z]*|--show-token)(?=[\s=]|$)|["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+config\s+get\b[^\n;&|({\x60]{0,200}\s(?:token|oauth_token)\b|(?:cat|less|more|head|tail|grep)[ \t]+[^\n;&|({\x60]{0,200}(?:hosts\.yml|[Gg][Ll][Aa][Bb][^\s;&|]*config\.yml)\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?git["\x27]?(?:[ \t]+(?:(?:-C|-c)[ \t]+[^\s;&|(){}<>\x60]{1,200}|--no-pager|-P|--paginate|--no-optional-locks))*\s+credential(?:-[a-z]+)*(?:\.[eE][xX][eE])?\s+(?:fill|get)\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?git-credential-[^\s;&|(){}<>\x60]{1,100}\s+get\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?security["\x27]?\s+find-(?:generic|internet)-password\b[^\n;&|({\x60]{0,200}\s-[A-Za-fh-vx-z]*[wg][A-Za-z]*(?=\s|$))|(?:\|\|?|&)[ \t\r]*(?=[A-Za-z\\/.~$"\x27_])(?=((?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|(){}<>\x60]{0,200}|(?:env|command|sudo|time|exec|nohup)(?:[ \t]+-[A-Za-z-]{1,40}(?:[ \t]+(?!(?:env|command|sudo|time|exec|nohup|gh|glab|git|security)\b)[^\s=;&|(){}<>\x60-][^\s=;&|(){}<>\x60]{0,200})?){0,6})[ \t]+|(?:eval|(?:ba|z|da)?sh[ \t]+-[A-Za-z]*c)[ \t]+["\x27]?){0,8}))\2(?:["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+auth\s+status\b[^\n;&|({\x60]{0,200}\s(?:-[A-Za-su-z]*t[A-Za-z]*|--show-token)(?=[\s=]|$)|["\x27\\]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?(?:gh|glab)(?:\.[eE][xX][eE])?["\x27]?\s+config\s+get\b[^\n;&|({\x60]{0,200}\s(?:token|oauth_token)\b|(?:cat|less|more|head|tail|grep)[ \t]+[^\n;&|({\x60]{0,200}(?:hosts\.yml|[Gg][Ll][Aa][Bb][^\s;&|]*config\.yml)\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?git["\x27]?(?:[ \t]+(?:(?:-C|-c)[ \t]+[^\s;&|(){}<>\x60]{1,200}|--no-pager|-P|--paginate|--no-optional-locks))*\s+credential(?:-[a-z]+)*(?:\.[eE][xX][eE])?\s+(?:fill|get)\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?git-credential-[^\s;&|(){}<>\x60]{1,100}\s+get\b|["\x27]?(?:[^\s"\x27;&|(){}<>\x60]{0,200}/)?security["\x27]?\s+find-(?:generic|internet)-password\b[^\n;&|({\x60]{0,200}\s-[A-Za-fh-vx-z]*[wg][A-Za-z]*(?=\s|$))(?=[\s;&|)]|$)'
 scope: "tool:bash"
 repeatMode: after-gap
 repeatGap: 1
@@ -186,6 +195,33 @@ blocks:
   - git -c credential.helper= credential fill
   - security find-generic-password -s gh:github.com -w
   - security find-internet-password -s github.com -g
+  - a|gh auth token
+  - ls | gh auth token
+  - a & gh auth token
+  - a&glab auth token
+  - \gh auth token
+  - env -u X gh auth token
+  - sudo -u root gh auth token
+  - env -i -u X FOO=1 glab auth token
+  - bash -c 'gh auth token'
+  - bash -lc "glab auth token"
+  - eval 'gh auth token'
+  - gh.EXE auth token
+  - C:/tools/glab.Exe auth token
+  - gh auth status --show-token=true
+  - git --no-pager credential fill
+  - git -P -c credential.helper= credential fill
+  - git credential-manager.exe get
+  - git-credential-manager.exe get
+  - glab config get token
+  - gh config get oauth_token
+  - glab config get --host g.example token
+  - cat ~/.config/glab-cli/config.yml
+  - cat $GLAB_CONFIG_DIR/config.yml
+  - less ~/.config/gh/hosts.yml
+  - head -n 3 ~/.config/gh/hosts.yml
+  - tail -f hosts.yml
+  - grep oauth_token ~/.config/gh/hosts.yml
 allows:
   - gh auth status
   - glab auth status --hostname g.example
@@ -197,6 +233,16 @@ allows:
   - git credential approve
   - gh pr view 1 --json state
   - echo gh auth token
+  - gh config get git_protocol
+  - glab config get host
+  - gh pr list | head -n 3
+  - grep -c 'x|gh auth token' notes.txt
+  - cat README.md
+  - grep -n hosts docs/notes.txt
+  - ls > out.txt 2>&1
+falsePositives:
+  - cat docs/hosts.yml
+  - grep -rn 'login' docs/hosts.yml
 ---
 
 The code-host login belongs to the app. Do not print it, read it, or log in or out.
