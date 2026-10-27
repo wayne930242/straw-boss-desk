@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wayne930242/straw-boss-desk/recipe/recipe.schema.json",
+  "title": "straw-boss-desk team recipe",
+  "description": "Team profile spec, section 5. validate.mjs is the enforcing implementation; it adds checks JSON Schema cannot express (credential patterns, URL user info and query, a repository host that is one of the forges, unique and reserved folder names, a valid default branch name, no invisible characters in text fields, a public host for updateUrl, and package names the app reserves).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recipe", "id", "name", "version", "forges"],
+  "properties": {
+    "recipe": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,40}$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+    "version": { "$ref": "#/$defs/semver" },
+    "updateUrl": { "$ref": "#/$defs/httpsUrl" },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "integrity"],
+      "properties": {
+        "version": { "$ref": "#/$defs/exactVersion" },
+        "integrity": { "$ref": "#/$defs/integrity" }
+      }
+    },
+    "forges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "host"],
+        "properties": {
+          "kind": { "enum": ["github", "gitlab"] },
+          "host": { "$ref": "#/$defs/hostname" },
+          "login": { "enum": ["device", "token"] }
+        },
+        "if": { "properties": { "kind": { "const": "github" } } },
+        "then": { "properties": { "host": { "const": "github.com" }, "login": { "const": "device" } } }
+      }
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "folder"],
+        "properties": {
+          "url": { "$ref": "#/$defs/httpsUrl" },
+          "folder": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "defaultBranch": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "label": { "type": "string", "minLength": 1, "maxLength": 60 }
+        }
+      }
+    },
+    "straw": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "relay": { "$ref": "#/$defs/httpsUrl" }
+      }
+    },
+    "linear": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "instructions": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "integrity"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 214, "pattern": "^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$" },
+          "version": { "$ref": "#/$defs/exactVersion" },
+          "integrity": { "$ref": "#/$defs/integrity" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "exactVersion": { "$ref": "#/$defs/semver" },
+    "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$" },
+    "hostname": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"
+    }
+  }
+}

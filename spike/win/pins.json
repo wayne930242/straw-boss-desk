@@ -16,6 +16,22 @@
       "_note": "Only an x86_64 Windows build exists; it runs under x64 emulation on Windows ARM64.",
       "x64":   { "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-windows-x86_64.zip", "sha256": "d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf", "file": "herdr-windows-x86_64.zip" },
       "arm64": { "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-windows-x86_64.zip", "sha256": "d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf", "file": "herdr-windows-x86_64.zip" }
+    },
+    "gh": {
+      "version": "2.103.3",
+      "_note": "SHA256 from gh_2.103.3_checksums.txt of the release. Not installed by bootstrap.ps1 yet (team profile spec, Tasks item 5). darwin-* keys are for the phase 2 shell; bootstrap.ps1 reads only x64 and arm64. The zip holds bin/gh.exe (Windows) or gh_2.103.3_macOS_<arch>/bin/gh.",
+      "x64":          { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_amd64.zip", "sha256": "98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0", "file": "gh_2.103.3_windows_amd64.zip" },
+      "arm64":        { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_arm64.zip", "sha256": "197211c98687d7770ac331fe8a3b6c198c389108c1536cdbedf659fe4703e484", "file": "gh_2.103.3_windows_arm64.zip" },
+      "darwin-x64":   { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_amd64.zip",   "sha256": "a2f86418f4350ae6e9ec60d5000bdf7665728436946a97fc27fe50e6ae752682", "file": "gh_2.103.3_macOS_amd64.zip" },
+      "darwin-arm64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_arm64.zip",   "sha256": "d700207eae9ae98fe2b89535c2c087c07823d4628c56364695a5a07ef311c062", "file": "gh_2.103.3_macOS_arm64.zip" }
+    },
+    "glab": {
+      "version": "1.124.0",
+      "_note": "SHA256 from the release's checksums.txt (gitlab-org/cli). Not installed by bootstrap.ps1 yet (team profile spec, Tasks item 5). darwin-* keys are for the phase 2 shell; bootstrap.ps1 reads only x64 and arm64. The Windows zip holds bin/glab.exe; the macOS tarball holds bin/glab.",
+      "x64":          { "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_windows_amd64.zip",   "sha256": "9b58b54cf841b43215ef01ba90793d8a845e81ddb7b3dfa2b5a238cde4b77b34", "file": "glab_1.124.0_windows_amd64.zip" },
+      "arm64":        { "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_windows_arm64.zip",   "sha256": "487a33c9cf148bbfa313ee359e5ecc34284936754a3348dfe86ba350bed78bb3", "file": "glab_1.124.0_windows_arm64.zip" },
+      "darwin-x64":   { "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_darwin_amd64.tar.gz", "sha256": "6adb7155566bedd6272d8f286e6c75b080d0050a349de4bed79661226d10d954", "file": "glab_1.124.0_darwin_amd64.tar.gz" },
+      "darwin-arm64": { "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_darwin_arm64.tar.gz", "sha256": "04aad4d989d98cb030318e09359f02e0ba2637ede682ec0dee1f5974dedd44c1", "file": "glab_1.124.0_darwin_arm64.tar.gz" }
     }
   },
   "npmGlobal": [

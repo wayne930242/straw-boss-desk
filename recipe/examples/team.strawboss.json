@@ -1,0 +1,18 @@
+{
+  "recipe": 1,
+  "id": "waydo-pm",
+  "name": "Waydo PM 工作環境",
+  "version": "1.0.0",
+  "updateUrl": "https://example.com/recipes/waydo-pm.json",
+  "forges": [
+    { "kind": "github", "host": "github.com" },
+    { "kind": "gitlab", "host": "gitlab.waydo.example" }
+  ],
+  "repos": [
+    { "url": "https://gitlab.waydo.example/product/web.git", "folder": "web", "defaultBranch": "develop", "label": "官網" },
+    { "url": "https://github.com/waydo/handbook.git", "folder": "handbook" }
+  ],
+  "straw": { "relay": "https://relay.waydo.example" },
+  "linear": { "enabled": true },
+  "instructions": "- 文案用語以《Waydo 用語表》為準：docs/glossary.md。\n- 改動價格或方案文字前，先問 PM 是否已和業務確認。"
+}

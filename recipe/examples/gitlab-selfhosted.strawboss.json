@@ -1,0 +1,14 @@
+{
+  "recipe": 1,
+  "id": "contoso-web",
+  "name": "Contoso web team",
+  "version": "2.1.0",
+  "forges": [{ "kind": "gitlab", "host": "git.contoso.example", "login": "device" }],
+  "repos": [
+    { "url": "https://git.contoso.example/web/site.git", "folder": "site", "defaultBranch": "main" },
+    { "url": "https://git.contoso.example/web/content.git", "folder": "content" }
+  ],
+  "straw": { "relay": "https://relay.contoso.example" },
+  "linear": { "enabled": false },
+  "instructions": "Product names are written as in docs/brand.md."
+}

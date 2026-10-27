@@ -1,0 +1,8 @@
+{
+  "recipe": 1,
+  "id": "acme-docs",
+  "name": "Acme docs team",
+  "version": "0.1.0",
+  "forges": [{ "kind": "github", "host": "github.com" }],
+  "repos": [{ "url": "https://github.com/acme/docs.git", "folder": "docs", "label": "Docs site" }]
+}

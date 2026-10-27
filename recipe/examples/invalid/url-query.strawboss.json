@@ -1,0 +1,1 @@
+{ "recipe": 1, "id": "bad", "name": "Bad", "version": "1.0.0", "forges": [{ "kind": "github", "host": "github.com" }], "straw": { "relay": "https://relay.example.com/?key=LEAKCHECK123" } }
