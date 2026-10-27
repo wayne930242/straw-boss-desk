@@ -88,14 +88,18 @@ Choices made in that text, for the author to check:
 
 ## 2. Guard rules
 
-Text alone did not stop the spike's agent, so the profile also ships two TTSR rules. pi-anchorloop's `ttsr.ts` (pinned 2.0.0 carries it) loads `<agent-dir>/rules/*.md`, and a rule whose `condition` matches a bash call blocks it before it runs, returning the rule text as the reason. Both regexes were checked against their `blocks` and `allows` lists with Node; these lists become the rules' test fixtures.
+Text alone did not stop the spike's agent, so the profile also ships two TTSR rules. pi-anchorloop's `ttsr.ts` (pinned 2.0.0 carries it) loads `<agent-dir>/rules/*.md`, and a rule whose `condition` matches a bash call blocks it before it runs, returning the rule text as the reason. Both regexes are checked against their `blocks` and `allows` lists in CI, through the real `ttsr.ts` from the pinned `pi-anchorloop@2.0.0` (a devDependency of `profile/`, so the check never depends on what is installed on the machine); each match must also `interrupts(rule, "tool")`, so a rule cannot be softened to a reminder. A rule's `falsePositives` list names the commands it still blocks by mistake, and a test keeps that list true.
+
+Known limit: a regex cannot tell a cmdlet name inside a quoted string from a command. `bash-not-powershell` therefore still blocks `echo 'a; Get-ChildItem'`, text with `$env:` that does not start right after a quote, and a multi-line commit message with a line that starts with a cmdlet. Its rule text tells the agent how to search PowerShell text without tripping it.
+
+Upstream seam: `TtsrManager.#eligible` applies the repeat policy to blocking tool-call matches. Once a rule has fired it is silent until a turn ends (`repeatGap: 1`), so a second matching call in the same assistant message is not blocked (`gh auth status -t`, then `glab auth status -t`), and after a resume the first turn is not covered either. The fix belongs in pi-anchorloop (a blocking tool-call match skips the repeat policy, or a `repeatMode: always`); it is listed in the design record's upstream seams table, and two `todo` tests in `profile/test/rules.test.mjs` run the real manager and start passing when it ships. Until then the AGENTS.md line and the keyring are the main protection, and acceptance check 9 (the token appears in no file) is what catches a miss.
 
 `rules/bash-not-powershell.md`:
 
 ````markdown
 ---
 description: "The shell is bash, on Windows too"
-condition: '(?:^|[\n;(`{]|&&|\|\|?|\b(?:then|do|else)\s)\s*(?:Set-Content|Add-Content|Get-Content|Out-File|Get-ChildItem|Get-Item|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Test-Path|Select-String|Write-Host|Write-Output|Invoke-WebRequest|Invoke-RestMethod|Start-Process|ForEach-Object|Where-Object|Set-Location)\b|\$env:[A-Za-z_]'
+condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|env|command|sudo|time|exec|nohup)(?:\s+-[A-Za-z-]+)*\s+)*(?:(?:Add|Approve|Assert|Backup|Block|Checkpoint|Clear|Close|Compare|Complete|Compress|Confirm|Connect|Convert|ConvertFrom|ConvertTo|Copy|Debug|Deny|Disable|Disconnect|Dismount|Edit|Enable|Enter|Exit|Expand|Export|Find|Format|Get|Grant|Group|Hide|Import|Initialize|Install|Invoke|Join|Limit|Lock|Measure|Merge|Mount|Move|New|Open|Optimize|Out|Ping|Pop|Protect|Publish|Push|Read|Receive|Redo|Register|Remove|Rename|Repair|Request|Reset|Resize|Resolve|Restart|Restore|Resume|Revoke|Save|Search|Select|Send|Set|Show|Skip|Sort|Split|Start|Step|Stop|Submit|Suspend|Switch|Sync|Tee|Test|Trace|Unblock|Undo|Uninstall|Unlock|Unprotect|Unpublish|Unregister|Update|Use|Wait|Watch|Write|ForEach|Where)-[A-Z][A-Za-z0-9]+\b)|(?<!\x27)\$env:[A-Za-z_]'
 scope: "tool:bash"
 repeatMode: after-gap
 repeatGap: 1
@@ -106,13 +110,33 @@ blocks:
   - ls | Where-Object { $_.Name }
   - if true; then Remove-Item a; fi
   - git status && Test-Path a
+  - ls | Select-Object -First 3
+  - Get-Process | Sort-Object CPU
+  - Expand-Archive a.zip -DestinationPath out
+  - Invoke-Expression $cmd
+  - x=1 Get-ChildItem
+  - sudo Remove-Item a
+  - time Measure-Object
+  - env FOO=1 Join-Path a b
+  - Set-Item -Path env:X -Value 1
+  - "git status\nGet-ChildItem"
 allows:
   - printf 'hi\n' > a.txt
   - grep -rn 'Set-Content' scripts/
   - powershell.exe -NoProfile -Command "Get-ChildItem C:/"
   - echo "$HOME"
   - grep -n 'env:PATH' setup.ps1
+  - grep -n '$env:PATH' setup.ps1
+  - rg 'Remove-Item|Test-Path' .
   - git commit -m 'docs: explain Set-Content usage'
+  - powershell.exe -NoProfile -Command '$env:PATH'
+  - grep -c Get-Process setup.ps1
+  - ls | sort
+  - curl -H 'Set-Cookie: a=b' https://example.com
+falsePositives:
+  - echo 'a; Get-ChildItem'
+  - grep -n 'path $env:PATH' x.ps1
+  - "git commit -m \"docs: notes\nGet-Content is slow\""
 ---
 
 This shell is bash (Git Bash on Windows), not PowerShell: PowerShell commands fail here or do something else.
@@ -120,6 +144,13 @@ This shell is bash (Git Bash on Windows), not PowerShell: PowerShell commands fa
 Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of `Set-Content`, `ls` instead of `Get-ChildItem`, `"$HOME"` or `"$USERPROFILE"` instead of `$env:USERPROFILE`, `rm` instead of `Remove-Item`, `test -e` instead of `Test-Path`.
 
 If a step truly needs PowerShell, call it explicitly: `powershell.exe -NoProfile -Command '...'`.
+
+To search PowerShell text in files, use the `grep` tool, or run `grep` with the cmdlet name in quotes and without the `
+This shell is bash (Git Bash on Windows), not PowerShell: PowerShell commands fail here or do something else.
+
+Use POSIX commands instead: `printf '...' > file` or the `write` tool instead of `Set-Content`, `ls` instead of `Get-ChildItem`, `"$HOME"` or `"$USERPROFILE"` instead of `$env:USERPROFILE`, `rm` instead of `Remove-Item`, `test -e` instead of `Test-Path`.
+
+ of `$env:`. A command that merely mentions a cmdlet at the start of a line or after `;` is blocked even inside quotes, so keep such text out of `echo` and out of the lines of a multi-line commit message.
 ````
 
 `rules/forge-login-hands-off.md`, because `gh auth token` would print the token straight into the session file:
@@ -127,7 +158,7 @@ If a step truly needs PowerShell, call it explicitly: `powershell.exe -NoProfile
 ````markdown
 ---
 description: "Agents never touch the code-host login"
-condition: '(?:^|[\n;(`{]|&&|\|\|?|\b(?:then|do|else)\s)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:gh|glab)(?:\.exe)?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|(?:gh|glab)(?:\.exe)?\s+auth\s+status\b[^\n;&|]*\s(?:-t|--show-token)\b|git(?:\s+-C\s+\S+)*\s+credential(?:-[a-z]+)?\s+(?:fill|get)\b)'
+condition: '(?:^|[\n;(\x60{]|&&|\s\|\|?|\|\|?\s|\b(?:then|do|else)\s)[ \t\r]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|env|command|sudo|time|exec|nohup)(?:\s+-[A-Za-z-]+)*\s+)*(?:["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?(?:gh|glab)(?:\.exe)?["\x27]?\s+auth\s+(?:token|login|logout|refresh|switch|git-credential)\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?(?:gh|glab)(?:\.exe)?["\x27]?\s+auth\s+status\b[^\n;&|]*\s(?:-[A-Za-z]*t[A-Za-z]*|--show-token)(?=\s|$)|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?git["\x27]?(?:\s+(?:-C|-c)\s+\S+)*\s+credential(?:-[a-z]+)*\s+(?:fill|get)\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?git-credential-\S+\s+get\b|["\x27]?(?:[^\s"\x27;&|()<>\x60]*/)?security["\x27]?\s+find-(?:generic|internet)-password\b[^\n;&|]*\s-[A-Za-z]*[wg][A-Za-z]*(?=\s|$))'
 scope: "tool:bash"
 repeatMode: after-gap
 repeatGap: 1
@@ -141,12 +172,31 @@ blocks:
   - printf 'protocol=https\nhost=github.com\n\n' | git credential fill
   - git credential-manager get
   - glab auth git-credential get
+  - tools/bin/gh auth token
+  - "$X/gh" auth token
+  - /Users/a/tools/bin/glab auth token
+  - env GH_HOST=x gh auth token
+  - command gh auth token
+  - gh auth status -th github.com
+  - gh auth status --hostname github.com -t
+  - git credential-manager-core get
+  - git credential-osxkeychain get
+  - git-credential-manager get
+  - git-credential-osxkeychain get
+  - git -c credential.helper= credential fill
+  - security find-generic-password -s gh:github.com -w
+  - security find-internet-password -s github.com -g
 allows:
   - gh auth status
   - glab auth status --hostname g.example
   - gh pr create --title 'auth token refresh fix' --body-file b.md
   - grep -rn 'gh auth token' docs/
   - git commit -m 'fix: token refresh'
+  - gh auth status --hostname github.com
+  - security find-identity -v
+  - git credential approve
+  - gh pr view 1 --json state
+  - echo gh auth token
 ---
 
 The code-host login belongs to the app. Do not print it, read it, or log in or out.
@@ -349,14 +399,14 @@ The schema ships in this repository as `recipe/recipe.schema.json` (JSON Schema 
 | `id` | string, `^[a-z0-9][a-z0-9-]{1,40}$` | yes | Stable identity. An update must keep it; a different `id` is a different recipe. |
 | `name` | string, at most 60 characters | yes | Shown in the wizard and settings, e.g. 「Waydo PM 工作環境」. |
 | `version` | semver string | yes | Compared on update; a lower or equal version is not applied. |
-| `updateUrl` | https URL | no | Where newer versions of this recipe are fetched (see Delivery). |
+| `updateUrl` | https URL | no | Where newer versions of this recipe are fetched (see Delivery). The host must be public by its name: not `localhost`, a single-label name, a trailing-dot name, `.local`, `.lan`, `.home.arpa`, `.internal`, nor a private, loopback, link-local, shared (100.64/10), benchmarking (198.18/15), multicast or reserved (224/4 and up) IPv4 address. The check is lexical; the fetcher re-checks the resolved address and every redirect. |
 | `profile` | `{ "version": semver, "integrity": "sha512-..." }` | no | Pins the official profile package to another version than `stack.json`'s. Omitted means the app default. Another package name is not allowed. |
-| `forges` | array of `{ "kind": "github" \| "gitlab", "host": hostname, "login": "device" \| "token" }`, at least one | yes | Which CLIs to install and log in. `github` requires `host: "github.com"`, the only GitHub host the design supports. `login` defaults to `device` for GitHub and `token` for GitLab. |
+| `forges` | array of `{ "kind": "github" \| "gitlab", "host": hostname, "login": "device" \| "token" }`, at least one | yes | Which CLIs to install and log in. `github` requires `host: "github.com"`, the only GitHub host the design supports. `login` defaults to `device` for GitHub and `token` for GitLab. `github` with `login: "token"` is refused: section 4 defines no GitHub token flow, and a pasted classic token could carry scopes (`workflow`) that undo the limit in "What the logins can do". |
 | `repos` | array of `{ "url": https URL, "folder": folder name, "defaultBranch": branch name, "label": string }` | no | Repositories to clone and open as bases. `url` must be on a host in `forges`. `folder` is a single path segment, unique in the recipe, without `..` or reserved Windows names (`CON`, `NUL`, …). `defaultBranch` is optional. `label` is optional and names the base, defaulting to `folder`. |
 | `straw.relay` | https URL | no | The Straw Link relay, written to `link.relay` in `<agent-dir>/straw-boss/config.json`, where pi-straw-boss reads it (`src/link/config.ts`). |
 | `linear` | `{ "enabled": boolean }` | no | Whether the wizard offers the Linear step. The key itself is always entered by the PM. |
 | `instructions` | string, at most 4000 characters | no | Team guidance appended to AGENTS.md under `## Team: <name>`. |
-| `packages` | array of `{ "name": npm name, "version": exact version, "integrity": "sha512-..." }` | no | Extra pi packages the team adds, installed skills-only (see Additions). |
+| `packages` | array of `{ "name": npm name, "version": exact version, "integrity": "sha512-..." }` | no | Extra pi packages the team adds, installed skills-only (see Additions). A name that `stack.json` lists is refused: the shell calls `validateRecipe(input, { reservedPackages })` with the package names from `stack.json`. |
 
 Example:
 
@@ -366,7 +416,7 @@ Example:
   "id": "waydo-pm",
   "name": "Waydo PM 工作環境",
   "version": "1.0.0",
-  "updateUrl": "https://raw.githubusercontent.com/waydo/recipes/main/waydo-pm.json",
+  "updateUrl": "https://example.com/recipes/waydo-pm.json",
   "forges": [
     { "kind": "github", "host": "github.com" },
     { "kind": "gitlab", "host": "gitlab.waydo.example" }
@@ -392,10 +442,11 @@ Example:
 No token, password, key, or other credential. The wizard enforces this before anything else is read, and rejects the whole file when:
 
 - any field is unknown to the schema (`additionalProperties: false`), so a stray `"token"` field fails as an unknown field;
+- `name`, `instructions`, a repository `label` or `folder` holds a control character, a format character (bidi controls, zero-width characters; U+200D is allowed for emoji), or a Unicode tag character (U+E0000 to E007F), because the trust screen must show the PM all the text the agent receives;
 - any URL has user info (`https://user:secret@host/...`), a query string, or a fragment, or is not `https`;
 - any string value matches a known credential pattern: `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `glpat-`, `gloas-`, `glrt-`, `lin_api_`, `sk-ant-`, `xox[abposr]-`, `AKIA[0-9A-Z]{16}`, `-----BEGIN`, or a JWT (`eyJ` followed by two dot-separated base64url parts).
 
-The message names the field and the rule, never the value. The pattern list lives beside the schema with its own tests and fixtures. The wizard keeps no copy of a rejected file.
+The scan also runs over the file's raw text, reported as `(file)`, because a repeated key keeps only its last value in the parsed data and the whole file is what is saved; it decodes percent-escapes in URLs first (`ghp%5F...`); and an error names an unknown field only when the name is short and plain, otherwise `(unknown field)`. The validator returns each URL in its normalized form (`url.href`), the form the trust screen shows and `git clone` uses, so a look-alike host appears as its punycode name. The message names the field and the rule, never the value. The pattern list lives beside the schema with its own tests and fixtures. The wizard keeps no copy of a rejected file.
 
 ### Delivery and updates
 
@@ -411,6 +462,7 @@ A recipe comes from a colleague, so before anything is installed, cloned, or wri
 - which code hosts it will sign in to, and which CLIs it installs;
 - each repository it will clone, with its host and the folder it lands in;
 - the Straw Link relay it sets (the address messages pass through);
+- the profile version it pins, when it has a `profile` entry, flagged when that version is older than the app's default (an older profile may lack guard rules);
 - the team instructions, in full;
 - each extra package by name and version, marked "installs third-party code";
 - for an update, only what changes, item by item.
