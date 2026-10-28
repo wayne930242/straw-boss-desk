@@ -89,7 +89,7 @@ if ($loggedIn) {
     # 4. one pi-herdr-agents subagent dispatch, from a member (a tower may not dispatch)
     $ps = (Get-Command powershell.exe).Source
     $startState = Read-JsonFile (Join-Path $StateDir 'start.json')
-    if (-not $startState -or -not $startState.url) {
+    if (-not $startState -or -not $startState.sbDir) {
         $sr = Invoke-Native -File $ps -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $KitDir 'start.ps1')) -TimeoutSec 400
         Add-Step 'start-stack' $(if ($sr.ExitCode -eq 0) { 'PASS' } else { 'FAIL' }) (Get-FirstLine ($sr.StdOut + $sr.StdErr))
     }

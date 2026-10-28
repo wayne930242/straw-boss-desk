@@ -62,7 +62,7 @@ function Invoke-Gui {
 function Ensure-Started {
     if ($script:Ctx.Started) { return $true }
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
-    if ($s -and $s.url -and (Test-ProcessAlive -ProcessId ([int]$s.serverPid) -StartTime $s.serverStart)) { $script:Ctx.Started = $true; return $true }
+    if ($s -and $s.sbDir -and (Test-ProcessAlive -ProcessId ([int]$s.serverPid) -StartTime $s.serverStart)) { $script:Ctx.Started = $true; return $true }
     if ($NoStart) { return $false }
     # start.ps1 leaves a herdr server behind. Run through Invoke-Native (redirected pipes), that server held the pipes open after
     # start.ps1 exited and ReadToEnd/WaitForExit never returned. So the child gets no inherited handles: cmd.exe is started through
@@ -243,7 +243,7 @@ Add-Check 'stack-start' {
     $ok = Ensure-Started
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     if (-not $ok) { return (Fail ("start.ps1 failed. " + (Get-FirstLine $script:Ctx.StartOut) + ' see logs\start.jsonl')) }
-    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) url=$($s.url) totalMs=$($s.totalMs)" $s
+    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) sbDir=$($s.sbDir) guiMs=$($s.guiMs) totalMs=$($s.totalMs)" $s
 }
 
 Add-Check 'herdr-pane-runs-pi' {
