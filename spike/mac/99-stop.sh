@@ -81,7 +81,7 @@ leftovers() {
   while IFS='|' read -r p s; do
     [ -n "$p" ] || continue
     if proc_alive "$p" "$s"; then echo "$p"; fi
-  done < "$tree"
+  done < "$tree" | sort -un
 }
 left=""
 for p in $(leftovers); do kill "$p" 2>/dev/null || true; left="$left $p"; done
