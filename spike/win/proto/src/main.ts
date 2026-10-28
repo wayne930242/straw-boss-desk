@@ -36,10 +36,11 @@ mkdirSync(join(root, "logs"), { recursive: true });
 mkdirSync(resultDir, { recursive: true });
 
 function log(event: string, data: Record<string, unknown> = {}) {
-	const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
+	// Electron's load errors and stack traces quote the URL: the token is hidden over the whole line.
+	const line = hide(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
 	appendFileSync(logFile, line + "\n");
 	// The window is gone while a quit runs the stop sequence; a throw here would leave the quit waiting forever.
-	if (win && !win.isDestroyed()) win.webContents.send("sbd:log", `[${event}] ${data.detail ?? ""}`);
+	if (win && !win.isDestroyed()) win.webContents.send("sbd:log", hide(`[${event}] ${data.detail ?? ""}`));
 }
 const saveResult = (name: string, o: unknown) => writeFileSync(join(resultDir, name), JSON.stringify(o, null, 2));
 const stamp = () => new Date().toISOString().replace(/[:.]/g, "-");
@@ -138,10 +139,16 @@ function notice(text: string) {
 }
 
 /** Runs stop.ps1 (cli.mjs stop up to 120 s, herdr, leftovers) and waits for it; the quit that asked for it waits too. */
-function stopStack(): Promise<void> {
-	if (!kitStarted) return Promise.resolve();
-	startChild?.kill();
-	return new Promise<void>((resolve) => {
+async function stopStack(): Promise<void> {
+	if (!kitStarted) return;
+	// Killing the start run would end only its powershell.exe and leave its `cli.mjs up` and a just-started herdr running unrecorded: let it finish (bounded),
+	// then stop.ps1 stops what it recorded.
+	if (startChild) {
+		log("stop.ps1", { detail: "waiting for the start run to finish" });
+		await Promise.race([kitBusy, new Promise((r) => setTimeout(r, 120_000))]);
+		if (startChild) { log("stop.ps1", { detail: "start run still going after 120 s; stopping anyway" }); startChild.kill(); }
+	}
+	await new Promise<void>((resolve) => {
 		const child = spawn("powershell.exe", ps("stop.ps1"), { windowsHide: true });
 		let last = "";
 		const timer = setTimeout(() => { log("stop.ps1", { detail: "timeout after 300 s" }); child.kill(); resolve(); }, 300_000);

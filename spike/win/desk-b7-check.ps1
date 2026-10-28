@@ -55,6 +55,8 @@ function Invoke-Kit {
     $exit = $null
     if ($cmd.WaitForExit($TimeoutSec * 1000)) { $exit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
     $text = Get-Content -LiteralPath $out -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    # The parsed output keeps the GUI token in memory only; the file on disk is rewritten with the token hidden.
+    if ($text) { try { Write-AllTextUtf8 -Path $out -Text (Hide-Token $text) } catch { } }
     [pscustomobject]@{ Exit = $exit; Out = [string]$text; Ms = [int]$sw.ElapsedMilliseconds }
 }
 
@@ -331,7 +333,11 @@ if (Test-Item 'A3') {
                         if ($ts -and $ts -ge $passStart.ToUniversalTime() -and $line -match '127\.0\.0\.1:\d+/[0-9a-f]{16,}') { $leak += (Split-Path -Leaf $f); break }
                     }
                 }
-                Add-Step 'A3.no-token-in-logs' $(if ($leak.Count -eq 0) { 'PASS' } else { 'FAIL' }) $(if ($leak.Count -eq 0) { 'no URL token in start.jsonl or proto.jsonl' } else { "a URL token is in: $($leak -join ', ')" })
+                # The kit's captured stdout files (Invoke-Kit hides the token after parsing) must hold none either, whatever their age.
+                foreach ($f in @(Get-ChildItem -LiteralPath $LogDir -Filter '*.out.log' -ErrorAction SilentlyContinue)) {
+                    if ((Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8) -match '127\.0\.0\.1:\d+/[0-9a-f]{16,}') { $leak += $f.Name }
+                }
+                Add-Step 'A3.no-token-in-logs' $(if ($leak.Count -eq 0) { 'PASS' } else { 'FAIL' }) $(if ($leak.Count -eq 0) { 'no URL token in start.jsonl, proto.jsonl or logs\*.out.log' } else { "a URL token is in: $($leak -join ', ')" })
             }
             # d: closing the window quits the app; before-quit holds the quit until stop.ps1 has run, and nothing of the kit is left afterwards.
             $recQuit = Read-JsonFile $startFile

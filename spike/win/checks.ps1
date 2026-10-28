@@ -76,6 +76,7 @@ function Ensure-Started {
     $startExit = $null
     if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
     $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+    if ($script:Ctx.StartOut) { try { Write-AllTextUtf8 -Path $startOut -Text (Hide-Token $script:Ctx.StartOut) } catch { } }
     if ($null -eq $startExit) { $script:Ctx.StartOut = 'start.ps1 timed out after 400 s. ' + $script:Ctx.StartOut }
     $script:Ctx.Started = ($startExit -eq 0)
     return $script:Ctx.Started

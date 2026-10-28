@@ -82,6 +82,8 @@ export class Follower {
 	private running = false;
 	private again = false;
 	private giveUp = false; // a failed `up` is shown once; only the Start button tries again
+	private failedTarget: GuiTarget | undefined; // a target move() gave up on: skipped until the record names another one
+	private pendingStart = false; // the Start button was pressed while a run was going: the next exclusive run starts the stack
 	private timer: NodeJS.Timeout | undefined;
 	private watcher: FSWatcher | undefined;
 	private readonly timing: FollowTiming;
@@ -118,7 +120,9 @@ export class Follower {
 	/** The Start button of a shell screen: the same run as `gone`, also after a failure. */
 	async startFromScreen() {
 		this.giveUp = false;
-		await this.exclusive(() => this.bringUp("start button"));
+		this.failedTarget = undefined;
+		this.pendingStart = true;
+		await this.exclusive(() => this.tick());
 	}
 
 	private schedule() {
@@ -130,7 +134,8 @@ export class Follower {
 		if (this.running) { this.again = true; return; }
 		this.running = true;
 		try {
-			await work();
+			// A Start press waits behind a running move or tick and then replaces the next run, so it is never lost to the tick.
+			if (this.pendingStart) { this.pendingStart = false; await this.bringUp("start button"); } else await work();
 		} catch (e) {
 			this.host.log("follow-error", { detail: String(e) });
 		} finally {
@@ -173,7 +178,11 @@ export class Follower {
 		if (o.guiStopped) return this.show("gui-stopped", { kind: "gui-stopped" });
 		if (o.restarting) { this.unansweredSince = undefined; return this.note("The stack is restarting..."); }
 		// moved: the record names a listener other than the one in the window (every new listener draws a new token).
-		if (o.target && !same(o.target, this.loaded)) { this.giveUp = false; return this.move(o.target); }
+		if (this.failedTarget && !same(o.target, this.failedTarget)) this.failedTarget = undefined; // the record changed
+		if (o.target && !same(o.target, this.loaded)) {
+			if (same(o.target, this.failedTarget)) this.note(undefined); // given up on this one already: no new 30 s poll, the Start button is the way on
+			else { this.giveUp = false; return this.move(o.target); }
+		}
 		if (this.shown?.startsWith("banner:")) this.note(undefined);
 		if (!this.loaded) return; // a screen is showing and nothing new was recorded: the Start button is the way on
 		// live or gone: the URL in the window must answer.
@@ -194,12 +203,14 @@ export class Follower {
 			if ((await probe(url)) === 200) break;
 			if (Date.now() >= deadline) {
 				this.host.log("follow-move-timeout", { detail: `port ${target.port} did not answer within ${this.timing.moveWaitMs} ms` });
+				this.failedTarget = target;
 				return; // the next tick looks again; a listener that never answers ends as gone through the old URL's probe
 			}
 			await new Promise((r) => setTimeout(r, this.timing.movePollMs));
 		}
 		await this.host.load(url);
 		this.loaded = target;
+		this.failedTarget = undefined;
 		this.unansweredSince = undefined;
 		this.shown = undefined;
 		this.host.banner(undefined);

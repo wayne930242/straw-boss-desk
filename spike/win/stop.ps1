@@ -9,7 +9,7 @@
     2. Wait 10 s for the recorded sb server pid to go; one that stays is killed by pid only while its recorded start time matches.
     3. `herdr server stop`, then wait for its pid. Workspaces are NOT closed: herdr restores them at the next start (Q3).
     4. Kill whatever of the recorded process tree still runs with its recorded start time; the pi-intercom broker only when broker.pid in this agent dir
-       names a node process that runs pi-intercom's broker.
+       names a node process that runs pi-intercom's broker with the kit root in its command line.
     5. gui.json and server.json stay: the server owns them, and server.json's gui.port is how the next start keeps the port. start.json is removed
        when nothing recorded is left running (kept otherwise, so a second run of this script can finish the job).
   Exit codes: 0 stopped (or nothing recorded); 1 a recorded process still runs.
@@ -42,9 +42,10 @@ $sbStart = $null
 $killSb = $true
 if ($s.sbServerPid) { $sbPid = [int]$s.sbServerPid; $sbStart = $s.sbServerStart }
 # The server may have restarted since start.ps1 recorded it (a restart, an upgrade, a crash and a new start): the record in its own folder names the one that runs now.
+# Adopted only when the record is live evidence: it has `started`, is not `stopped:true`, and the process holds that start time (a pid alone proves nothing).
 if ($s.sbServerRecord) {
     $cur = Read-JsonFile ([string]$s.sbServerRecord)
-    if ($cur -and $cur.pid -and ([int]$cur.pid -ne $sbPid) -and (Get-Process -Id ([int]$cur.pid) -ErrorAction SilentlyContinue)) {
+    if ($cur -and $cur.pid -and $cur.started -and ($cur.stopped -ne $true) -and ([int]$cur.pid -ne $sbPid) -and (Test-ProcessAlive -ProcessId ([int]$cur.pid) -StartTime $cur.started)) {
         $sbPid = [int]$cur.pid
         $sbStart = Get-ProcessStartIso $sbPid
         Write-Log 'stop' 'sb-server-moved' @{ pid = $sbPid; detail = 'the running sb server is not the one start.ps1 recorded' }
@@ -53,7 +54,7 @@ if ($s.sbServerRecord) {
 if ((Test-Path -LiteralPath $sbCli) -and (Test-Path -LiteralPath $t.NodeExe)) {
     if ($sbPid -eq 0) {
         $st = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'status') -TimeoutSec 60
-        try { $sj = ($st.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json; if ($sj.pid) { $sbPid = [int]$sj.pid; $sbStart = Get-ProcessStartIso $sbPid } } catch { }
+        try { $sj = ($st.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json; if ($sj.pid -and $sj.started -and ($sj.state -ne 'stopped') -and ($sj.stopped -ne $true) -and (Test-ProcessAlive -ProcessId ([int]$sj.pid) -StartTime $sj.started)) { $sbPid = [int]$sj.pid; $sbStart = Get-ProcessStartIso $sbPid } } catch { }
     }
     $sr = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'stop') -TimeoutSec 120
     $outcome = ''
@@ -82,7 +83,7 @@ if ($sbPid -gt 0) {
 $left = @()
 $still = @()
 if ($killSb -and $sbPid -gt 0 -and $sbStart -and (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) {
-    [void](Stop-ProcessTree -ProcessId $sbPid)
+    [void](Stop-ProcessTree -ProcessId $sbPid -StartTime $sbStart)
     $left += "$sbPid sb-server"
     Start-Sleep -Milliseconds 500
 }
@@ -102,12 +103,12 @@ if ($alive -and (Test-Path -LiteralPath $t.HerdrExe)) {
 foreach ($k in $known) {
     if (-not $k -or -not $k.Pid) { continue }
     if (Test-ProcessAlive -ProcessId ([int]$k.Pid) -StartTime $k.Created) {
-        [void](Stop-ProcessTree -ProcessId $k.Pid)
+        [void](Stop-ProcessTree -ProcessId ([int]$k.Pid) -StartTime $k.Created)
         $left += "$($k.Pid) $($k.Name)"
     }
 }
 if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
-    [void](Stop-ProcessTree -ProcessId $serverPid)
+    [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $s.serverStart)
     $left += "$serverPid herdr(server)"
 }
 # pi-intercom's broker is detached from the pi that spawned it and outlives the stack, keeping that pi's environment;
@@ -115,9 +116,9 @@ if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
 $brokerPidFile = Join-Path $AgentDir 'intercom\broker.pid'
 if (Test-Path -LiteralPath $brokerPidFile) {
     $brokerPid = 0
-    [void][int]::TryParse((Get-Content -LiteralPath $brokerPidFile -Raw).Trim(), [ref]$brokerPid)
+    [void][int]::TryParse(([string](Get-Content -LiteralPath $brokerPidFile -Raw)).Trim(), [ref]$brokerPid)
     $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
-    if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker') {
+    if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker' -and $bp.CommandLine.IndexOf($SbdRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         [void](Stop-ProcessTree -ProcessId $brokerPid)
         $left += "$brokerPid intercom-broker"
     }

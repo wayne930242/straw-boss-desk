@@ -118,19 +118,31 @@ function Invoke-Native {
     $timedOut = $false
     if (-not $p.WaitForExit($TimeoutSec * 1000)) {
         $timedOut = $true
-        try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+        try { [void](Stop-ProcessTree -ProcessId $p.Id) } catch { }
     }
     $p.WaitForExit()
     $sw.Stop()
     [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $outTask.Result; StdErr = $errTask.Result; Ms = [int]$sw.ElapsedMilliseconds; TimedOut = $timedOut; Started = $true }
 }
 
-# taskkill /T /F by pid. Never throws: under $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 turns a native command's stderr text ("Access is denied",
-# "process not found") into a terminating error even through 2>&1 | Out-Null, which aborted stop.ps1 half way (VM 2026-10-28).
+# Kills exact pids, never through `taskkill /T`: its walk uses ParentProcessId alone, so a reused pid reaches csrss, winlogon and dwm of an old session.
+# The tree comes from Get-ProcessTree (which compares creation times); children go first, each only while its start time still matches.
+# Never throws: under $ErrorActionPreference = 'Stop', a failing kill must not abort stop.ps1 half way (VM 2026-10-28).
 function Stop-ProcessTree {
-    param([int]$ProcessId)
-    $r = Invoke-Native -File (Join-Path $env:SystemRoot 'System32\taskkill.exe') -ArgList @('/PID', [string]$ProcessId, '/T', '/F') -TimeoutSec 30
-    return ($r.ExitCode -eq 0)
+    param([int]$ProcessId, $StartTime)
+    $rootStart = $StartTime
+    if ($null -eq $rootStart -or $rootStart -eq '') { $rootStart = Get-ProcessStartIso $ProcessId }
+    if ($null -eq $rootStart) { return $false }
+    $victims = @()
+    try { $victims = @(Get-ProcessTree $ProcessId) } catch { }
+    [array]::Reverse($victims)
+    $victims += [pscustomobject]@{ Pid = $ProcessId; Created = $rootStart }
+    $ok = $true
+    foreach ($v in $victims) {
+        if (-not (Test-ProcessAlive -ProcessId ([int]$v.Pid) -StartTime $v.Created)) { continue }
+        try { Stop-Process -Id ([int]$v.Pid) -Force -ErrorAction Stop } catch { $ok = $false }
+    }
+    return $ok
 }
 
 # Filesystem trouble that Defender, long paths, or locked files cause during installs.
@@ -263,31 +275,41 @@ function ConvertTo-UtcInstant {
     return [datetime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
 }
 
+# The start time of a process as UTC. Windows PowerShell 5.1 under a filtered token cannot read .StartTime of SYSTEM, other-user or elevated processes
+# ("Access is denied"); Win32_Process.CreationDate needs no access right. $null when the process is gone or no start time can be read.
+function Get-ProcessStartUtc {
+    param([int]$ProcessId)
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $started = $null
+    try { $started = $p.StartTime } catch { }
+    if ($null -ne $started) { return $started.ToUniversalTime() }
+    try {
+        $w = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($w -and $w.CreationDate) { return $w.CreationDate.ToUniversalTime() }
+    } catch { }
+    return $null
+}
+
+# Alive; with -StartTime, alive AND started then. A process whose start time cannot be read at all is not ours: false (a process that exits during
+# the read is gone, which is false as well).
 function Test-ProcessAlive {
     param([int]$ProcessId, $StartTime)
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return $false }
     $want = ConvertTo-UtcInstant $StartTime
     if ($null -eq $want) { return $true }
-    # A process that exits between Get-Process and this read has a null StartTime (VM 2026-10-27: stop.ps1 died with InvokeMethodOnNull here
-    # while it waited for the sb server pid to go): gone is not alive.
-    $started = $null
-    try { $started = $p.StartTime } catch { }
-    if ($null -eq $started) {
-        $again = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-        if (-not $again) { return $false }
-        try { if ($again.HasExited) { return $false } } catch { }
-        return $true
-    }
+    $started = Get-ProcessStartUtc $ProcessId
+    if ($null -eq $started) { return $false }
     # Get-Process and CIM round differently; a reused pid starts at a very different time.
-    return ([math]::Abs(($started.ToUniversalTime() - $want).TotalSeconds) -lt 3)
+    return ([math]::Abs(($started - $want).TotalSeconds) -lt 3)
 }
 
 function Get-ProcessStartIso {
     param([int]$ProcessId)
-    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($p) { return $p.StartTime.ToUniversalTime().ToString('o') }
-    return $null
+    $u = Get-ProcessStartUtc $ProcessId
+    if ($null -eq $u) { return $null }
+    return $u.ToString('o')
 }
 
 # Descendants of a process, by parent id, with creation times so a reused pid is never mistaken for ours.

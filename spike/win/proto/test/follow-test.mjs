@@ -120,6 +120,27 @@ await sleep(1200);
 assert.equal(upCalls, ups, "no automatic retry after a failure");
 console.log("9 failed screen, no retry loop");
 
+// 9b. the record still names the dead listener: the move gives up once, then is skipped (no looping 30 s polls, no repeated banner)
+const timeouts = () => events.filter((x) => x[1] === "follow-move-timeout").length;
+for (let i = 0; i < 80 && timeouts() < 1; i++) await sleep(100);
+assert.equal(timeouts(), 1, "first move gave up");
+await sleep(timing.moveWaitMs + 1000);
+assert.equal(timeouts(), 1, "a given-up target is not polled again");
+console.log("9b given-up target skipped");
+
+// 9c. a Start press during a running move is not lost: it runs next
+const dead = await listener(tok(6)); await dead.close();
+record(dead); // a new, never-answering target: a move starts and runs for moveWaitMs
+await sleep(500);
+const g = await listener(tok(7));
+nextUp = async () => { record(g); return { ok: true, url: urlOf(g) }; };
+const upsBefore = upCalls;
+await f.startFromScreen(); // returns at once: the move runs
+await sleep(timing.moveWaitMs + 1500);
+assert.equal(upCalls, upsBefore + 1, "the Start press ran after the move");
+assert.equal(loads().at(-1), urlOf(g));
+console.log("9c Start during a move: ran next");
+
 // 10. the log never holds a token
 for (const ev of events) if (ev[0] === "log") assert.ok(!/[0-9a-f]{32}/.test(String(ev[2] ?? "")), "token in log: " + ev[2]);
 console.log("10 no token in follower logs");

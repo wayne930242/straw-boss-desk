@@ -127,6 +127,8 @@ if ($prev -and $prev.serverPid -and (Test-ProcessAlive -ProcessId ([int]$prev.se
     $server = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
     $serverPid = $server.Id
     $serverStart = Get-ProcessStartIso $serverPid
+    # Record at once: a quit during the start (the app waits, then runs stop.ps1) must find this herdr, not report "nothing recorded".
+    Write-JsonFile $startFile ([ordered]@{ serverPid = $serverPid; serverStart = $serverStart; startedAt = (Get-Date).ToUniversalTime().ToString('o'); herdrReused = $false; socket = $env:HERDR_SOCKET_PATH; fingerprint = $fingerprint })
     $up = $false
     for ($i = 0; $i -lt $ServerTimeoutSec * 2; $i++) {
         Start-Sleep -Milliseconds 500
@@ -135,7 +137,7 @@ if ($prev -and $prev.serverPid -and (Test-ProcessAlive -ProcessId ([int]$prev.se
     }
     if (-not $up) {
         Write-Log 'start' 'fail' @{ detail = 'herdr server did not answer'; exited = $server.HasExited }
-        if (-not $server.HasExited) { [void](Stop-ProcessTree -ProcessId $serverPid) }
+        if (-not $server.HasExited) { [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $serverStart) }
         exit 4
     }
     $state['serverPid'] = $serverPid
@@ -236,6 +238,18 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
                 # A record that serves another socket is a broken install and is shown; a silent herdr gets one more look.
                 if (([string]$u.Err.reason) -notmatch 'serves') {
                     for ($i = 0; $i -lt 30 -and -not $retry; $i++) { if (Test-HerdrAnswers 10) { $retry = $true } else { Start-Sleep -Milliseconds 500 } }
+                    if (-not $retry -and -not $state['herdrReused']) {
+                        # Still silent: restart the herdr this script started, once (plan table), and record the new one.
+                        [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $serverStart)
+                        $server = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
+                        $serverPid = $server.Id
+                        $serverStart = Get-ProcessStartIso $serverPid
+                        $state['serverPid'] = $serverPid
+                        $state['serverStart'] = $serverStart
+                        Write-JsonFile $startFile $state
+                        Write-Log 'start' 'herdr-restarted' @{ serverPid = $serverPid }
+                        for ($i = 0; $i -lt $ServerTimeoutSec * 2 -and -not $retry; $i++) { if (Test-HerdrAnswers 10) { $retry = $true } else { Start-Sleep -Milliseconds 500 } }
+                    }
                 }
             }
             'version' {

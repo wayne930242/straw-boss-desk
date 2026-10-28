@@ -282,3 +282,7 @@ Where pi-straw-boss exposes nothing, the kit uses the thinnest workaround and li
 - The kit location defaults to `%USERPROFILE%\sbd-kit` and can be overridden with `--kit-dir=`, `SBD_KIT_DIR`, or the same `config.json`.
 - The prototype uses `safeStorage.encryptStringAsync` and `decryptStringAsync`; the synchronous calls are deprecated in Electron 45.
 - electron-updater verifies the publisher signature only when the build names a publisher; these builds do not, so unsigned updates are accepted.
+
+## Known limit: recovery waits behind the tower step
+
+The app serializes start runs. After a `gone` (server dead), the recovery `up` waits until the previous start.ps1 run has finished, including its tower step, which can take minutes on a first run. The window shows "Starting the stack..." meanwhile. Not fixed in this change set.

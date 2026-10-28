@@ -23,7 +23,15 @@ herdr_pid="$(slurp "$run/herdr.pid")"; herdr_start="$(slurp "$run/herdr.start")"
 sb_pid="$(slurp "$run/sb.pid")"; sb_start="$(slurp "$run/sb.start")"
 [ -n "$herdr_pid$sb_pid" ] || { echo "nothing recorded; nothing to stop"; exit 0; }
 # The server may have restarted since 03-up.sh recorded it (a restart, an upgrade, a crash and a new start): the record in its own folder names the one that runs now.
-cur="$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).pid || ""); } catch { console.log(""); }' "$PI_CODING_AGENT_DIR/straw-boss/server.json")"
+# Adopted only as live evidence: the record has `started`, is not `stopped:true`, and the process holds that start time (a pid alone proves nothing: it may be reused).
+rec="$PI_CODING_AGENT_DIR/straw-boss/server.json"
+cur="$(node -e 'try { const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); if (r.pid && r.started && r.stopped !== true) console.log(r.pid + " " + r.started); } catch {}' "$rec")"
+if [ -n "$cur" ]; then
+  rec_started="${cur#* }"; cur="${cur%% *}"
+  now_started="$(proc_start "$cur")"
+  same="$(node -e 'const a = Date.parse(process.argv[1]), b = Date.parse(process.argv[2]); console.log(Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 3000 ? 1 : 0)' "$rec_started" "$now_started")"
+  [ "$same" = 1 ] || cur=""
+fi
 if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ] && proc_alive "$cur"; then sb_pid="$cur"; sb_start="$(proc_start "$cur")"; fi
 
 # Runs a command for at most N seconds; 124 when it had to be killed.
@@ -94,7 +102,15 @@ if [ -s "$bpf" ]; then
   bp="$(tr -d '[:space:]' < "$bpf")"
   case "$bp" in
     ''|*[!0-9]*) ;;
-    *) if [ "$(basename "$(ps -o comm= -p "$bp" 2>/dev/null || true)")" = node ]; then kill "$bp" 2>/dev/null || true; left="$left $bp(intercom-broker)"; sleep 1; fi;;
+    *)
+      # Only a node process that runs pi-intercom's broker, with the spike root in its command line or cwd: a stale broker.pid whose pid the author's own pi now holds
+      # is not ours. The command line is matched in place and never printed or logged.
+      if [ "$(basename "$(ps -o comm= -p "$bp" 2>/dev/null || true)")" = node ] \
+        && ps -o args= -p "$bp" 2>/dev/null | grep -q 'pi-intercom' \
+        && ps -o args= -p "$bp" 2>/dev/null | grep -q 'broker' \
+        && { ps -o args= -p "$bp" 2>/dev/null | grep -qF -- "$SPIKE" || lsof -a -p "$bp" -d cwd -Fn 2>/dev/null | grep -qF -- "n$SPIKE"; }; then
+        kill "$bp" 2>/dev/null || true; left="$left $bp(intercom-broker)"; sleep 1
+      fi;;
   esac
 fi
 if [ -n "$left" ]; then say "force-killed:$left"; fi
