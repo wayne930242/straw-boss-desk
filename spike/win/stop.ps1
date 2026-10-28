@@ -47,7 +47,7 @@ if ($s.sbServerPid) { $sbPid = [int]$s.sbServerPid; $sbStart = $s.sbServerStart 
 # Adopted only when the record is live evidence: it has `started`, is not `stopped:true`, and the process holds that start time (a pid alone proves nothing).
 if ($s.sbServerRecord) {
     $cur = Read-JsonFile ([string]$s.sbServerRecord)
-    if ($cur -and $cur.pid -and $cur.started -and ($cur.stopped -ne $true) -and ([int]$cur.pid -ne $sbPid) -and (Test-ProcessAlive -ProcessId ([int]$cur.pid) -StartTime $cur.started)) {
+    if ($cur -and $cur.pid -and $cur.started -and ($cur.stopped -ne $true) -and (([int]$cur.pid -ne $sbPid) -or -not $sbStart) -and (Test-ProcessAlive -ProcessId ([int]$cur.pid) -StartTime $cur.started)) {
         $sbPid = [int]$cur.pid
         $sbStart = $cur.started
         Write-Log 'stop' 'sb-server-moved' @{ pid = $sbPid; detail = 'the running sb server is not the one start.ps1 recorded' }

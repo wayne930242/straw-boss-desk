@@ -29,10 +29,12 @@ cur="$(node -e 'try { const r = JSON.parse(require("fs").readFileSync(process.ar
 if [ -n "$cur" ]; then
   rec_started="${cur#* }"; cur="${cur%% *}"
   # The server writes `started` as the raw `TZ=UTC LC_ALL=C ps -o lstart=` text (no zone): compare the trimmed strings exactly, in that same zone.
+  # The local start is read before the UTC compare; a pid reused between the two reads fails the compare.
+  cur_local="$(proc_start "$cur")"
   now_started="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$cur" 2>/dev/null | sed 's/^ *//;s/ *$//')"
-  [ -n "$now_started" ] && [ "$now_started" = "$rec_started" ] || cur=""
+  [ -n "$cur_local" ] && [ -n "$now_started" ] && [ "$now_started" = "$rec_started" ] || cur=""
 fi
-if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ] && proc_alive "$cur" "$(proc_start "$cur")"; then sb_pid="$cur"; sb_start="$(proc_start "$cur")"; fi
+if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ]; then sb_pid="$cur"; sb_start="$cur_local"; fi
 
 # Runs a command for at most N seconds; 124 when it had to be killed.
 bounded() {
@@ -105,11 +107,12 @@ if [ -s "$bpf" ]; then
     *)
       # Only a node process that runs pi-intercom's broker, with the spike root in its command line or cwd: a stale broker.pid whose pid the author's own pi now holds
       # is not ours. The command line is matched in place and never printed or logged.
-      if [ "$(basename "$(ps -o comm= -p "$bp" 2>/dev/null || true)")" = node ] \
+      bs="$(proc_start "$bp")"
+      if [ -n "$bs" ] && [ "$(basename "$(ps -o comm= -p "$bp" 2>/dev/null || true)")" = node ] \
         && ps -o args= -p "$bp" 2>/dev/null | grep -q 'pi-intercom' \
         && ps -o args= -p "$bp" 2>/dev/null | grep -q 'broker' \
         && { ps -o args= -p "$bp" 2>/dev/null | grep -qF -- "$SPIKE/" || lsof -a -p "$bp" -d cwd -Fn 2>/dev/null | grep -qE -- "^n$(printf %s "$SPIKE" | sed 's/[][\.*^$(){}?+|/]/\\&/g')(/.*)?$"; }; then
-        kill "$bp" 2>/dev/null || true; left="$left $bp(intercom-broker)"; sleep 1
+        if proc_alive "$bp" "$bs"; then kill "$bp" 2>/dev/null || true; fi; left="$left $bp(intercom-broker)"; sleep 1
       fi;;
   esac
 fi
@@ -118,6 +121,8 @@ if [ -n "$left" ]; then say "force-killed:$left"; fi
 still=""
 if [ -n "$sb_pid" ] && proc_alive "$sb_pid" "$sb_start"; then still="$still $sb_pid(sb-server)"; fi
 if [ -n "$herdr_pid" ] && proc_alive "$herdr_pid" "$herdr_start"; then still="$still $herdr_pid(herdr)"; fi
+# A recorded pid with no start time was never stopped (proc_alive treats it as not ours): say so instead of "stopped" when something answers at that pid.
+if [ -n "$herdr_pid" ] && [ -z "$herdr_start" ] && kill -0 "$herdr_pid" 2>/dev/null; then still="$still $herdr_pid(herdr, no recorded start time; not touched)"; fi
 for p in $(leftovers); do still="$still $p"; done
 if [ -z "$still" ]; then
   if [ -n "$herdr_pid" ]; then rm -f "$HERDR_SOCKET_PATH"; fi

@@ -12,6 +12,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/_proc.sh"
 [ -n "$SPIKE" ] && [ "$HOME" = "$SPIKE/home" ] || exit 1
 for f in herdr sb electron; do
+  if [ -s "$SPIKE/run/$f.pid" ] && [ ! -s "$SPIKE/run/$f.start" ] && kill -0 "$(cat "$SPIKE/run/$f.pid")" 2>/dev/null; then echo "$f has a recorded pid $(cat "$SPIKE/run/$f.pid") but no start time, and that pid answers; check it by hand"; exit 1; fi
   if [ -s "$SPIKE/run/$f.pid" ] && proc_alive "$(cat "$SPIKE/run/$f.pid")" "$(cat "$SPIKE/run/$f.start" 2>/dev/null || true)"; then echo "$f is still running (pid $(cat "$SPIKE/run/$f.pid")); stop it first"; exit 1; fi
 done
 find "${SPIKE:?}/run" -mindepth 1 -not -name stub.pid -delete

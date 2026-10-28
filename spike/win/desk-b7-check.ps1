@@ -290,7 +290,7 @@ if (Test-Item 'A3') {
                 # b: kill the sb server (a pi session's look may start another within about 6 s; otherwise the follower's gone rule runs up)
                 $recNow = Read-JsonFile (Join-Path $sbDir 'server.json')
                 $before = Read-GuiRecord
-                Stop-Process -Id ([int]$recNow.pid) -Force -ErrorAction SilentlyContinue
+                [void](Stop-ProcessTree -ProcessId ([int]$recNow.pid) -StartTime $recNow.started)
                 $tWindow = $null
                 for ($i = 0; $i -lt 360 -and -not $tWindow; $i++) {
                     Start-Sleep -Milliseconds 250
@@ -408,7 +408,7 @@ if (Test-Sub 'b') {
     $u = Get-NodeJson @($sbCli, 'up', '--timeout', '1', '--exact') 60
     Add-Step 'A5.up-timeout-1' $(if ($u.Exit -eq 1 -and ($u.Err.wait -eq 'start' -or $u.Err.step -eq 'gui' -or $u.Err.step -eq 'server')) { 'PASS' } else { 'FAIL' }) "up --timeout 1: exit $($u.Exit), step '$($u.Err.step)', wait '$($u.Err.wait)' (expected 1, wait start)"
     [void](Get-NodeJson @($sbCli, 'stop') 150)
-    Stop-Process -Id $h.Id -Force -ErrorAction SilentlyContinue
+    try { if (-not $h.HasExited) { $h.Kill() } } catch { }
     [void](Invoke-Kit 'stop.ps1' @() 300)
 }
 
@@ -421,11 +421,11 @@ if (Test-Sub 'c') {
     $holder = Start-Process -FilePath $psExe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 120' -WindowStyle Hidden -PassThru
     $lockBody = (@{ pid = $holder.Id; by = 'desk-b7-check'; since = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress)
     Write-AllTextUtf8 $lockFile $lockBody
-    $rel = Start-Job -ScriptBlock { param($p, $pidToStop) Start-Sleep -Seconds 24; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue } -ArgumentList $lockFile, $holder.Id
+    $rel = Start-Job -ScriptBlock { param($p, $pidToStop) Start-Sleep -Seconds 24; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } -ArgumentList $lockFile
     $since = Get-Date
     $r = Invoke-Kit 'start.ps1' @('-NoTower', '-UpTimeoutSec', '20')
     Wait-Job $rel -Timeout 30 | Out-Null; Remove-Job $rel -Force -ErrorAction SilentlyContinue
-    Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+    try { if (-not $holder.HasExited) { $holder.Kill() } } catch { }
     $retry = @(Get-StartEvents $since | Where-Object { $_.event -eq 'up-attempt-failed' -and $_.class -eq 'lock' })
     Add-Step 'A5.lock-then-retry' $(if ($r.Exit -eq 0 -and $retry.Count -ge 1) { 'PASS' } else { 'FAIL' }) "start.ps1 exit $($r.Exit); up-attempt-failed class lock: $($retry.Count) (expected the lock failure, then success on the retry)"
     [void](Invoke-Kit 'stop.ps1' @() 300)
