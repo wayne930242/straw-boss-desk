@@ -25,6 +25,9 @@ param(
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
+# The app reads this script's stdout as UTF-8. A piped Windows console writes the OEM code page, which turned the profile's non-ASCII folder name in SB_DIR
+# into U+FFFD (VM 2026-10-28) and left the app's follower unable to open the slot folder.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $script:LogFile = Join-Path $LogDir 'start.jsonl'
 Set-SbdEnv
 $t = Get-ToolPaths
@@ -132,7 +135,7 @@ if ($prev -and $prev.serverPid -and (Test-ProcessAlive -ProcessId ([int]$prev.se
     }
     if (-not $up) {
         Write-Log 'start' 'fail' @{ detail = 'herdr server did not answer'; exited = $server.HasExited }
-        if (-not $server.HasExited) { & taskkill.exe /PID $serverPid /T /F | Out-Null }
+        if (-not $server.HasExited) { [void](Stop-ProcessTree -ProcessId $serverPid) }
         exit 4
     }
     $state['serverPid'] = $serverPid
@@ -209,7 +212,7 @@ function Invoke-PackageRepair {
     if ($Code -eq 'intercom') { $pkg = 'pkg:pi-intercom' }
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $r = Invoke-Native -File $psExe -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $KitDir 'bootstrap.ps1'), '-Only', $pkg, '-Force') -TimeoutSec 1800
-    Write-Log 'start' 'repair' @{ code = $Code; stage = $pkg; exit = $r.ExitCode; ms = $r.Ms; detail = (Get-FirstLine $r.StdOut) }
+    Write-Log 'start' 'repair' @{ code = $Code; package = $pkg; exit = $r.ExitCode; ms = $r.Ms; detail = (Get-FirstLine $r.StdOut) }
     return ($r.ExitCode -eq 0)
 }
 

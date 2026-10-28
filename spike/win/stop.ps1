@@ -15,6 +15,9 @@
   Exit codes: 0 stopped (or nothing recorded); 1 a recorded process still runs.
 #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
+# The app reads this script's stdout as UTF-8. A piped Windows console writes the OEM code page, which turned the profile's non-ASCII folder name in SB_DIR
+# into U+FFFD (VM 2026-10-28) and left the app's follower unable to open the slot folder.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $script:LogFile = Join-Path $LogDir 'start.jsonl'
 Set-SbdEnv
 $t = Get-ToolPaths
@@ -79,7 +82,7 @@ if ($sbPid -gt 0) {
 $left = @()
 $still = @()
 if ($killSb -and $sbPid -gt 0 -and $sbStart -and (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) {
-    & taskkill.exe /PID $sbPid /T /F 2>&1 | Out-Null
+    [void](Stop-ProcessTree -ProcessId $sbPid)
     $left += "$sbPid sb-server"
     Start-Sleep -Milliseconds 500
 }
@@ -99,12 +102,12 @@ if ($alive -and (Test-Path -LiteralPath $t.HerdrExe)) {
 foreach ($k in $known) {
     if (-not $k -or -not $k.Pid) { continue }
     if (Test-ProcessAlive -ProcessId ([int]$k.Pid) -StartTime $k.Created) {
-        & taskkill.exe /PID $k.Pid /T /F 2>&1 | Out-Null
+        [void](Stop-ProcessTree -ProcessId $k.Pid)
         $left += "$($k.Pid) $($k.Name)"
     }
 }
 if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
-    & taskkill.exe /PID $serverPid /T /F 2>&1 | Out-Null
+    [void](Stop-ProcessTree -ProcessId $serverPid)
     $left += "$serverPid herdr(server)"
 }
 # pi-intercom's broker is detached from the pi that spawned it and outlives the stack, keeping that pi's environment;
@@ -115,7 +118,7 @@ if (Test-Path -LiteralPath $brokerPidFile) {
     [void][int]::TryParse((Get-Content -LiteralPath $brokerPidFile -Raw).Trim(), [ref]$brokerPid)
     $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
     if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker') {
-        & taskkill.exe /PID $brokerPid /T /F 2>&1 | Out-Null
+        [void](Stop-ProcessTree -ProcessId $brokerPid)
         $left += "$brokerPid intercom-broker"
     }
 }

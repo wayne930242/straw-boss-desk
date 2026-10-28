@@ -18,7 +18,7 @@ All paths are relative to `spike/win/` in the repository.
 | `bootstrap.ps1` | Node, PortableGit, herdr, pi, ttt, playwriter, team profile, 13 pi packages. No admin. Resumable |
 | `start.ps1` / `stop.ps1` | Headless herdr server, the sb server and its GUI (`cli.mjs up`), then a tower pi; stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
-| `desk-b7-check.ps1` | Desk B7 acceptance A0 to A5 (docs/specs/2026-10-28-desk-b7.md). **Draft, not yet run** |
+| `desk-b7-check.ps1` | Desk B7 acceptance A0 to A5 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
 | `lib\gui-client.mjs`, `lib\cdp-eval.mjs` | Test clients: the GUI's HTTP surface (takes `SB_DIR`, a `gui.json`, or `auto`); a window read over CDP (token-free output) |
@@ -88,6 +88,7 @@ ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-ki
 
 Expected lines: `GUI_URL=http://127.0.0.1:<port>/<token>/` and `SB_DIR=<slot folder>`, printed as soon as the sb server's GUI answers (the 0.46.0 pass measured `up` alone at 22 to 37 ms for the GUI step), then possibly `NOTICE=<text>` lines.
 The URL holds the page token: it is printed there only, never logged, and `start.json` does not keep it.
+Both scripts write their stdout as UTF-8 (`[Console]::OutputEncoding`); a piped Windows console writes the OEM code page, which turned the profile's non-ASCII folder name in `SB_DIR` into U+FFFD, and the app's follower then could not open the slot folder. A reader must decode UTF-8 (`Get-Content -Encoding UTF8` for a redirected file).
 `start.ps1` runs in this order (desk B7 plan, **Start order, now (0.46.0)**):
 
 1. `herdr server` with the kit's private socket and config. It is started through ShellExecute (no `-RedirectStandard*`), so it inherits none of the caller's pipes. A recorded herdr server is reused only when its pid and start time match **and** `start.json` records the same environment fingerprint (`desk`, socket, `XDG_CONFIG_HOME`, agent dir); another fingerprint, or a herdr that answers without a record, stops the start with exit 3 (run `stop.ps1`).

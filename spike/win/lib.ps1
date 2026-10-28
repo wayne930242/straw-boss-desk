@@ -125,6 +125,14 @@ function Invoke-Native {
     [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $outTask.Result; StdErr = $errTask.Result; Ms = [int]$sw.ElapsedMilliseconds; TimedOut = $timedOut; Started = $true }
 }
 
+# taskkill /T /F by pid. Never throws: under $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 turns a native command's stderr text ("Access is denied",
+# "process not found") into a terminating error even through 2>&1 | Out-Null, which aborted stop.ps1 half way (VM 2026-10-28).
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+    $r = Invoke-Native -File (Join-Path $env:SystemRoot 'System32\taskkill.exe') -ArgList @('/PID', [string]$ProcessId, '/T', '/F') -TimeoutSec 30
+    return ($r.ExitCode -eq 0)
+}
+
 # Filesystem trouble that Defender, long paths, or locked files cause during installs.
 function Get-FsErrors {
     param([string]$Text)
@@ -283,15 +291,22 @@ function Get-ProcessStartIso {
 }
 
 # Descendants of a process, by parent id, with creation times so a reused pid is never mistaken for ours.
+# A child that was created BEFORE its "parent" is not a child: Windows reuses pids, and csrss, winlogon, fontdrvhost and dwm of an old session still name
+# the (long dead) session manager's pid as their parent (VM 2026-10-28: a herdr server got that pid, and stop.ps1 would have taskkill-ed them).
 function Get-ProcessTree {
     param([int]$RootPid)
     $all = @(Get-CimInstance Win32_Process)
+    $created = @{}
+    foreach ($p in $all) { $created[[int]$p.ProcessId] = $p.CreationDate }
     $found = @()
     $queue = New-Object System.Collections.Queue
     $queue.Enqueue($RootPid)
     while ($queue.Count -gt 0) {
         $id = $queue.Dequeue()
+        $parentCreated = $created[$id]
         foreach ($c in ($all | Where-Object { $_.ParentProcessId -eq $id })) {
+            if ($null -eq $parentCreated -or $null -eq $c.CreationDate -or $c.CreationDate -lt $parentCreated) { continue }
+            if ([int]$c.ProcessId -eq $id) { continue }
             $found += [pscustomobject]@{ Pid = [int]$c.ProcessId; Name = $c.Name; Created = $c.CreationDate.ToUniversalTime().ToString('o') }
             $queue.Enqueue([int]$c.ProcessId)
         }
