@@ -38,7 +38,8 @@ mkdirSync(resultDir, { recursive: true });
 function log(event: string, data: Record<string, unknown> = {}) {
 	const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
 	appendFileSync(logFile, line + "\n");
-	win?.webContents.send("sbd:log", `[${event}] ${data.detail ?? ""}`);
+	// The window is gone while a quit runs the stop sequence; a throw here would leave the quit waiting forever.
+	if (win && !win.isDestroyed()) win.webContents.send("sbd:log", `[${event}] ${data.detail ?? ""}`);
 }
 const saveResult = (name: string, o: unknown) => writeFileSync(join(resultDir, name), JSON.stringify(o, null, 2));
 const stamp = () => new Date().toISOString().replace(/[:.]/g, "-");
@@ -53,7 +54,7 @@ let startChild: ChildProcess | undefined;
 // The previous start.ps1 run, whole: a second one (the follower's) never overlaps it, so the first run's tower step and the next run's `up` do not race.
 let kitBusy: Promise<unknown> = Promise.resolve();
 
-const state = (text: string) => win?.webContents.send("sbd:state", text);
+const state = (text: string) => { if (win && !win.isDestroyed()) win.webContents.send("sbd:state", text); };
 const ps = (script: string, args: string[] = []) => ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(config.kitDir, script), ...args];
 const hide = (text: string) => text.replace(/(127\.0\.0\.1:\d+\/)[0-9a-f]{16,}/gi, "$1<token>");
 
@@ -102,8 +103,14 @@ async function runStart(args: string[]): Promise<KitRun> {
 			settled = true;
 			resolve({ url, dir: dir || undefined, closed });
 		};
-		const eat = (chunk: Buffer) => {
-			for (const line of chunk.toString("utf8").split(/\r?\n/)) {
+		// start.ps1 writes UTF-8; a decoder per stream keeps a multi-byte character (the profile folder's name) whole across chunks,
+		// and a line is used only once its newline has arrived.
+		const pending = { stdout: "", stderr: "" };
+		const eat = (which: "stdout" | "stderr") => (chunk: string) => {
+			pending[which] += chunk;
+			const lines = pending[which].split(/\r?\n/);
+			pending[which] = lines.pop() ?? "";
+			for (const line of lines) {
 				if (!line.trim()) continue;
 				out += line + "\n";
 				const m = /^(GUI_URL|SB_DIR|NOTICE)=(.*)$/.exec(line.trim());
@@ -116,8 +123,10 @@ async function runStart(args: string[]): Promise<KitRun> {
 				finish();
 			}
 		};
-		child.stdout.on("data", eat);
-		child.stderr.on("data", eat);
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", eat("stdout"));
+		child.stderr.on("data", eat("stderr"));
 		child.on("error", (e) => { if (!settled) { settled = true; reject(new StartFailure(null, String(e))); } });
 	});
 }
@@ -170,7 +179,7 @@ function banner(text: string | undefined) {
 }
 
 async function showScreen(screen: Screen) {
-	if (!win) return;
+	if (!win || win.isDestroyed()) return;
 	banner(undefined);
 	await win.loadFile(join(__dirname, "..", "src", "status.html"));
 	win.webContents.send("sbd:screen", screen);
@@ -345,11 +354,15 @@ async function main() {
 
 // Quitting waits for the stop sequence (cli.mjs stop alone may take 120 s on Windows), then exits; a crash of this app leaves the stack running, and the next launch reuses it.
 app.on("before-quit", (event) => {
-	if (quitting || !kitStarted) return;
+	if (!quitting && !kitStarted) return;
+	// Another quit request while the stop sequence runs (a second close, the system) must not let the quit through.
 	event.preventDefault();
+	if (quitting) return;
 	quitting = true;
 	follower?.stop();
-	void stopStack().finally(() => app.exit(0));
+	void stopStack().finally(() => { log("exit", { detail: "app.exit(0)" }); app.exit(0); });
 });
+process.on("uncaughtException", (e) => log("uncaught", { detail: String(e?.stack ?? e) }));
+process.on("unhandledRejection", (e) => log("unhandled-rejection", { detail: String((e as Error)?.stack ?? e) }));
 app.on("window-all-closed", () => app.quit());
 void app.whenReady().then(main);
