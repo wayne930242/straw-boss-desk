@@ -145,6 +145,24 @@ console.log("9c Start during a move: ran next");
 for (const ev of events) if (ev[0] === "log") assert.ok(!/[0-9a-f]{32}/.test(String(ev[2] ?? "")), "token in log: " + ev[2]);
 console.log("10 no token in follower logs");
 
+// 11. stop() during a run: a queued Start press and the extra tick do not start another up
+{
+	let ups2 = 0, release;
+	const host2 = { ...host, runUp: async () => { ups2++; await new Promise((r) => { release = r; }); return { ok: false, code: 1, text: "x" }; } };
+	const f2 = new Follower(dir, host2, urlOf(dead), timing);
+	const first = f2.startFromScreen();
+	await sleep(50);
+	void f2.startFromScreen(); // queued behind the run (pendingStart + again)
+	f2.stop();
+	release();
+	await first;
+	await sleep(300);
+	assert.equal(ups2, 1, "no up after stop(), got " + ups2);
+	await f2.startFromScreen();
+	assert.equal(ups2, 1, "a stopped follower does not start");
+	console.log("11 stop() during a run: no further up");
+}
+
 assert.deepEqual(parseGuiUrl("http://127.0.0.1:1/zz/"), undefined);
 assert.deepEqual(parseGuiUrl("http://example.com:1/" + tok(1) + "/"), undefined);
 f.stop();

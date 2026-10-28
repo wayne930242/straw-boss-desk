@@ -83,6 +83,7 @@ export class Follower {
 	private again = false;
 	private giveUp = false; // a failed `up` is shown once; only the Start button tries again
 	private failedTarget: GuiTarget | undefined; // a target move() gave up on: skipped until the record names another one
+	private stopped = false; // stop() was called: no further tick, move or run starts, so a quit never overlaps a new start with the stop
 	private pendingStart = false; // the Start button was pressed while a run was going: the next exclusive run starts the stack
 	private timer: NodeJS.Timeout | undefined;
 	private watcher: FSWatcher | undefined;
@@ -111,6 +112,7 @@ export class Follower {
 	}
 
 	stop() {
+		this.stopped = true;
 		if (this.timer) clearInterval(this.timer);
 		this.watcher?.close();
 		this.timer = undefined;
@@ -131,6 +133,7 @@ export class Follower {
 
 	/** One thing at a time: a watch event during a move or an `up` run asks for one more tick afterwards. */
 	private async exclusive(work: () => Promise<void>) {
+		if (this.stopped) return;
 		if (this.running) { this.again = true; return; }
 		this.running = true;
 		try {
@@ -219,6 +222,7 @@ export class Follower {
 
 	/** gone: run `up` once, then load its URL; a failure shows the exit-code screen and waits for the Start button. */
 	private async bringUp(why: string) {
+		if (this.stopped) return;
 		this.note("Starting the stack...");
 		this.host.log("follow-up", { detail: why });
 		const r = await this.host.runUp();

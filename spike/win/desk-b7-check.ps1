@@ -53,7 +53,7 @@ function Invoke-Kit {
     $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
     $null = $cmd.Handle
     $exit = $null
-    if ($cmd.WaitForExit($TimeoutSec * 1000)) { $exit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
+    if ($cmd.WaitForExit($TimeoutSec * 1000)) { $exit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id -StartTime $cmd.StartTime) }
     $text = Get-Content -LiteralPath $out -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     # The parsed output keeps the GUI token in memory only; the file on disk is rewritten with the token hidden.
     if ($text) { try { Write-AllTextUtf8 -Path $out -Text (Hide-Token $text) } catch { } }

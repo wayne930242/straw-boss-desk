@@ -28,9 +28,9 @@ rec="$PI_CODING_AGENT_DIR/straw-boss/server.json"
 cur="$(node -e 'try { const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); if (r.pid && r.started && r.stopped !== true) console.log(r.pid + " " + r.started); } catch {}' "$rec")"
 if [ -n "$cur" ]; then
   rec_started="${cur#* }"; cur="${cur%% *}"
-  now_started="$(proc_start "$cur")"
-  same="$(node -e 'const a = Date.parse(process.argv[1]), b = Date.parse(process.argv[2]); console.log(Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 3000 ? 1 : 0)' "$rec_started" "$now_started")"
-  [ "$same" = 1 ] || cur=""
+  # The server writes `started` as the raw `TZ=UTC LC_ALL=C ps -o lstart=` text (no zone): compare the trimmed strings exactly, in that same zone.
+  now_started="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$cur" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+  [ -n "$now_started" ] && [ "$now_started" = "$rec_started" ] || cur=""
 fi
 if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ] && proc_alive "$cur"; then sb_pid="$cur"; sb_start="$(proc_start "$cur")"; fi
 
@@ -108,7 +108,7 @@ if [ -s "$bpf" ]; then
       if [ "$(basename "$(ps -o comm= -p "$bp" 2>/dev/null || true)")" = node ] \
         && ps -o args= -p "$bp" 2>/dev/null | grep -q 'pi-intercom' \
         && ps -o args= -p "$bp" 2>/dev/null | grep -q 'broker' \
-        && { ps -o args= -p "$bp" 2>/dev/null | grep -qF -- "$SPIKE" || lsof -a -p "$bp" -d cwd -Fn 2>/dev/null | grep -qF -- "n$SPIKE"; }; then
+        && { ps -o args= -p "$bp" 2>/dev/null | grep -qF -- "$SPIKE/" || lsof -a -p "$bp" -d cwd -Fn 2>/dev/null | grep -qE -- "^n$(printf %s "$SPIKE" | sed 's/[][\.*^$(){}?+|/]/\\&/g')(/.*)?$"; }; then
         kill "$bp" 2>/dev/null || true; left="$left $bp(intercom-broker)"; sleep 1
       fi;;
   esac

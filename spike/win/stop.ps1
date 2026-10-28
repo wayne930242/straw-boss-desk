@@ -26,7 +26,9 @@ $s = Read-JsonFile $startFile
 if (-not $s) { Write-Host 'nothing recorded; nothing to stop'; exit 0 }
 
 $serverPid = [int]$s.serverPid
-$alive = Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart
+# A record without a start time is not ours: nothing of it is touched.
+$serverStartOk = [bool]$s.serverStart
+$alive = $serverStartOk -and (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart)
 # Refresh the tree while the server is still up: panes opened after start (members) are ours too.
 $tree = @()
 if ($alive) { $tree = @(Get-ProcessTree $serverPid) }
@@ -76,7 +78,7 @@ if ((Test-Path -LiteralPath $sbCli) -and (Test-Path -LiteralPath $t.NodeExe)) {
 # 2. Wait for the server to leave; one that stays is killed by pid only while the recorded start time matches (a pid without a start time is never killed).
 if ($sbPid -gt 0) {
     for ($i = 0; $i -lt 20; $i++) {
-        if (-not (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) { break }
+        if (-not $sbStart -or -not (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) { break }
         Start-Sleep -Milliseconds 500
     }
 }
@@ -107,7 +109,7 @@ foreach ($k in $known) {
         $left += "$($k.Pid) $($k.Name)"
     }
 }
-if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
+if ($serverStartOk -and (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart)) {
     [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $s.serverStart)
     $left += "$serverPid herdr(server)"
 }
@@ -122,19 +124,21 @@ if (Test-Path -LiteralPath $brokerPidFile) {
     [void][int]::TryParse($brokerText.Trim(), [ref]$brokerPid)
     $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
     if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker' -and $bp.CommandLine.IndexOf($SbdRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        [void](Stop-ProcessTree -ProcessId $brokerPid)
+        $brokerStart = $null
+        try { if ($bp.CreationDate) { $brokerStart = $bp.CreationDate.ToUniversalTime() } } catch { }
+        [void](Stop-ProcessTree -ProcessId $brokerPid -StartTime $brokerStart)
         $left += "$brokerPid intercom-broker"
     }
 }
 Start-Sleep -Milliseconds 700
-if ($sbPid -gt 0 -and (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) { $still += "$sbPid sb-server" }
+if ($sbPid -gt 0 -and $sbStart -and (Test-ProcessAlive -ProcessId $sbPid -StartTime $sbStart)) { $still += "$sbPid sb-server" }
 foreach ($k in $known) { if ($k -and $k.Pid -and (Test-ProcessAlive -ProcessId ([int]$k.Pid) -StartTime $k.Created)) { $still += $k.Pid } }
-if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) { $still += $serverPid }
+if ($serverStartOk -and (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart)) { $still += $serverPid }
 
 # 5. gui.json, gui.lock and server.json are the sb server's and stay (server.json's gui.port is how the next start keeps the port).
 # Only herdr's own stale socket marker is cleared, and only once its server is gone.
 $sockPath = $s.socket
-if ($sockPath -and (Test-Path -LiteralPath $sockPath) -and -not (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart)) { Remove-Item -LiteralPath $sockPath -Force -ErrorAction SilentlyContinue }
+if ($sockPath -and (Test-Path -LiteralPath $sockPath) -and -not ($serverStartOk -and (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart))) { Remove-Item -LiteralPath $sockPath -Force -ErrorAction SilentlyContinue }
 if ($still.Count -eq 0) { Remove-Item -LiteralPath $startFile -Force -ErrorAction SilentlyContinue }
 Write-Log 'stop' 'end' @{ forceKilled = $left; stillRunning = $still }
 if ($still.Count -gt 0) { Write-Host "STILL RUNNING: $($still -join ', ')"; exit 1 }

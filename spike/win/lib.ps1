@@ -118,7 +118,7 @@ function Invoke-Native {
     $timedOut = $false
     if (-not $p.WaitForExit($TimeoutSec * 1000)) {
         $timedOut = $true
-        try { [void](Stop-ProcessTree -ProcessId $p.Id) } catch { }
+        try { $pStart = $null; try { $pStart = $p.StartTime } catch { }; [void](Stop-ProcessTree -ProcessId $p.Id -StartTime $pStart) } catch { }
     }
     $p.WaitForExit()
     $sw.Stop()
@@ -130,9 +130,9 @@ function Invoke-Native {
 # Never throws: under $ErrorActionPreference = 'Stop', a failing kill must not abort stop.ps1 half way (VM 2026-10-28).
 function Stop-ProcessTree {
     param([int]$ProcessId, $StartTime)
+    # A pid without a start time is never killed: it may have been reused.
     $rootStart = $StartTime
-    if ($null -eq $rootStart -or $rootStart -eq '') { $rootStart = Get-ProcessStartIso $ProcessId }
-    if ($null -eq $rootStart) { return $false }
+    if ($null -eq $rootStart -or $rootStart -eq '') { return $false }
     # The root first: a pid that no longer holds the process recorded for it (reused) is not ours, and neither are its children (VM 2026-10-28: they were killed).
     if (-not (Test-ProcessAlive -ProcessId $ProcessId -StartTime $rootStart)) { return $false }
     $victims = @()

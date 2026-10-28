@@ -74,7 +74,7 @@ function Ensure-Started {
     $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
     $null = $cmd.Handle
     $startExit = $null
-    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
+    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id -StartTime $cmd.StartTime) }
     $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
     if ($script:Ctx.StartOut) { try { Write-AllTextUtf8 -Path $startOut -Text (Hide-Token $script:Ctx.StartOut) } catch { } }
     if ($null -eq $startExit) { $script:Ctx.StartOut = 'start.ps1 timed out after 400 s. ' + $script:Ctx.StartOut }

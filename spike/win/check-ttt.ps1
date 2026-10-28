@@ -48,7 +48,7 @@ if (-not $initOk) {
     Write-Host 'Non-interactive init did not complete. Falling back to the interactive wizard; answer its questions.'
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process -FilePath $t.TttCmd -ArgumentList @('init', '-f') -WorkingDirectory $dir -NoNewWindow -PassThru
-    if (-not $p.WaitForExit(600000)) { [void](Stop-ProcessTree -ProcessId $p.Id) }
+    if (-not $p.WaitForExit(600000)) { [void](Stop-ProcessTree -ProcessId $p.Id -StartTime $p.StartTime) }
     $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($dir.Length + 1) })
     Add-Step 'init-interactive' $(if ($p.HasExited -and $p.ExitCode -eq 0 -and $files.Count -gt 0) { 'PASS' } else { 'FAIL' }) "files: $($files -join ', ')" $true ([int]$sw.ElapsedMilliseconds)
 }

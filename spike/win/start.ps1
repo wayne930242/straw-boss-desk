@@ -92,7 +92,7 @@ function Test-Fingerprint {
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $prev = Read-JsonFile $startFile
 $state = [ordered]@{}
-if ($prev -and $prev.serverPid -and (Test-ProcessAlive -ProcessId ([int]$prev.serverPid) -StartTime $prev.serverStart)) {
+if ($prev -and $prev.serverPid -and $prev.serverStart -and (Test-ProcessAlive -ProcessId ([int]$prev.serverPid) -StartTime $prev.serverStart)) {
     if (-not (Test-Fingerprint $prev)) {
         Write-Log 'start' 'fail' @{ detail = 'a herdr server from another start (older kit or another environment) is recorded and running; run stop.ps1 first' }
         exit 3
@@ -126,7 +126,13 @@ if ($prev -and $prev.serverPid -and (Test-ProcessAlive -ProcessId ([int]$prev.se
     # through ShellExecute, which inherits no handles.
     $server = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
     $serverPid = $server.Id
-    $serverStart = Get-ProcessStartIso $serverPid
+    # The start time comes from the held handle; without it the pid is never recorded (it could be reused later).
+    $serverStart = $null
+    try { if ($server.StartTime) { $serverStart = $server.StartTime.ToUniversalTime().ToString('o') } } catch { }
+    if (-not $serverStart) {
+        Write-Log 'start' 'fail' @{ detail = 'herdr exited'; exited = $server.HasExited }
+        exit 4
+    }
     # Record at once: a quit during the start (the app waits, then runs stop.ps1) must find this herdr, not report "nothing recorded".
     Write-JsonFile $startFile ([ordered]@{ serverPid = $serverPid; serverStart = $serverStart; startedAt = (Get-Date).ToUniversalTime().ToString('o'); herdrReused = $false; socket = $env:HERDR_SOCKET_PATH; fingerprint = $fingerprint })
     $up = $false
@@ -243,7 +249,12 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
                         [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $serverStart)
                         $server = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
                         $serverPid = $server.Id
-                        $serverStart = Get-ProcessStartIso $serverPid
+                        $serverStart = $null
+                        try { if ($server.StartTime) { $serverStart = $server.StartTime.ToUniversalTime().ToString('o') } } catch { }
+                        if (-not $serverStart) {
+                            Write-Log 'start' 'fail' @{ detail = 'herdr exited'; exited = $server.HasExited }
+                            exit 4
+                        }
                         $state['serverPid'] = $serverPid
                         $state['serverStart'] = $serverStart
                         Write-JsonFile $startFile $state

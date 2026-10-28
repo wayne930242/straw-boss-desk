@@ -81,6 +81,7 @@ interface KitRun { url: string; dir: string | undefined; closed: Promise<number 
 /** Runs start.ps1 and resolves as soon as it has printed GUI_URL= and SB_DIR=; the run goes on (its tower step) and `closed` settles at its end. */
 async function runStart(args: string[]): Promise<KitRun> {
 	await kitBusy;
+	if (quitting) throw new Error("the app is quitting; start.ps1 is not run");
 	const script = join(config.kitDir, "start.ps1");
 	if (!existsSync(script)) throw new StartFailure(null, `start.ps1 not found at ${script} (kit dir ${config.kitDir})`);
 	return new Promise<KitRun>((resolve, reject) => {
