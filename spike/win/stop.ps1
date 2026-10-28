@@ -116,7 +116,10 @@ if (Test-ProcessAlive -ProcessId $serverPid -StartTime $s.serverStart) {
 $brokerPidFile = Join-Path $AgentDir 'intercom\broker.pid'
 if (Test-Path -LiteralPath $brokerPidFile) {
     $brokerPid = 0
-    [void][int]::TryParse(([string](Get-Content -LiteralPath $brokerPidFile -Raw)).Trim(), [ref]$brokerPid)
+    # ReadAllText: Get-Content -Raw on an empty file outputs nothing, and [string] of nothing is $null in Windows PowerShell 5.1 (VM 2026-10-28).
+    $brokerText = ''
+    try { $brokerText = [IO.File]::ReadAllText($brokerPidFile) } catch { }
+    [void][int]::TryParse($brokerText.Trim(), [ref]$brokerPid)
     $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
     if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker' -and $bp.CommandLine.IndexOf($SbdRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         [void](Stop-ProcessTree -ProcessId $brokerPid)

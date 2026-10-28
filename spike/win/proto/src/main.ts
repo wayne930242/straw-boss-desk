@@ -39,13 +39,18 @@ function log(event: string, data: Record<string, unknown> = {}) {
 	// Electron's load errors and stack traces quote the URL: the token is hidden over the whole line.
 	const line = hide(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
 	appendFileSync(logFile, line + "\n");
-	// The window is gone while a quit runs the stop sequence; a throw here would leave the quit waiting forever.
-	if (win && !win.isDestroyed()) win.webContents.send("sbd:log", hide(`[${event}] ${data.detail ?? ""}`));
+	// The window is gone while a quit runs the stop sequence; a throw here would leave the quit waiting forever (and, from the error handlers, end the app).
+	const w = liveWin();
+	if (w) { try { w.webContents.send("sbd:log", hide(`[${event}] ${data.detail ?? ""}`)); } catch { /* closing */ } }
 }
 const saveResult = (name: string, o: unknown) => writeFileSync(join(resultDir, name), JSON.stringify(o, null, 2));
 const stamp = () => new Date().toISOString().replace(/[:.]/g, "-");
 
 let win: BrowserWindow | undefined;
+/** The window while it can still take a message: during a close `win.webContents` is destroyed before `win.isDestroyed()` turns true (VM 2026-10-28, quit right after gui-url). */
+function liveWin(): BrowserWindow | undefined {
+	try { return win && !win.isDestroyed() && !win.webContents.isDestroyed() ? win : undefined; } catch { return undefined; }
+}
 let config: Config;
 let guiUrl: string | undefined;
 let kitStarted = false;
@@ -55,7 +60,7 @@ let startChild: ChildProcess | undefined;
 // The previous start.ps1 run, whole: a second one (the follower's) never overlaps it, so the first run's tower step and the next run's `up` do not race.
 let kitBusy: Promise<unknown> = Promise.resolve();
 
-const state = (text: string) => { if (win && !win.isDestroyed()) win.webContents.send("sbd:state", text); };
+const state = (text: string) => { try { liveWin()?.webContents.send("sbd:state", text); } catch { /* closing */ } };
 const ps = (script: string, args: string[] = []) => ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(config.kitDir, script), ...args];
 const hide = (text: string) => text.replace(/(127\.0\.0\.1:\d+\/)[0-9a-f]{16,}/gi, "$1<token>");
 
@@ -170,7 +175,7 @@ const escapeHtml = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "
 
 /** A small notice over the top of the page (the shell's own, so the GUI page is not touched); undefined removes it. */
 function banner(text: string | undefined) {
-	if (!win || win.isDestroyed()) return;
+	if (!win || !liveWin()) return;
 	if (text === undefined) {
 		if (bannerView) { win.contentView.removeChildView(bannerView); bannerView.webContents.close(); bannerView = undefined; }
 		return;
@@ -186,14 +191,14 @@ function banner(text: string | undefined) {
 }
 
 async function showScreen(screen: Screen) {
-	if (!win || win.isDestroyed()) return;
+	if (!win || !liveWin()) return;
 	banner(undefined);
 	await win.loadFile(join(__dirname, "..", "src", "status.html"));
-	win.webContents.send("sbd:screen", screen);
+	liveWin()?.webContents.send("sbd:screen", screen);
 }
 
 async function showGui(url: string) {
-	if (!win) throw new Error("no window");
+	if (!win || !liveWin()) throw new Error("no window");
 	guiUrl = url;
 	await win.loadURL(url);
 	log("gui-loaded", { detail: hide(url) });

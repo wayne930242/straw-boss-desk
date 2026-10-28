@@ -133,6 +133,8 @@ function Stop-ProcessTree {
     $rootStart = $StartTime
     if ($null -eq $rootStart -or $rootStart -eq '') { $rootStart = Get-ProcessStartIso $ProcessId }
     if ($null -eq $rootStart) { return $false }
+    # The root first: a pid that no longer holds the process recorded for it (reused) is not ours, and neither are its children (VM 2026-10-28: they were killed).
+    if (-not (Test-ProcessAlive -ProcessId $ProcessId -StartTime $rootStart)) { return $false }
     $victims = @()
     try { $victims = @(Get-ProcessTree $ProcessId) } catch { }
     [array]::Reverse($victims)
