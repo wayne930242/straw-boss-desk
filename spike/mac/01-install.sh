@@ -35,7 +35,7 @@ install_packages() {
   pi install "npm:pi-intercom@$SBD_INTERCOM_VERSION"
   pi install "npm:pi-straw-boss@$SBD_STRAW_BOSS_VERSION"
 }
-# herdr config: no onboarding, update checks, or sounds; panes start non-login shells so PATH keeps the spike's dirs in front.
+# herdr config: no onboarding, update checks, or sounds; panes start non-login shells so PATH keeps the spike's dirs in front; agents resume after a restart.
 write_config() {
   cat > "$HERDR_CONFIG_PATH" <<'TOML'
 onboarding = false
@@ -46,6 +46,10 @@ shell_mode = "non_login"
 [update]
 version_check = false
 manifest_check = false
+
+# After a restart herdr restores the workspaces and resumes their pi panes, so the tower comes back with its role (as herdr did in the Windows VM passes).
+[session]
+resume_agents_on_restore = true
 
 [ui.sound]
 enabled = false
