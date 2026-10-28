@@ -72,7 +72,9 @@ check("M2.1d no up run by the follower on a plain restart", upCalls === 0, `up=$
 let rec;
 try { rec = JSON.parse(readFileSync(join(first.dir, "server.json"), "utf8")); } catch (e) { console.log(`FAIL M2.2 - cannot read server.json: ${String(e)}`); process.exit(1); }
 const before = loads.length, upBefore = upCalls, t2 = Date.now();
-process.kill(rec.pid, "SIGKILL");
+const lstart = spawnSync("ps", ["-o", "lstart=", "-p", String(rec.pid)], { encoding: "utf8", env: { ...process.env, TZ: "UTC", LC_ALL: "C" } }).stdout.trim();
+check("M2.2.pre the server still holds the recorded start time", lstart !== "" && lstart === rec.started, `pid ${rec.pid}`);
+if (lstart !== "" && lstart === rec.started) process.kill(rec.pid, "SIGKILL");
 const moved2 = await until(() => loads.length > before, 60_000);
 const url2 = loads[loads.length - 1]?.url;
 check("M2.2a follower followed the killed server", moved2 && url2 !== url1 && (await probe(url2)) === 200, `after ${moved2 ? loads[loads.length - 1].at - t2 : "-"} ms; follower ran up ${upCalls - upBefore}x (0 = a pi session restarted it; 1 = the gone rule did)`);

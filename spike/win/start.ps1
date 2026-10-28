@@ -249,12 +249,19 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
                     if (-not $retry -and -not $state['herdrReused']) {
                         # Still silent: restart the herdr this script started, once (plan table), and record the new one.
                         [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $serverStart)
+                        if (Test-ProcessAlive -ProcessId $serverPid -StartTime $serverStart) {
+                            # The old herdr survived: its record stays so stop.ps1 can still find it, and no second one is started.
+                            Write-Log 'start' 'fail' @{ detail = 'the herdr to restart did not stop' }
+                            exit 4
+                        }
                         $server = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
                         $serverPid = $server.Id
                         $serverStart = $null
                         try { if ($server.StartTime) { $serverStart = $server.StartTime.ToUniversalTime().ToString('o') } } catch { }
                         if (-not $serverStart) {
                             Write-Log 'start' 'fail' @{ detail = 'herdr exited'; exited = $server.HasExited }
+                            # Through the held handle: a herdr that is alive but has no readable start time must not stay behind unrecorded.
+                            try { if (-not $server.HasExited) { $server.Kill() } } catch { }
                             # The herdr recorded before this restart was stopped just above; no dead pid stays recorded.
                             Remove-Item -LiteralPath $startFile -Force -ErrorAction SilentlyContinue
                             exit 4
