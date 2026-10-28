@@ -74,8 +74,8 @@ function Ensure-Started {
     $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
     $null = $cmd.Handle
     $startExit = $null
-    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { & taskkill.exe /PID $cmd.Id /T /F 2>&1 | Out-Null }
-    $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -ErrorAction SilentlyContinue)
+    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
+    $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
     if ($null -eq $startExit) { $script:Ctx.StartOut = 'start.ps1 timed out after 400 s. ' + $script:Ctx.StartOut }
     $script:Ctx.Started = ($startExit -eq 0)
     return $script:Ctx.Started
@@ -299,6 +299,11 @@ Add-Check 'terminal-mirror-rows' {
     $arg = @{ waitMs = 25000 }
     if ($script:Ctx.BaseSession) { $arg['key'] = $script:Ctx.BaseSession }
     $r = Invoke-Gui 'mirror' $arg 60
+    # A base's pi that has only just started answers 409 not_live until the server sees its session in the pane (VM 2026-10-28, loaded host): look again.
+    for ($try = 1; $try -le 3 -and $r.Json -and ([string]$r.Json.problem) -match 'not_live'; $try++) {
+        Start-Sleep -Seconds 8
+        $r = Invoke-Gui 'mirror' $arg 60
+    }
     if (-not $r.Json) { return (Fail ("no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $ev = "mirror attach=$($j.attached.status) frames=$($j.frames) rows=$($j.rows) cols=$($j.cols) nonEmptyRows=$($j.nonEmptyRows) problem=$($j.problem) sample='$(@($j.sample) -join ' / ')'"

@@ -22,6 +22,8 @@ param(
     [int]$CdpPort = 9222
 )
 
+# With -File, `-Only A5a,A5b` arrives as one string.
+if ($Only) { $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ }) }
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
 Start-AccountCheck 'desk-b7'
 $t = Get-ToolPaths
@@ -34,6 +36,8 @@ $psExe = (Get-Command powershell.exe).Source
 if (-not $ProtoExe) { $ProtoExe = Join-Path $env:LOCALAPPDATA 'Programs\straw-boss-desk-proto\Straw Boss Desk Proto.exe' }
 
 function Test-Item { param([string]$Id) return ((-not $Only) -or ($Only -contains $Id)) }
+# A5 has five injections (A5a to A5e); -Only A5c runs just one (the repair, A5d, needs the network without WARP).
+function Test-Sub { param([string]$Sub) return ((-not $Only) -or ($Only -contains 'A5') -or ($Only -contains ('A5' + $Sub))) }
 
 # ---- helpers ----------------------------------------------------------------------------------------------------------
 
@@ -49,8 +53,8 @@ function Invoke-Kit {
     $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
     $null = $cmd.Handle
     $exit = $null
-    if ($cmd.WaitForExit($TimeoutSec * 1000)) { $exit = $cmd.ExitCode } else { & taskkill.exe /PID $cmd.Id /T /F 2>&1 | Out-Null }
-    $text = Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
+    if ($cmd.WaitForExit($TimeoutSec * 1000)) { $exit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id) }
+    $text = Get-Content -LiteralPath $out -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     [pscustomobject]@{ Exit = $exit; Out = [string]$text; Ms = [int]$sw.ElapsedMilliseconds }
 }
 
@@ -127,6 +131,15 @@ function Reset-KitState {
     if (Test-Path -LiteralPath $startFile) { Remove-Item -LiteralPath $startFile -Force -ErrorAction SilentlyContinue }
 }
 
+# Any node.exe or herdr.exe that runs from the kit's tools folder or names the kit root: the independent check (no start.json involved).
+function Get-KitProcesses {
+    $found = @()
+    foreach ($p in @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -or $_.Name -eq 'herdr.exe' })) {
+        if (($p.ExecutablePath -and $p.ExecutablePath.StartsWith($SbdRoot, [StringComparison]::OrdinalIgnoreCase)) -or ($p.CommandLine -and $p.CommandLine.IndexOf($SbdRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0)) { $found += "$($p.ProcessId) $($p.Name)" }
+    }
+    return $found
+}
+
 function Test-KitGone {
     param($Rec)
     $left = @()
@@ -160,6 +173,7 @@ function Test-OneStart {
 
 # ---- A0: the four variables reach a pane --------------------------------------------------------------------------------
 if (Test-Item 'A0') {
+    Reset-KitState
     $s = Test-OneStart 'A0'
     if ($s) {
         $out = Join-Path $env:PUBLIC 'sbd-pane-env.txt'   # an ASCII path: the text is typed into a pane's shell
@@ -225,8 +239,9 @@ if (Test-Item 'A2') {
         $ok2 = ($second.Exit -eq 0 -and (Get-UrlFromOut $second.Out) -and ($ev2 | Where-Object { $_.event -eq 'herdr-reused' }) -and ($ev2 | Where-Object { $_.event -eq 'tower-reused' }) -and $n -eq 1)
         Add-Step 'A2.second-start-reuses' $(if ($ok2) { 'PASS' } else { 'FAIL' }) "exit $($second.Exit); events: $(($ev2 | ForEach-Object { $_.event }) -join ','); sb_role=tower agents: $n"
         [void](Invoke-Kit 'stop.ps1' @() 300)
+        $since3 = Get-Date
         $third = Invoke-Kit 'start.ps1'
-        $ev3 = @(Get-StartEvents (Get-Date).AddSeconds(-($third.Ms / 1000) - 5) | Where-Object { $_.event -eq 'tower-reused' -or $_.event -eq 'workspace' })
+        $ev3 = @(Get-StartEvents $since3 | Where-Object { $_.event -eq 'tower-reused' -or $_.event -eq 'workspace' })
         $n3 = @(Get-TowerAgents).Count
         $ok3 = ($third.Exit -eq 0 -and ($ev3 | Where-Object { $_.event -eq 'tower-reused' }) -and -not ($ev3 | Where-Object { $_.event -eq 'workspace' }) -and $n3 -eq 1)
         Add-Step 'A2.restored-tower-reused' $(if ($ok3) { 'PASS' } else { 'FAIL' }) "stop then start: exit $($third.Exit); events: $(($ev3 | ForEach-Object { $_.event }) -join ','); sb_role=tower agents: $n3"
@@ -237,6 +252,7 @@ if (Test-Item 'A2') {
 if (Test-Item 'A3') {
     if (-not (Test-Path -LiteralPath $ProtoExe)) { Add-Step 'A3.prototype' 'SKIP' "prototype not installed at $ProtoExe" }
     else {
+        $passStart = Get-Date
         $s = Test-OneStart 'A3.stack'
         if ($s) {
             $protoLog = Join-Path $LogDir 'proto.jsonl'
@@ -306,12 +322,31 @@ if (Test-Item 'A3') {
                     }
                     Add-Step 'A3.start-button' $(if ($back) { 'PASS' } else { 'FAIL' }) $(if ($back) { 'Start brought the GUI back in the window' } else { 'the window did not return to a live GUI within 120 s' })
                 }
+                # Only the lines this pass wrote: the logs also hold older passes (the old kit logged the URL in start's 'end' line).
                 $leak = @()
                 foreach ($f in @($startJsonl, $protoLog)) {
-                    if (Test-Path -LiteralPath $f) { if ((Get-Content -LiteralPath $f -Raw -Encoding UTF8) -match '127\.0\.0\.1:\d+/[0-9a-f]{16,}') { $leak += (Split-Path -Leaf $f) } }
+                    if (-not (Test-Path -LiteralPath $f)) { continue }
+                    foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
+                        $ts = $null; try { $ts = ConvertTo-UtcInstant (($line | ConvertFrom-Json).ts) } catch { }
+                        if ($ts -and $ts -ge $passStart.ToUniversalTime() -and $line -match '127\.0\.0\.1:\d+/[0-9a-f]{16,}') { $leak += (Split-Path -Leaf $f); break }
+                    }
                 }
                 Add-Step 'A3.no-token-in-logs' $(if ($leak.Count -eq 0) { 'PASS' } else { 'FAIL' }) $(if ($leak.Count -eq 0) { 'no URL token in start.jsonl or proto.jsonl' } else { "a URL token is in: $($leak -join ', ')" })
             }
+            # d: closing the window quits the app; before-quit holds the quit until stop.ps1 has run, and nothing of the kit is left afterwards.
+            $recQuit = Read-JsonFile $startFile
+            $sinceQuit = Get-Date
+            $procs = @(Get-Process -Name 'Straw Boss Desk Proto' -ErrorAction SilentlyContinue)
+            foreach ($p in $procs) { [void]$p.CloseMainWindow() }
+            $swQuit = [Diagnostics.Stopwatch]::StartNew()
+            while ($swQuit.Elapsed.TotalSeconds -lt 240 -and @(Get-Process -Name 'Straw Boss Desk Proto' -ErrorAction SilentlyContinue).Count -gt 0) { Start-Sleep -Milliseconds 500 }
+            $exited = (@(Get-Process -Name 'Straw Boss Desk Proto' -ErrorAction SilentlyContinue).Count -eq 0)
+            $evQuit = @(Get-StartEvents $sinceQuit)
+            $stopEnd = $evQuit | Where-Object { $_.stage -eq 'stop' -and $_.event -eq 'end' } | Select-Object -First 1
+            $cliStop = $evQuit | Where-Object { $_.event -eq 'sb-server-stop' } | Select-Object -First 1
+            $leftQuit = @(Test-KitGone $recQuit)
+            $okQuit = ($procs.Count -gt 0 -and $exited -and $stopEnd -and $cliStop -and $cliStop.exit -eq 0 -and $leftQuit.Count -eq 0)
+            Add-Step 'A3.quit-stops-stack' $(if ($okQuit) { 'PASS' } else { 'FAIL' }) "windows closed: app exited=$exited after $([int]$swQuit.Elapsed.TotalSeconds) s; stop.ps1 ran=$([bool]$stopEnd); cli.mjs stop exit $($cliStop.exit) outcome '$($cliStop.outcome)'; kit processes left: $($leftQuit -join '; ')"
             Get-Process -Name 'Straw Boss Desk Proto' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         }
     }
@@ -333,6 +368,10 @@ if (Test-Item 'A4') {
         Add-Step 'A4.order' $(if ($order -and $cli.exit -eq 0 -and $cli.outcome -eq 'stopped') { 'PASS' } else { 'FAIL' }) "cli.mjs stop exit $($cli.exit) outcome '$($cli.outcome)' before herdr server stop: $order; stop.ps1 exit $($stop.Exit), last line '$lastLine'"
         $left = @(Test-KitGone $rec)
         Add-Step 'A4.no-leftovers' $(if ($left.Count -eq 0) { 'PASS' } else { 'FAIL' }) $(if ($left.Count -eq 0) { 'no recorded process of the kit is left (by pid and start time)' } else { "left: $($left -join '; ')" })
+        $any = @(Get-KitProcesses)
+        $sbRecPid = $null; $sbRec = Read-JsonFile (Join-Path $sbDir 'server.json'); if ($sbRec) { $sbRecPid = [int]$sbRec.pid }
+        $sbAlive = ($sbRecPid -and (Get-Process -Id $sbRecPid -ErrorAction SilentlyContinue))
+        Add-Step 'A4.no-kit-node-herdr' $(if ($any.Count -eq 0 -and -not $sbAlive) { 'PASS' } else { 'FAIL' }) $(if ($any.Count -eq 0 -and -not $sbAlive) { "no node.exe or herdr.exe runs from or names the kit root; server.json pid $sbRecPid is gone" } else { "left: $($any -join '; '); server.json pid $sbRecPid alive: $([bool]$sbAlive)" })
         $again = Invoke-Kit 'start.ps1'
         $wsAfter = @(((Invoke-Herdr @('workspace', 'list') 20).StdOut | ConvertFrom-Json).result.workspaces | ForEach-Object { $_.workspace_id })
         $missing = @($wsBefore | Where-Object { $wsAfter -notcontains $_ })
@@ -341,40 +380,54 @@ if (Test-Item 'A4') {
 }
 
 # ---- A5: injected failures ----------------------------------------------------------------------------------------------
-if (Test-Item 'A5') {
-    # a. herdr not running: `up` names the herdr step.
-    [void](Invoke-Kit 'stop.ps1' @() 300)
-    $u = Get-NodeJson @($sbCli, 'up', '--timeout', '20', '--exact') 60
-    Add-Step 'A5.herdr-down' $(if ($u.Exit -eq 1 -and $u.Err.step -eq 'herdr') { 'PASS' } else { 'FAIL' }) "up exit $($u.Exit), step '$($u.Err.step)' (expected 1, herdr)"
-
-    # b. up --timeout 5 on a cold start (herdr running, no server): wait=start.
-    Reset-KitState
+# Five injections, A5a to A5e; -Only A5d runs just the repair (it needs the VM's network with WARP off on the Mac).
+function Start-HerdrOnly {
     $h = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
     for ($i = 0; $i -lt 90 -and (Invoke-Herdr @('workspace', 'list') 10).ExitCode -ne 0; $i++) { Start-Sleep -Milliseconds 500 }
-    $u = Get-NodeJson @($sbCli, 'up', '--timeout', '5', '--exact') 60
-    Add-Step 'A5.up-timeout-5' $(if ($u.Exit -eq 1 -and ($u.Err.wait -eq 'start' -or $u.Err.step -eq 'gui' -or $u.Err.step -eq 'server')) { 'PASS' } else { 'FAIL' }) "up --timeout 5: exit $($u.Exit), step '$($u.Err.step)', wait '$($u.Err.wait)' (expected 1, wait start; a faster machine may succeed, then the exit is 0)"
+    return $h
+}
+
+# a. herdr not running: `up` names the herdr step.
+if (Test-Sub 'a') {
+    Reset-KitState
+    $u = Get-NodeJson @($sbCli, 'up', '--timeout', '20', '--exact') 60
+    Add-Step 'A5.herdr-down' $(if ($u.Exit -eq 1 -and $u.Err.step -eq 'herdr') { 'PASS' } else { 'FAIL' }) "up exit $($u.Exit), step '$($u.Err.step)' (expected 1, herdr)"
+}
+
+# b. up --timeout 1 on a cold start (herdr running, no server): wait=start. The plan says 5 s, but a cold start answers in 2 to 5 s on an idle VM (exit 0 in the pass of
+# 2026-10-28), so 5 s proves nothing; 1 s always runs out.
+if (Test-Sub 'b') {
+    Reset-KitState
+    $h = Start-HerdrOnly
+    $u = Get-NodeJson @($sbCli, 'up', '--timeout', '1', '--exact') 60
+    Add-Step 'A5.up-timeout-1' $(if ($u.Exit -eq 1 -and ($u.Err.wait -eq 'start' -or $u.Err.step -eq 'gui' -or $u.Err.step -eq 'server')) { 'PASS' } else { 'FAIL' }) "up --timeout 1: exit $($u.Exit), step '$($u.Err.step)', wait '$($u.Err.wait)' (expected 1, wait start)"
     [void](Get-NodeJson @($sbCli, 'stop') 150)
     Stop-Process -Id $h.Id -Force -ErrorAction SilentlyContinue
     [void](Invoke-Kit 'stop.ps1' @() 300)
+}
 
-    # c. server.lock held by a live process, released after 16 s: with -UpTimeoutSec 8 the first up reports wait=lock, start.ps1 retries once and the retry gets the lock.
+# c. server.lock held by a live process until 24 s: with -UpTimeoutSec 20 the first up reports wait=lock after its 20 s, start.ps1 retries once, and the retry gets the lock.
+if (Test-Sub 'c') {
     Reset-KitState
-    $s0 = Invoke-Kit 'start.ps1' @('-NoTower')
+    [void](Invoke-Kit 'start.ps1' @('-NoTower'))
     [void](Invoke-Kit 'stop.ps1' @() 300)
     $lockFile = Join-Path $sbDir 'server.lock'
     $holder = Start-Process -FilePath $psExe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 120' -WindowStyle Hidden -PassThru
     $lockBody = (@{ pid = $holder.Id; by = 'desk-b7-check'; since = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress)
     Write-AllTextUtf8 $lockFile $lockBody
-    $rel = Start-Job -ScriptBlock { param($p, $pidToStop) Start-Sleep -Seconds 16; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue } -ArgumentList $lockFile, $holder.Id
+    $rel = Start-Job -ScriptBlock { param($p, $pidToStop) Start-Sleep -Seconds 24; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue } -ArgumentList $lockFile, $holder.Id
     $since = Get-Date
-    $r = Invoke-Kit 'start.ps1' @('-NoTower', '-UpTimeoutSec', '8')
-    Wait-Job $rel -Timeout 20 | Out-Null; Remove-Job $rel -Force -ErrorAction SilentlyContinue
+    $r = Invoke-Kit 'start.ps1' @('-NoTower', '-UpTimeoutSec', '20')
+    Wait-Job $rel -Timeout 30 | Out-Null; Remove-Job $rel -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
     $retry = @(Get-StartEvents $since | Where-Object { $_.event -eq 'up-attempt-failed' -and $_.class -eq 'lock' })
     Add-Step 'A5.lock-then-retry' $(if ($r.Exit -eq 0 -and $retry.Count -ge 1) { 'PASS' } else { 'FAIL' }) "start.ps1 exit $($r.Exit); up-attempt-failed class lock: $($retry.Count) (expected the lock failure, then success on the retry)"
     [void](Invoke-Kit 'stop.ps1' @() 300)
+}
 
-    # d. tsx missing: exit 3 loader, then the repair stage reinstalls pi-straw-boss and the retry succeeds.
+# d. tsx missing: exit 3 loader, then the repair stage reinstalls pi-straw-boss and the retry succeeds.
+if (Test-Sub 'd') {
+    Reset-KitState
     $tsx = @((Join-Path $t.AgentNm 'tsx'), (Join-Path $t.AgentNm 'pi-straw-boss\node_modules\tsx')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $tsx) { Add-Step 'A5.tsx-missing' 'SKIP' 'no tsx folder found under the agent npm tree' }
     else {
@@ -383,28 +436,34 @@ if (Test-Item 'A5') {
         try {
             $since = Get-Date
             $r = Invoke-Kit 'start.ps1' @('-NoTower') 2400
-            $rep = @(Get-StartEvents $since | Where-Object { $_.event -eq 'repair' })
-            Add-Step 'A5.tsx-missing' $(if ($rep.Count -ge 1 -and $r.Exit -eq 0) { 'PASS' } elseif ($rep.Count -ge 1) { 'FAIL' } else { 'FAIL' }) "start.ps1 exit $($r.Exit); repair events: $($rep.Count) (stage $(($rep | ForEach-Object { $_.stage }) -join ',') exit $(($rep | ForEach-Object { $_.exit }) -join ',')); the first up should exit 3 with startError.code loader (see start.jsonl 'up-attempt-failed')"
+            $ev = @(Get-StartEvents $since)
+            $rep = @($ev | Where-Object { $_.event -eq 'repair' })
+            $loader = @($ev | Where-Object { $_.event -eq 'up-attempt-failed' -and $_.class -eq 'loader' })
+            $back = Test-Path -LiteralPath $tsx
+            Add-Step 'A5.tsx-missing' $(if ($loader.Count -ge 1 -and $rep.Count -ge 1 -and $rep[0].exit -eq 0 -and $r.Exit -eq 0) { 'PASS' } else { 'FAIL' }) "first up class loader: $($loader.Count) (exit $(($loader | ForEach-Object { $_.exit }) -join ',')); repair: $($rep.Count) (package $(($rep | ForEach-Object { $_.package }) -join ',') exit $(($rep | ForEach-Object { $_.exit }) -join ',')); tsx folder back after the repair: $back; start.ps1 exit $($r.Exit)"
         } finally {
             if (Test-Path -LiteralPath $off) { if (Test-Path -LiteralPath $tsx) { Remove-Item -LiteralPath $off -Recurse -Force -ErrorAction SilentlyContinue } else { Rename-Item -LiteralPath $off -NewName (Split-Path -Leaf $tsx) } }
         }
         [void](Invoke-Kit 'stop.ps1' @() 300)
     }
+}
 
-    # e. a server started without the desk switch: up restarts it ("desk switch"), the URL moves, start.ps1 ends with a live desk server.
+# e. a server running without the desk switch (someone ran `up` in a shell without it): start.ps1's `up` restarts it ("desk switch") under a new token and ends with a live desk server.
+if (Test-Sub 'e') {
     Reset-KitState
-    $h = Start-Process -FilePath $t.HerdrExe -ArgumentList 'server' -WindowStyle Hidden -PassThru
-    for ($i = 0; $i -lt 90 -and (Invoke-Herdr @('workspace', 'list') 10).ExitCode -ne 0; $i++) { Start-Sleep -Milliseconds 500 }
+    $r0 = Invoke-Kit 'start.ps1' @('-NoTower')
+    [void](Get-NodeJson @($sbCli, 'stop') 150)
     $saved = $env:STRAW_BOSS_DESK
     Remove-Item Env:STRAW_BOSS_DESK
     $u0 = Get-NodeJson @($sbCli, 'up', '--timeout', '90') 150
     $env:STRAW_BOSS_DESK = $saved
     $tokenBefore = (Read-GuiRecord).token
+    $since = Get-Date
     $r = Invoke-Kit 'start.ps1' @('-NoTower')
     $tokenAfter = (Read-GuiRecord).token
     $st = (Get-Status).Json
-    Add-Step 'A5.desk-switch' $(if ($u0.Exit -eq 0 -and $u0.Json.desk -eq $false -and $r.Exit -eq 0 -and $st.desk -eq $true -and $tokenBefore -ne $tokenAfter) { 'PASS' } else { 'FAIL' }) "first up (no switch): exit $($u0.Exit) desk=$($u0.Json.desk); start.ps1 exit $($r.Exit); status desk=$($st.desk); token moved: $($tokenBefore -ne $tokenAfter) (the log should show server 'restarted' with detail 'desk switch')"
-    Stop-Process -Id $h.Id -Force -ErrorAction SilentlyContinue
+    $upEv = @(Get-StartEvents $since | Where-Object { $_.event -eq 'sb-server-up' } | Select-Object -Last 1)
+    Add-Step 'A5.desk-switch' $(if ($r0.Exit -eq 0 -and $u0.Exit -eq 0 -and $u0.Json.desk -eq $false -and $r.Exit -eq 0 -and $st.desk -eq $true -and $tokenBefore -ne $tokenAfter -and $upEv.Count -eq 1 -and $upEv[0].server -eq 'restarted') { 'PASS' } else { 'FAIL' }) "first start exit $($r0.Exit); up without the switch: exit $($u0.Exit) desk=$($u0.Json.desk); start.ps1 exit $($r.Exit), up server '$($upEv[0].server)'; status desk=$($st.desk); token moved: $($tokenBefore -ne $tokenAfter)"
     [void](Invoke-Kit 'stop.ps1' @() 300)
 }
 
