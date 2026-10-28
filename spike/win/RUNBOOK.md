@@ -16,15 +16,17 @@ All paths are relative to `spike/win/` in the repository.
 | `pins.json` | Every download pinned by version and SHA256; npm packages by version and registry integrity |
 | `lib.ps1` | Shared helpers (paths, JSON-lines log, `Invoke-Native`, env isolation) |
 | `bootstrap.ps1` | Node, PortableGit, herdr, pi, ttt, playwriter, team profile, 13 pi packages. No admin. Resumable |
-| `start.ps1` / `stop.ps1` | Headless herdr server and tower pi serving the GUI; stops only what it recorded |
+| `start.ps1` / `stop.ps1` | Headless herdr server, the sb server and its GUI (`cli.mjs up`), then a tower pi; stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
+| `desk-b7-check.ps1` | Desk B7 acceptance A0 to A5 (docs/specs/2026-10-28-desk-b7.md). **Draft, not yet run** |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
+| `lib\gui-client.mjs`, `lib\cdp-eval.mjs` | Test clients: the GUI's HTTP surface (takes `SB_DIR`, a `gui.json`, or `auto`); a window read over CDP (token-free output) |
 | `collect.ps1` | Zip logs, results, and screenshots without credentials |
-| `proto/` | Electron prototype (TypeScript); `proto/scripts/build-installers.mjs` builds 0.0.1 and 0.0.2 |
+| `proto/` | Electron prototype (TypeScript): starts the stack through `start.ps1`, follows the GUI through a rotation (`src/follow.ts`); `proto/scripts/build-installers.mjs` builds 0.0.1 and 0.0.2 |
 | `serve-feed.sh`, `pack-kit.sh` | Mac side: serve the update feed, zip the kit |
 
-Everything the kit installs lives in `%LOCALAPPDATA%\straw-boss-desk`: `tools\` (Node, Git, herdr, npm prefix), `agent\` (the private `PI_CODING_AGENT_DIR`), `herdr\` (private config and socket), `claude\` (private `CLAUDE_CONFIG_DIR`), `logs\`, `results\`, `state\`.
+Everything the kit installs lives in `%LOCALAPPDATA%\straw-boss-desk`: `tools\` (Node, Git, herdr, npm prefix), `agent\` (the private `PI_CODING_AGENT_DIR`), `config\` (the private `XDG_CONFIG_HOME`; herdr's config, session and socket are in `config\herdr\`), `claude\` (private `CLAUDE_CONFIG_DIR`), `logs\`, `results\`, `state\`.
 Git configuration is a private file (`GIT_CONFIG_GLOBAL`), so the user's own Git setup is untouched.
 The folder panes start in is `%USERPROFILE%\sbd-playground`, which keeps the Chinese profile name in every path.
 
@@ -78,29 +80,29 @@ What this step records without any extra work:
 - Whether PortableGit contains Git Credential Manager (`GitCredentialManagerIncluded=` in the git stage evidence). From the release file listing it does: `ucrt64\bin\git-credential-manager.exe`.
 - Which herdr, Node, and Git versions ran, and `node.arch` (expected `x64`).
 
-## Step 3: start the stack (1 to 3 minutes)
+## Step 3: start the stack (under 20 s to the URL; the tower follows)
 
 ```bash
 ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\start.ps1"
 ```
 
-Expected last line: `GUI_URL=http://127.0.0.1:<port>/<token>/`. A clean start took 34 s in the 0.45.0 VM pass.
-`start.ps1` runs in this order, and the order matters:
+Expected lines: `GUI_URL=http://127.0.0.1:<port>/<token>/` and `SB_DIR=<slot folder>`, printed as soon as the sb server's GUI answers (the 0.46.0 pass measured `up` alone at 22 to 37 ms for the GUI step), then possibly `NOTICE=<text>` lines.
+The URL holds the page token: it is printed there only, never logged, and `start.json` does not keep it.
+`start.ps1` runs in this order (desk B7 plan, **Start order, now (0.46.0)**):
 
-1. `herdr server` with the kit's private socket and config. It is started through ShellExecute (no `-RedirectStandard*`), so it inherits none of the caller's pipes.
-2. The sb server: `node <agent dir>\npm\node_modules\pi-straw-boss\dist\server\cli.mjs up --timeout 90`. The pid, start time and `log` path from its JSON line go into `state\start.json` (`sbServerPid`, `sbServerStart`, `sbServerLog`, `sbServerRecord`).
-3. The tower: a `tower` workspace whose shell has `STRAW_BOSS_ROLE=tower`, with pi started by `herdr agent start` (a tower restored by herdr is reused).
-4. Wait until pi's UI is painted: the tower pane shows pi's editor rules (a run of `U+2500`) or the context-use footer (`12.3%/200k`) on two reads in a row. Typing before this leaves the text stuck in the editor. pi needed 59 s to paint on a cold start in the VM (24 s warm); if it never paints within 120 s the start fails with exit 9 and `logs\start-tower-pane-ready.txt` holds the screen.
-5. ONE `/boss gui`, typed with `herdr agent prompt`, then wait for `gui.json`. Only if `gui.json` stays away for half of `-GuiTimeoutSec` is the editor cleared (`ctrl+u`, `ctrl+k`) and `/boss gui` sent once more.
+1. `herdr server` with the kit's private socket and config. It is started through ShellExecute (no `-RedirectStandard*`), so it inherits none of the caller's pipes. A recorded herdr server is reused only when its pid and start time match **and** `start.json` records the same environment fingerprint (`desk`, socket, `XDG_CONFIG_HOME`, agent dir); another fingerprint, or a herdr that answers without a record, stops the start with exit 3 (run `stop.ps1`).
+2. The sb server and the GUI: `node <agent dir>\npm\node_modules\pi-straw-boss\dist\server\cli.mjs up --timeout 90 --exact`. The environment is the kit's (`STRAW_BOSS_DESK=1`, `XDG_CONFIG_HOME`, `HERDR_SOCKET_PATH`, `PI_CODING_AGENT_DIR`), the same for herdr and every `cli.mjs` call. The URL is `up`'s own answer; no file is read. The pid, start time (`started` from the answer, else the process's own), `log`, and the slot folder go into `state\start.json` (`sbServerPid`, `sbServerStart`, `sbServerLog`, `sbDir`, `sbServerRecord`). The slot folder must be `<agent dir>\straw-boss` itself (the primary slot); anything else is exit 22.
+3. `GUI_URL=` and `SB_DIR=` are printed.
+4. The tower, a stopgap until pi-straw-boss B7's `up --dir`: herdr's restored tower is reused (the restore wait is at most 90 s), else a `tower` workspace whose shell has `STRAW_BOSS_ROLE=tower` gets pi from `herdr agent start`. A failure here prints a `NOTICE=` and does not fail the start. `-NoTower` skips this step. No `/boss gui` is typed and no UI-paint wait runs: the GUI no longer depends on a tower.
 
-`gui.json` (`<agent dir>\straw-boss\gui.json`) is still written by the tower's `/boss gui`; the sb server does not host the GUI yet (`url` is `null` in its `up` output until pi-straw-boss B2).
-A browser window may open on the interactive desktop because `/boss gui` calls the default browser; that is a known gap (see upstream seams).
+The kit's `XDG_CONFIG_HOME` is `%LOCALAPPDATA%\straw-boss-desk\config` and herdr's socket is its default under it (`config\herdr\herdr.sock`), so the sb server is the **primary** server of this environment: it holds Straw Link, and its files (`server.json`, `gui.json`, `server.log`, `server.lock`, `start-error.json`) are in `<agent dir>\straw-boss\` itself, with no `servers\<hash>\` folder.
+Nothing is written under the user's own `%APPDATA%\herdr`.
 
-The kit's Herdr socket is not Herdr's default, so the sb server lives in a secondary slot, not in `<agent dir>\straw-boss\`:
-`<agent dir>\straw-boss\servers\<first 16 hex of sha256(HERDR_SOCKET_PATH)>\` holds `server.json` (the record: pid, version, socket, `stopped`), `server.lock`, `start-error.json`, `server.log`.
-Find the folder through the `log` field of `up` or `status` (`node cli.mjs status` prints one JSON line; `server.json` is beside the log) rather than computing the hash.
-Exit codes of `start.ps1`: 2 a tool is missing (run bootstrap), 3 stale stack (run stop first), 4 herdr server silent, 5/6 tower, 7 no GUI, 8 `cli.mjs up` failed, 9 pi UI never painted.
-Failure output: `logs\start.jsonl`, `logs\start-tower-pane.txt`, `logs\start-tower-pane-ready.txt`, `logs\start-tower-pane-after.txt` (what the tower pane showed).
+`start.ps1` handles `up`'s exits as the plan's table says: `wait: lock`, `hello`, and `exit` get one more `up`; step `herdr` gets one more look at herdr (not for a socket mismatch); step `version` (`--exact`: a newer server) runs `cli.mjs restart --downgrade --reason "stack.json pin"` and retries once; exit 3 with `loader` or `intercom` reinstalls `pkg:pi-straw-boss` or `pkg:pi-intercom` through `bootstrap.ps1 -Only ... -Force` and retries once. Nothing else is retried.
+Exit codes of `start.ps1`: 0 done; 2 a tool is missing (run bootstrap); 3 a stack from another start is running, or a herdr answers that `start.json` does not record (run stop first); 4 herdr server silent; `up` failed: 10 `wait: lock`, 11 `wait: start`, 12 `wait: hello`, 13 `wait: exit`, 14 step `herdr`, 15 step `version`, 16 step `server`, 17 step `gui`, 18 another failure, 19 `up` exit 3 (the server cannot run: `loader`, `intercom`, `acl`; `startError.text` is printed for `acl`), 20 `up` usage error (a bug here), 21 `up` answered without a usable URL, 22 the sb server is not in the primary slot.
+Failure output: `logs\start.jsonl` (one JSON line per event, `up-attempt-failed` for each failed `up`), `logs\start-up-stderr.txt` and `logs\start-sb-log-tail.txt` (the failing `up`'s stderr and `cli.mjs logs --lines 40`, tokens replaced), `logs\start-tower-pane.txt` (what the tower pane showed).
+
+Find the slot folder through `SB_DIR` (or `state\start.json` `sbDir`); `node cli.mjs status` prints one JSON line with `state`, `primary`, `desk`, `url`, `log`. `gui-client.mjs` takes `SB_DIR` or `auto`.
 
 ## Step 4: unattended checks (4 to 8 minutes)
 
@@ -140,16 +142,18 @@ It starts the stack itself if it is not running (through `cmd.exe` with start.ps
 ## Step 6: stop, then the prototype installer (15 minutes, needs the VM display)
 
 Stop the stack so the prototype starts it itself: `ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\stop.ps1"`.
-`stop.ps1` runs `node cli.mjs stop` first (for the kit's own state folder and socket, so only the kit's sb server stops), waits until the recorded sb server pid is gone, then closes the workspaces and runs `herdr server stop`.
-The sb server is not in the herdr server's process tree (it is created outside the job on Windows), so `herdr server stop` alone leaves it running.
-Expected output `stopped`; `STILL RUNNING:` means a recorded process (the sb server pid included) survived and the script exits 1.
+`stop.ps1` runs `node cli.mjs stop` first (120 s; for the kit's own state folder and socket, so only the kit's sb server stops), waits 10 s until the sb server is gone (a pid that stays is killed only while its recorded start time matches; the pid is the one in `server.json` now, not only the one `start.ps1` recorded), then runs `herdr server stop`, then kills what is left of the recorded process tree and the pi-intercom broker of this agent dir.
+`cli.mjs stop`'s exit is handled as: 0 done, 1 (busy lock, `unreachable`, `scope`, `exit-timeout`) goes on, 3 (`acl`) is reported and goes on, 5 (a supervisor's `serve` server) is reported and the server is **not** killed.
+The sb server is not in the herdr server's process tree (it is created outside the job on Windows), so `herdr server stop` alone leaves it running; and it goes first so that a pi session's look cannot start a new one while herdr shuts down.
+The workspaces are not closed: herdr restores them (and resumes their pi panes) at the next start, and `start.ps1` reuses the restored tower. `gui.json`, `gui.lock` and `server.json` stay: the server owns them, and `server.json`'s `gui.port` is how the next start keeps the port.
+Expected output `stopped`; `STILL RUNNING:` means a recorded process (the sb server pid included) survived and the script exits 1 (`start.json` is then kept, so a second run can finish).
 
 On the VM display:
 
 1. Open Edge and download `http://192.168.64.1:8099/straw-boss-desk-proto-Setup-0.0.1.exe`.
    The file gets Mark-of-the-Web. Screenshot the Edge download warning and the SmartScreen dialog ("Windows protected your PC", "More info", "Run anyway"). This is the unsigned-build experience a PM will have.
 2. Run it from the Edge download list. The NSIS installer is one-click and per-user (no admin prompt expected). Note whether UAC appears.
-3. The app starts after install (`runAfterFinish`). It shows the status page, runs `%USERPROFILE%\sbd-kit\start.ps1`, then loads the GUI in the main window. Screenshot the status page and the GUI.
+3. The app starts after install (`runAfterFinish`). It shows the status page, runs `%USERPROFILE%\sbd-kit\start.ps1`, loads the GUI as soon as `GUI_URL=` is printed (the tower step goes on behind it), then follows the GUI: a restart, upgrade or crash moves the window to the new URL, and a stopped GUI or server shows a screen with a Start button. Screenshot the status page and the GUI.
 4. Find the install folder: `ssh VM "dir %LOCALAPPDATA%\Programs"`; the executable is `Straw Boss Desk Proto.exe`.
 
 Prototype log: `%LOCALAPPDATA%\straw-boss-desk\logs\proto.jsonl`.
@@ -258,13 +262,13 @@ Where pi-straw-boss exposes nothing, the kit uses the thinnest workaround and li
 
 | # | Gap | Spike hack | Proposed upstream API | Where |
 | --- | --- | --- | --- | --- |
-| 1 | The GUI starts only when a session types `/boss gui` | `start.ps1` types `/boss gui` into the tower with `herdr agent prompt`, once pi's UI is painted | A desk mode: env `STRAW_BOSS_DESK=1` makes a tower start the GUI on `session_start` through `host.restore`/`share` | `src/host.ts`, `src/session.ts` (the `session_start` handler) |
-| 2 | `/boss gui` opens the default browser | Ignored; a browser window may pop up | Env `STRAW_BOSS_NO_BROWSER=1`, or a `Deps.openUrl` override from the environment | `src/index.ts` (`openUrl = openBrowser`), `src/gui.ts` (`openBrowser`) |
-| 3 | There is no headless way to start a tower; `ensureTower` runs only inside a pi session | `start.ps1` creates a herdr workspace with `STRAW_BOSS_ROLE=tower` and starts pi in it with `herdr agent start` | A published CLI such as `pi-straw-boss tower --cwd <dir>` that wraps `src/towertab.ts` `ensureTower` and prints the `gui.json` path | `src/towertab.ts`, `src/tower.ts` |
-| 4 | The URL is only in `gui.json` | `start.ps1` reads `port` and `token` from `gui.json` | `gui.json` documented as the contract, with a `schemaVersion` | `src/handover.ts` (`GuiRecord`) |
+| 1 | The GUI started only when a session typed `/boss gui` | **Delivered in 0.46.0 (B2):** the sb server serves the GUI from its start; `up` prints its URL and starts a GUI that was stopped on purpose. `start.ps1` no longer types anything | – | – |
+| 2 | `/boss gui` opens the default browser | **Mostly delivered:** with `STRAW_BOSS_DESK=1` (the kit sets it) `/boss gui` prints the URL and opens nothing (0.46.0 VM item 8). The pairing overlay's **o** key still calls `openUrl` | Guard the **o** key on the switch (desk-b7 plan, P1, S2) | `src/host.ts` |
+| 3 | There is no headless way to start a tower; `ensureTower` runs only inside a pi session | `start.ps1` creates a herdr workspace with `STRAW_BOSS_ROLE=tower` and starts pi in it with `herdr agent start`, now **after** the URL is printed. Unchanged until B7 | `cli.mjs up --dir <folder> --label <name>` (pi-straw-boss B7, needs the B6 default for `towerRuns.enabled`) | `src/server/cli.ts`, `src/towertab.ts` |
+| 4 | The URL was only in `gui.json` | **Delivered in 0.46.0:** `cli.mjs up` prints `url` (and `status` prints it); `server.json` is the documented successor of `gui.json` (`gui: {port, token, stopped}`), and the prototype's follower reads both for a rotation | Later stages move the contract to `server.json` alone | `src/server/record.ts` |
 | 5 | Folder picking is limited to the home folder and hidden folders are refused | The kit's playground sits under the profile | Allow a list of extra roots from the desk (native dialog result) | `src/spawn.ts` (`pickable`) |
-| 6 | `startOf` uses `ps -o lstart` | Recorded as a finding by `gui-answers-200` | A Windows variant (`Get-CimInstance Win32_Process` or `wmic`) | `src/remote.ts` (`startOf`) |
-| 7 | Stopping the GUI from outside | `stop.ps1` runs `cli.mjs stop` (sb server), then `herdr server stop`, and kills only recorded pids | Use the existing `POST /api/server/stop` first, then `herdr server stop` | `src/control.ts` (`scope === "server"`) |
+| 6 | `startOf` used `ps -o lstart` | **Delivered (0.45/0.46, `src/startof.ts`):** `up` carries `started` once the server knows it (on Windows it arrives late; `start.ps1` then reads the process's own start time). `gui-answers-200` still records whether `gui.json` carries `started` | `up` could wait for `started` or say `startedPending` (desk-b7 plan, P3) | `src/startof.ts` |
+| 7 | Stopping the GUI from outside | `stop.ps1` runs `cli.mjs stop` (sb server) first with 120 s, then `herdr server stop`, then kills only recorded pids with their start times | – (the CLI is the seam) | `src/server/cli.ts` |
 | 8 | `ttt init` prompts | `check-ttt.ps1` tries `ttt init -y` with the key in the environment and falls back to the wizard | Non-interactive flags that do not need a TTY | team-toon-tack `init` |
 | 9 | pi-aaaav (now pi-anchorloop) needed `python3` | `anchorloop-write-edit-no-python` records the message | Port the validator to TypeScript, or skip quietly without Python | `pi/validate-tool-use.ts` |
 

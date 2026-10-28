@@ -38,6 +38,15 @@ $sbPid = 0
 $sbStart = $null
 $killSb = $true
 if ($s.sbServerPid) { $sbPid = [int]$s.sbServerPid; $sbStart = $s.sbServerStart }
+# The server may have restarted since start.ps1 recorded it (a restart, an upgrade, a crash and a new start): the record in its own folder names the one that runs now.
+if ($s.sbServerRecord) {
+    $cur = Read-JsonFile ([string]$s.sbServerRecord)
+    if ($cur -and $cur.pid -and ([int]$cur.pid -ne $sbPid) -and (Get-Process -Id ([int]$cur.pid) -ErrorAction SilentlyContinue)) {
+        $sbPid = [int]$cur.pid
+        $sbStart = Get-ProcessStartIso $sbPid
+        Write-Log 'stop' 'sb-server-moved' @{ pid = $sbPid; detail = 'the running sb server is not the one start.ps1 recorded' }
+    }
+}
 if ((Test-Path -LiteralPath $sbCli) -and (Test-Path -LiteralPath $t.NodeExe)) {
     if ($sbPid -eq 0) {
         $st = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'status') -TimeoutSec 60
