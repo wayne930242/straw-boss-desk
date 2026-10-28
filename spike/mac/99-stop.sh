@@ -32,7 +32,7 @@ if [ -n "$cur" ]; then
   now_started="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$cur" 2>/dev/null | sed 's/^ *//;s/ *$//')"
   [ -n "$now_started" ] && [ "$now_started" = "$rec_started" ] || cur=""
 fi
-if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ] && proc_alive "$cur"; then sb_pid="$cur"; sb_start="$(proc_start "$cur")"; fi
+if [ -n "$cur" ] && [ "$cur" != "$sb_pid" ] && proc_alive "$cur" "$(proc_start "$cur")"; then sb_pid="$cur"; sb_start="$(proc_start "$cur")"; fi
 
 # Runs a command for at most N seconds; 124 when it had to be killed.
 bounded() {
@@ -82,7 +82,7 @@ if [ -n "$herdr_pid" ] && proc_alive "$herdr_pid" "$herdr_start"; then
   wait_gone "$herdr_pid" "$herdr_start" 10 || true
 fi
 
-# What is left of the recorded set, with the same start time, is the spike's and goes now.
+# What is left of the recorded set, with the same non-empty start time, is the spike's and goes now (proc_alive is false for an empty start).
 leftovers() {
   [ -s "$tree" ] || return 0
   local p s

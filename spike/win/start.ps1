@@ -255,6 +255,8 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
                         try { if ($server.StartTime) { $serverStart = $server.StartTime.ToUniversalTime().ToString('o') } } catch { }
                         if (-not $serverStart) {
                             Write-Log 'start' 'fail' @{ detail = 'herdr exited'; exited = $server.HasExited }
+                            # The herdr recorded before this restart was stopped just above; no dead pid stays recorded.
+                            Remove-Item -LiteralPath $startFile -Force -ErrorAction SilentlyContinue
                             exit 4
                         }
                         $state['serverPid'] = $serverPid
@@ -282,9 +284,10 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
 if (-not $upJson) { Stop-WithUpFailure 'other' $u }
 
 $sbPid = [int]$upJson.pid
-# `started` may be absent when the server does not know its own start time yet (it arrives late on Windows): read it from the process then.
+# `started` may be absent when the server does not know its own start time yet (it arrives late on Windows).
 $sbStart = $null
-if ($upJson.started) { $sbStart = Format-Iso $upJson.started } else { $sbStart = Get-ProcessStartIso $sbPid }
+# Without `started` the start time stays null: the PID's current holder is not known to be the server, and stop.ps1 then asks `cli.mjs stop` and never kills by pid.
+if ($upJson.started) { $sbStart = Format-Iso $upJson.started }
 $sbLog = [string]$upJson.log
 $sbDir = ''
 if ($sbLog) { $sbDir = [IO.Path]::GetFullPath((Split-Path -Parent $sbLog)).TrimEnd('\') }

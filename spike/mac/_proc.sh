@@ -2,11 +2,12 @@
 # macOS has no /proc; `ps -o lstart=` is the start time (one-second resolution), the same text every time for one process.
 proc_start() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
 # proc_alive PID [START]: alive, and started at START when START is given.
+# An empty START is never ours: it returns 1.
 proc_alive() {
   local now
   now="$(proc_start "$1")"
   [ -n "$now" ] || return 1
-  [ -z "${2:-}" ] || [ "$now" = "$2" ]
+  [ -n "${2:-}" ] && [ "$now" = "$2" ]
 }
 # proc_descendants PID: pids of every descendant, one per line.
 proc_descendants() {
@@ -15,7 +16,8 @@ proc_descendants() {
     END { for (i = 1; i <= NR; i++) { p = ids[i]; q = parent[p]; d = 0; while (q != "" && q != 0 && d < 64) { if (q == root) { print p; break } q = parent[q]; d++ } } }'
 }
 # proc_tree PID: "pid|start" for every descendant.
+# A pid whose start time cannot be read is skipped: an entry without a start time is never ours.
 proc_tree() {
-  local p
-  for p in $(proc_descendants "$1"); do printf '%s|%s\n' "$p" "$(proc_start "$p")"; done
+  local p s
+  for p in $(proc_descendants "$1"); do s="$(proc_start "$p")"; [ -z "$s" ] || printf '%s|%s\n' "$p" "$s"; done
 }

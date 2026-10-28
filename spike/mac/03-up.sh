@@ -45,7 +45,9 @@ sbdir="$(dirname "$log")"
 if [ "$sbdir" != "$PI_CODING_AGENT_DIR/straw-boss" ]; then
   echo "FAIL slot: the sb server is not in the primary slot ($sbdir)"; exit 22
 fi
-echo "$pid" > "$SPIKE/run/sb.pid"; proc_start "$pid" > "$SPIKE/run/sb.start"
+# A pid without a readable start time is never recorded: 99-stop.sh could not tell it from a reused pid.
+sb_start="$(proc_start "$pid")"
+if [ -n "$sb_start" ]; then echo "$pid" > "$SPIKE/run/sb.pid"; echo "$sb_start" > "$SPIKE/run/sb.start"; else echo "NOTICE=the sb server pid $pid has no readable start time; not recorded, 99-stop.sh will not kill it" >&2; fi
 echo "TIMING up ${ms}ms (server=$how desk=$desk pid=$pid started=${started:-unknown})" >&2
 # Warnings: the two a person should see become NOTICE= lines; desk_on would be an environment bug (this script always sets the switch); the rest is logged.
 node -e '

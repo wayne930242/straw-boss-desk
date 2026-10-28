@@ -49,14 +49,14 @@ if ($s.sbServerRecord) {
     $cur = Read-JsonFile ([string]$s.sbServerRecord)
     if ($cur -and $cur.pid -and $cur.started -and ($cur.stopped -ne $true) -and ([int]$cur.pid -ne $sbPid) -and (Test-ProcessAlive -ProcessId ([int]$cur.pid) -StartTime $cur.started)) {
         $sbPid = [int]$cur.pid
-        $sbStart = Get-ProcessStartIso $sbPid
+        $sbStart = $cur.started
         Write-Log 'stop' 'sb-server-moved' @{ pid = $sbPid; detail = 'the running sb server is not the one start.ps1 recorded' }
     }
 }
 if ((Test-Path -LiteralPath $sbCli) -and (Test-Path -LiteralPath $t.NodeExe)) {
     if ($sbPid -eq 0) {
         $st = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'status') -TimeoutSec 60
-        try { $sj = ($st.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json; if ($sj.pid -and $sj.started -and ($sj.state -ne 'stopped') -and ($sj.stopped -ne $true) -and (Test-ProcessAlive -ProcessId ([int]$sj.pid) -StartTime $sj.started)) { $sbPid = [int]$sj.pid; $sbStart = Get-ProcessStartIso $sbPid } } catch { }
+        try { $sj = ($st.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json; if ($sj.pid -and $sj.started -and ($sj.state -ne 'stopped') -and ($sj.stopped -ne $true) -and (Test-ProcessAlive -ProcessId ([int]$sj.pid) -StartTime $sj.started)) { $sbPid = [int]$sj.pid; $sbStart = $sj.started } } catch { }
     }
     $sr = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'stop') -TimeoutSec 120
     $outcome = ''
@@ -123,7 +123,7 @@ if (Test-Path -LiteralPath $brokerPidFile) {
     try { $brokerText = [IO.File]::ReadAllText($brokerPidFile) } catch { }
     [void][int]::TryParse($brokerText.Trim(), [ref]$brokerPid)
     $bp = if ($brokerPid -gt 0) { Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid" -ErrorAction SilentlyContinue }
-    if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker' -and $bp.CommandLine.IndexOf($SbdRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    if ($bp -and $bp.Name -eq 'node.exe' -and $bp.CommandLine -match 'pi-intercom' -and $bp.CommandLine -match 'broker' -and $bp.CommandLine.IndexOf($SbdRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         $brokerStart = $null
         try { if ($bp.CreationDate) { $brokerStart = $bp.CreationDate.ToUniversalTime() } } catch { }
         [void](Stop-ProcessTree -ProcessId $brokerPid -StartTime $brokerStart)
