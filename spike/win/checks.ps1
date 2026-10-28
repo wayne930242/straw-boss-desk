@@ -62,7 +62,7 @@ function Invoke-Gui {
 function Ensure-Started {
     if ($script:Ctx.Started) { return $true }
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
-    if ($s -and $s.url -and (Test-ProcessAlive -ProcessId ([int]$s.serverPid) -StartTime $s.serverStart)) { $script:Ctx.Started = $true; return $true }
+    if ($s -and $s.sbDir -and (Test-ProcessAlive -ProcessId ([int]$s.serverPid) -StartTime $s.serverStart)) { $script:Ctx.Started = $true; return $true }
     if ($NoStart) { return $false }
     # start.ps1 leaves a herdr server behind. Run through Invoke-Native (redirected pipes), that server held the pipes open after
     # start.ps1 exited and ReadToEnd/WaitForExit never returned. So the child gets no inherited handles: cmd.exe is started through
@@ -74,8 +74,9 @@ function Ensure-Started {
     $cmd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/c "' + $inner + '"') -WindowStyle Hidden -PassThru
     $null = $cmd.Handle
     $startExit = $null
-    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { & taskkill.exe /PID $cmd.Id /T /F 2>&1 | Out-Null }
-    $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -ErrorAction SilentlyContinue)
+    if ($cmd.WaitForExit(400000)) { $startExit = $cmd.ExitCode } else { [void](Stop-ProcessTree -ProcessId $cmd.Id -StartTime $cmd.StartTime) }
+    $script:Ctx.StartOut = (Get-Content -LiteralPath $startOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+    if ($script:Ctx.StartOut) { try { Write-AllTextUtf8 -Path $startOut -Text (Hide-Token $script:Ctx.StartOut) } catch { } }
     if ($null -eq $startExit) { $script:Ctx.StartOut = 'start.ps1 timed out after 400 s. ' + $script:Ctx.StartOut }
     $script:Ctx.Started = ($startExit -eq 0)
     return $script:Ctx.Started
@@ -243,7 +244,7 @@ Add-Check 'stack-start' {
     $ok = Ensure-Started
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     if (-not $ok) { return (Fail ("start.ps1 failed. " + (Get-FirstLine $script:Ctx.StartOut) + ' see logs\start.jsonl')) }
-    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) url=$($s.url) totalMs=$($s.totalMs)" $s
+    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) sbDir=$($s.sbDir) guiMs=$($s.guiMs) totalMs=$($s.totalMs)" $s
 }
 
 Add-Check 'herdr-pane-runs-pi' {
@@ -299,6 +300,11 @@ Add-Check 'terminal-mirror-rows' {
     $arg = @{ waitMs = 25000 }
     if ($script:Ctx.BaseSession) { $arg['key'] = $script:Ctx.BaseSession }
     $r = Invoke-Gui 'mirror' $arg 60
+    # A base's pi that has only just started answers 409 not_live until the server sees its session in the pane (VM 2026-10-28, loaded host): look again.
+    for ($try = 1; $try -le 3 -and $r.Json -and ([string]$r.Json.problem) -match 'not_live'; $try++) {
+        Start-Sleep -Seconds 8
+        $r = Invoke-Gui 'mirror' $arg 60
+    }
     if (-not $r.Json) { return (Fail ("no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $ev = "mirror attach=$($j.attached.status) frames=$($j.frames) rows=$($j.rows) cols=$($j.cols) nonEmptyRows=$($j.nonEmptyRows) problem=$($j.problem) sample='$(@($j.sample) -join ' / ')'"

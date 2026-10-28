@@ -13,7 +13,11 @@ $script:AgentDir  = Join-Path $SbdRoot 'agent'
 $script:LogDir    = Join-Path $SbdRoot 'logs'
 $script:StateDir  = Join-Path $SbdRoot 'state'
 $script:ResultDir = Join-Path $SbdRoot 'results'
-$script:HerdrDir  = Join-Path $SbdRoot 'herdr'
+# The app-owned XDG_CONFIG_HOME. Herdr's default socket for that environment is <ConfigHome>\herdr\herdr.sock, and pi-straw-boss calls the server of the default
+# Herdr the primary one (it holds Straw Link and keeps its files in <agent dir>\straw-boss\ itself). The text must equal what pi-straw-boss's
+# path.win32.join builds, hence GetFullPath (no forward slashes, no trailing separator, no '..').
+$script:ConfigHome = [IO.Path]::GetFullPath((Join-Path $SbdRoot 'config')).TrimEnd('\')
+$script:HerdrDir  = Join-Path $ConfigHome 'herdr'
 $script:ClaudeDir = Join-Path $SbdRoot 'claude'
 $script:NpmPrefix = Join-Path $Tools 'npm'
 $script:NpmCache  = Join-Path $Tools 'npm-cache'
@@ -114,11 +118,33 @@ function Invoke-Native {
     $timedOut = $false
     if (-not $p.WaitForExit($TimeoutSec * 1000)) {
         $timedOut = $true
-        try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+        try { $pStart = $null; try { $pStart = $p.StartTime } catch { }; [void](Stop-ProcessTree -ProcessId $p.Id -StartTime $pStart) } catch { }
     }
     $p.WaitForExit()
     $sw.Stop()
     [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $outTask.Result; StdErr = $errTask.Result; Ms = [int]$sw.ElapsedMilliseconds; TimedOut = $timedOut; Started = $true }
+}
+
+# Kills exact pids, never through `taskkill /T`: its walk uses ParentProcessId alone, so a reused pid reaches csrss, winlogon and dwm of an old session.
+# The tree comes from Get-ProcessTree (which compares creation times); children go first, each only while its start time still matches.
+# Never throws: under $ErrorActionPreference = 'Stop', a failing kill must not abort stop.ps1 half way (VM 2026-10-28).
+function Stop-ProcessTree {
+    param([int]$ProcessId, $StartTime)
+    # A pid without a start time is never killed: it may have been reused.
+    $rootStart = $StartTime
+    if ($null -eq $rootStart -or $rootStart -eq '') { return $false }
+    # The root first: a pid that no longer holds the process recorded for it (reused) is not ours, and neither are its children (VM 2026-10-28: they were killed).
+    if (-not (Test-ProcessAlive -ProcessId $ProcessId -StartTime $rootStart)) { return $false }
+    $victims = @()
+    try { $victims = @(Get-ProcessTree $ProcessId) } catch { }
+    [array]::Reverse($victims)
+    $victims += [pscustomobject]@{ Pid = $ProcessId; Created = $rootStart }
+    $ok = $true
+    foreach ($v in $victims) {
+        if (-not (Test-ProcessAlive -ProcessId ([int]$v.Pid) -StartTime $v.Created)) { continue }
+        try { Stop-Process -Id ([int]$v.Pid) -Force -ErrorAction Stop } catch { $ok = $false }
+    }
+    return $ok
 }
 
 # Filesystem trouble that Defender, long paths, or locked files cause during installs.
@@ -208,6 +234,10 @@ function Set-SbdEnv {
     $env:NPM_CONFIG_UPDATE_NOTIFIER = 'false'
     $env:NPM_CONFIG_FUND = 'false'
     $env:NPM_CONFIG_AUDIT = 'false'
+    # Desk mode and the primary slot: the same variables go to herdr, to every cli.mjs call, and (through herdr) to every pane's pi, so they all compute
+    # the one slot (desk-b7 plan, task 1). Nothing here points at the user's own %APPDATA%\herdr.
+    $env:STRAW_BOSS_DESK = '1'
+    $env:XDG_CONFIG_HOME = $ConfigHome
     $env:HERDR_CONFIG_PATH = Join-Path $HerdrDir 'config.toml'
     $env:HERDR_SOCKET_PATH = Join-Path $HerdrDir 'herdr.sock'
     $env:HERDR_DISABLE_SOUND = '1'
@@ -247,43 +277,60 @@ function ConvertTo-UtcInstant {
     return [datetime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
 }
 
+# The start time of a process as UTC. Windows PowerShell 5.1 under a filtered token cannot read .StartTime of SYSTEM, other-user or elevated processes
+# ("Access is denied"); Win32_Process.CreationDate needs no access right. $null when the process is gone or no start time can be read.
+function Get-ProcessStartUtc {
+    param([int]$ProcessId)
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $started = $null
+    try { $started = $p.StartTime } catch { }
+    if ($null -ne $started) { return $started.ToUniversalTime() }
+    try {
+        $w = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($w -and $w.CreationDate) { return $w.CreationDate.ToUniversalTime() }
+    } catch { }
+    return $null
+}
+
+# Alive; with -StartTime, alive AND started then. A process whose start time cannot be read at all is not ours: false (a process that exits during
+# the read is gone, which is false as well).
 function Test-ProcessAlive {
     param([int]$ProcessId, $StartTime)
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return $false }
     $want = ConvertTo-UtcInstant $StartTime
     if ($null -eq $want) { return $true }
-    # A process that exits between Get-Process and this read has a null StartTime (VM 2026-10-27: stop.ps1 died with InvokeMethodOnNull here
-    # while it waited for the sb server pid to go): gone is not alive.
-    $started = $null
-    try { $started = $p.StartTime } catch { }
-    if ($null -eq $started) {
-        $again = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-        if (-not $again) { return $false }
-        try { if ($again.HasExited) { return $false } } catch { }
-        return $true
-    }
+    $started = Get-ProcessStartUtc $ProcessId
+    if ($null -eq $started) { return $false }
     # Get-Process and CIM round differently; a reused pid starts at a very different time.
-    return ([math]::Abs(($started.ToUniversalTime() - $want).TotalSeconds) -lt 3)
+    return ([math]::Abs(($started - $want).TotalSeconds) -lt 3)
 }
 
 function Get-ProcessStartIso {
     param([int]$ProcessId)
-    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($p) { return $p.StartTime.ToUniversalTime().ToString('o') }
-    return $null
+    $u = Get-ProcessStartUtc $ProcessId
+    if ($null -eq $u) { return $null }
+    return $u.ToString('o')
 }
 
 # Descendants of a process, by parent id, with creation times so a reused pid is never mistaken for ours.
+# A child that was created BEFORE its "parent" is not a child: Windows reuses pids, and csrss, winlogon, fontdrvhost and dwm of an old session still name
+# the (long dead) session manager's pid as their parent (VM 2026-10-28: a herdr server got that pid, and stop.ps1 would have taskkill-ed them).
 function Get-ProcessTree {
     param([int]$RootPid)
     $all = @(Get-CimInstance Win32_Process)
+    $created = @{}
+    foreach ($p in $all) { $created[[int]$p.ProcessId] = $p.CreationDate }
     $found = @()
     $queue = New-Object System.Collections.Queue
     $queue.Enqueue($RootPid)
     while ($queue.Count -gt 0) {
         $id = $queue.Dequeue()
+        $parentCreated = $created[$id]
         foreach ($c in ($all | Where-Object { $_.ParentProcessId -eq $id })) {
+            if ($null -eq $parentCreated -or $null -eq $c.CreationDate -or $c.CreationDate -lt $parentCreated) { continue }
+            if ([int]$c.ProcessId -eq $id) { continue }
             $found += [pscustomobject]@{ Pid = [int]$c.ProcessId; Name = $c.Name; Created = $c.CreationDate.ToUniversalTime().ToString('o') }
             $queue.Enqueue([int]$c.ProcessId)
         }
@@ -300,6 +347,13 @@ function Read-JsonFile {
 function Write-JsonFile {
     param([string]$Path, $Object, [int]$Depth = 8)
     Write-AllTextUtf8 -Path $Path -Text ($Object | ConvertTo-Json -Depth $Depth)
+}
+
+# A GUI URL carries the page's token, which is a credential: no log line, notice, or result file may hold it.
+function Hide-Token {
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    return ($Text -replace '(?i)(127\.0\.0\.1:\d+/)[0-9a-f]{16,}', '$1<token>')
 }
 
 function Get-FirstLine {

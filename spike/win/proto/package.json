@@ -7,7 +7,8 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
-    "pack:win": "node scripts/build-installers.mjs"
+    "pack:win": "node scripts/build-installers.mjs",
+    "test:follow": "tsc -p tsconfig.json && node test/follow-test.mjs dist/follow.js && node test/follow-test.mjs src/follow.ts"
   },
   "dependencies": {
     "electron-updater": "6.8.11"

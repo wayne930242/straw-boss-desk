@@ -1,17 +1,30 @@
 // Test client for the HTTP surface pi-straw-boss already serves. It implements no straw-boss logic:
 // it reads gui.json (port, token, csrf), sends the same requests the page sends, and prints JSON.
+// The first argument is a gui.json file, the slot folder that holds it (SB_DIR, as start.ps1 prints it), or `auto`: the kit's state\start.json names the folder
+// (`sbDir`; SBD_ROOT or %LOCALAPPDATA%\straw-boss-desk is the kit root). The token rotates on every restart, so the file is read again on every run.
 //
-//   node gui-client.mjs <gui.json> page
+//   node gui-client.mjs <gui.json | SB_DIR | auto> page
 //   node gui-client.mjs <gui.json> net
 //   node gui-client.mjs <gui.json> dirs '{"path":"C:\\Users\\x"}'
 //   node gui-client.mjs <gui.json> open-base '{"dir":"C:\\Users\\x\\play","label":"chk"}'
 //   node gui-client.mjs <gui.json> mirror '{"key":"<session key>","waitMs":15000}'   (key omitted: the first controllable session)
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { request } from "node:http";
+import { join } from "node:path";
 
-const [guiPath, cmd, rawArgs] = process.argv.slice(2);
+const [target, cmd, rawArgs] = process.argv.slice(2);
 const args = rawArgs ? JSON.parse(rawArgs) : {};
-const rec = JSON.parse(readFileSync(guiPath, "utf8").replace(/^\uFEFF/, ""));
+const readJson = (file) => JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+function guiPathOf(arg) {
+	let dir = arg;
+	if (arg === "auto") {
+		const root = process.env.SBD_ROOT ?? join(process.env.LOCALAPPDATA ?? "", "straw-boss-desk");
+		dir = readJson(join(root, "state", "start.json")).sbDir;
+		if (!dir) throw new Error("state\\start.json has no sbDir: run start.ps1 first");
+	}
+	return statSync(dir).isDirectory() ? join(dir, "gui.json") : dir;
+}
+const rec = readJson(guiPathOf(target));
 const origin = `http://127.0.0.1:${rec.port}`;
 const base = `/${rec.token}`;
 

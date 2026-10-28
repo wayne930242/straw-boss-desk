@@ -63,7 +63,7 @@ if (-not $SkipLogin) {
     Write-Host 'Next: claude auth login. A browser opens; sign in with the Claude subscription account and approve.'
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process -FilePath $ClaudeExe -ArgumentList @('auth', 'login') -NoNewWindow -PassThru
-    if (-not $p.WaitForExit($LoginTimeoutSec * 1000)) { & taskkill.exe /PID $p.Id /T /F | Out-Null; Add-Step 'auth-login' 'FAIL' "timed out after $LoginTimeoutSec s" $true ([int]$sw.ElapsedMilliseconds) }
+    if (-not $p.WaitForExit($LoginTimeoutSec * 1000)) { [void](Stop-ProcessTree -ProcessId $p.Id -StartTime $p.StartTime); Add-Step 'auth-login' 'FAIL' "timed out after $LoginTimeoutSec s" $true ([int]$sw.ElapsedMilliseconds) }
     else { Add-Step 'auth-login' $(if ($p.ExitCode -eq 0) { 'PASS' } else { 'FAIL' }) "exit $($p.ExitCode), browser OAuth round trip $([int]($sw.ElapsedMilliseconds/1000)) s" $true ([int]$sw.ElapsedMilliseconds) }
 }
 $after = Invoke-Native -File $ClaudeExe -ArgList @('auth', 'status', '--json') -TimeoutSec 60
@@ -89,7 +89,7 @@ if ($loggedIn) {
     # 4. one pi-herdr-agents subagent dispatch, from a member (a tower may not dispatch)
     $ps = (Get-Command powershell.exe).Source
     $startState = Read-JsonFile (Join-Path $StateDir 'start.json')
-    if (-not $startState -or -not $startState.url) {
+    if (-not $startState -or -not $startState.sbDir) {
         $sr = Invoke-Native -File $ps -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $KitDir 'start.ps1')) -TimeoutSec 400
         Add-Step 'start-stack' $(if ($sr.ExitCode -eq 0) { 'PASS' } else { 'FAIL' }) (Get-FirstLine ($sr.StdOut + $sr.StdErr))
     }
