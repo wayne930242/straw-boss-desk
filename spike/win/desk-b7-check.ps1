@@ -290,7 +290,9 @@ if (Test-Item 'A3') {
                 # b: kill the sb server (a pi session's look may start another within about 6 s; otherwise the follower's gone rule runs up)
                 $recNow = Read-JsonFile (Join-Path $sbDir 'server.json')
                 $before = Read-GuiRecord
-                [void](Stop-ProcessTree -ProcessId ([int]$recNow.pid) -StartTime $recNow.started)
+                # kill the server alone, as a crash would; its broker child stays
+                $p = Get-Process -Id ([int]$recNow.pid) -EA SilentlyContinue
+                if ($p -and (Test-ProcessAlive -ProcessId $p.Id -StartTime $recNow.started)) { $p.Kill() }
                 $tWindow = $null
                 for ($i = 0; $i -lt 360 -and -not $tWindow; $i++) {
                     Start-Sleep -Milliseconds 250
