@@ -13,7 +13,11 @@ $script:AgentDir  = Join-Path $SbdRoot 'agent'
 $script:LogDir    = Join-Path $SbdRoot 'logs'
 $script:StateDir  = Join-Path $SbdRoot 'state'
 $script:ResultDir = Join-Path $SbdRoot 'results'
-$script:HerdrDir  = Join-Path $SbdRoot 'herdr'
+# The app-owned XDG_CONFIG_HOME. Herdr's default socket for that environment is <ConfigHome>\herdr\herdr.sock, and pi-straw-boss calls the server of the default
+# Herdr the primary one (it holds Straw Link and keeps its files in <agent dir>\straw-boss\ itself). The text must equal what pi-straw-boss's
+# path.win32.join builds, hence GetFullPath (no forward slashes, no trailing separator, no '..').
+$script:ConfigHome = [IO.Path]::GetFullPath((Join-Path $SbdRoot 'config')).TrimEnd('\')
+$script:HerdrDir  = Join-Path $ConfigHome 'herdr'
 $script:ClaudeDir = Join-Path $SbdRoot 'claude'
 $script:NpmPrefix = Join-Path $Tools 'npm'
 $script:NpmCache  = Join-Path $Tools 'npm-cache'
@@ -208,6 +212,10 @@ function Set-SbdEnv {
     $env:NPM_CONFIG_UPDATE_NOTIFIER = 'false'
     $env:NPM_CONFIG_FUND = 'false'
     $env:NPM_CONFIG_AUDIT = 'false'
+    # Desk mode and the primary slot: the same variables go to herdr, to every cli.mjs call, and (through herdr) to every pane's pi, so they all compute
+    # the one slot (desk-b7 plan, task 1). Nothing here points at the user's own %APPDATA%\herdr.
+    $env:STRAW_BOSS_DESK = '1'
+    $env:XDG_CONFIG_HOME = $ConfigHome
     $env:HERDR_CONFIG_PATH = Join-Path $HerdrDir 'config.toml'
     $env:HERDR_SOCKET_PATH = Join-Path $HerdrDir 'herdr.sock'
     $env:HERDR_DISABLE_SOUND = '1'
@@ -300,6 +308,13 @@ function Read-JsonFile {
 function Write-JsonFile {
     param([string]$Path, $Object, [int]$Depth = 8)
     Write-AllTextUtf8 -Path $Path -Text ($Object | ConvertTo-Json -Depth $Depth)
+}
+
+# A GUI URL carries the page's token, which is a credential: no log line, notice, or result file may hold it.
+function Hide-Token {
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    return ($Text -replace '(?i)(127\.0\.0\.1:\d+/)[0-9a-f]{16,}', '$1<token>')
 }
 
 function Get-FirstLine {
