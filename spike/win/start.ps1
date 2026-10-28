@@ -144,6 +144,8 @@ if ($prev -and $prev.serverPid -and $prev.serverStart -and (Test-ProcessAlive -P
     if (-not $up) {
         Write-Log 'start' 'fail' @{ detail = 'herdr server did not answer'; exited = $server.HasExited }
         if (-not $server.HasExited) { [void](Stop-ProcessTree -ProcessId $serverPid -StartTime $serverStart) }
+        # This run wrote the record a moment ago; a herdr that is gone leaves nothing for stop.ps1 to stop, so no dead pid stays recorded.
+        if (-not (Test-ProcessAlive -ProcessId $serverPid -StartTime $serverStart)) { Remove-Item -LiteralPath $startFile -Force -ErrorAction SilentlyContinue }
         exit 4
     }
     $state['serverPid'] = $serverPid
