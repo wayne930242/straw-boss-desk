@@ -136,7 +136,7 @@ describe("guard rules", () => {
   }
 });
 
-// The rules run through pi-anchorloop's own ttsr.ts, loaded from the pinned devDependency (2.0.0).
+// The rules run through pi-anchorloop's own ttsr.ts, loaded from the pinned devDependency (2.2.3).
 // Node does not strip types under node_modules, so the file is copied to a temp folder and
 // the folder is removed after the run. Nothing here is skipped: a missing install fails the suite.
 describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
@@ -147,7 +147,7 @@ describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
   before(async () => {
     assert.ok(existsSync(source), `no ${source}: run npm install in profile/`);
     const pkg = JSON.parse(readFileSync(join(profileDir, "node_modules", "pi-anchorloop", "package.json"), "utf8"));
-    assert.equal(pkg.version, "2.0.0", "the pinned pi-anchorloop is what runs");
+    assert.equal(pkg.version, "2.2.3", "the pinned pi-anchorloop is what runs");
     dir = mkdtempSync(join(tmpdir(), "ttsr-"));
     copyFileSync(source, join(dir, "ttsr.ts"));
     ttsr = await import(pathToFileURL(join(dir, "ttsr.ts")).href);
@@ -188,12 +188,9 @@ describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
     });
   }
 
-  // Upstream seam (design record, "Upstream seams to add"): TtsrManager.#eligible applies the repeat
-  // policy to blocking tool-call matches, so a rule that has fired is silent again until a turn ends,
-  // and after a resume until the second turn. The guard rules need every matching call blocked.
-  const seam = "pi-anchorloop: a blocking tool-call match must not go through the repeat policy (tracked upstream)";
-
-  it("blocks a second matching call in the same turn", { todo: seam }, () => {
+  // Every matching call is blocked: a blocking tool-call match skips the repeat policy
+  // (pi-anchorloop 2.2.3), within a turn and in the first turn after a resume.
+  it("blocks a second matching call in the same turn", () => {
     const { rule } = load("forge-login-hands-off");
     const manager = new ttsr.TtsrManager([rule]);
     const call = (command) => {
@@ -206,7 +203,7 @@ describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
     assert.equal(call("glab auth status -t"), true, "the second call in the turn was not blocked");
   });
 
-  it("blocks the first matching call in the first turn after a resume", { todo: seam }, () => {
+  it("blocks the first matching call in the first turn after a resume", () => {
     const { rule } = load("forge-login-hands-off");
     const manager = new ttsr.TtsrManager([rule]);
     manager.restore([rule.name]);
