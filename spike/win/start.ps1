@@ -1,27 +1,29 @@
 <#
 .SYNOPSIS
-  Starts a headless herdr server and the pi-straw-boss sb server, prints the GUI URL, then makes sure a tower pi session exists.
+  Starts a headless herdr server and the pi-straw-boss sb server, makes the home base and its tower, and prints the GUI URL.
 .DESCRIPTION
-  Uses only published CLIs (herdr, node cli.mjs of pi-straw-boss, pi). Isolated: its own XDG_CONFIG_HOME with herdr's default socket under it
+  Uses only published CLIs (herdr, node cli.mjs of pi-straw-boss). Isolated: its own XDG_CONFIG_HOME with herdr's default socket under it
   (so the sb server is the PRIMARY server of this environment), its own PI_CODING_AGENT_DIR, STRAW_BOSS_DESK=1. Records what it started in
   state\start.json so stop.ps1 stops only that.
-  Order (desk B7 plan, "Start order, now (0.46.0)"):
+  Order (desk B7 plan, "Start order, after the B6 + B7 release"):
     1. herdr server (reused only when its pid and start time match and start.json records the same environment fingerprint)
-    2. `cli.mjs up --timeout 90 --exact`: the sb server and the GUI; the URL comes from its answer, no file is read
-    3. print GUI_URL= and SB_DIR= (nothing below delays them)
-    4. tower stopgap until pi-straw-boss B7: reuse the tower herdr restored, else create one. A failure here is a NOTICE=, not a failed start.
+    2. `cli.mjs up --dir <home base folder> --label <name> --timeout 120 --exact`: Herdr's pi integration, the sb server, the home base and its tower
+       (the server makes the tower), and the GUI; the URL comes from its answer, no file is read. start.json records workspace, pane, tower, created
+       and integration from it.
+    3. print GUI_URL= and SB_DIR=
+  The home base folder is %USERPROFILE%\Straw Boss (visible, under home); this script makes it when it is missing, since `up --dir` only checks it.
   Lines on stdout: GUI_URL=<url>, SB_DIR=<slot folder>, NOTICE=<text>. The URL holds the page token: it is printed only here and never logged.
   Exit codes: 0 done; 2 a tool is missing (run bootstrap); 3 a stack from another environment or an unrecorded herdr is running (run stop.ps1);
   4 herdr server silent; 8 reserved; up failed: 10 lock, 11 start, 12 hello, 13 exit, 14 herdr, 15 version, 16 server, 17 gui, 18 other,
   19 server cannot run (up exit 3: loader, intercom, acl), 20 up usage error (a bug here), 21 up answered without a usable URL, 22 the sb server
-  is not in the primary slot.
-  Spike hack still listed in RUNBOOK.md: the tower is a herdr workspace whose shell has STRAW_BOSS_ROLE=tower, with pi started through `herdr agent start`.
+  is not in the primary slot, 23 step base busy (another `up --dir` held desk.lock twice), 24 step base failed (the folder, or Herdr said no),
+  25 step integration failed (herdr integration install pi), 26 up answered without a base (workspace).
 #>
 param(
     [int]$ServerTimeoutSec = 45,
-    [int]$UpTimeoutSec = 90,
-    [int]$RestoreTimeoutSec = 90,
-    [switch]$NoTower
+    [int]$UpTimeoutSec = 120,
+    [string]$HomeBaseDir = $BaseDir,
+    [string]$HomeBaseLabel = $BaseLabel
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
@@ -39,6 +41,7 @@ foreach ($f in @($t.HerdrExe, $t.PiCmd, $t.NodeExe, $t.BashExe, $sbCli)) {
     if (-not (Test-Path -LiteralPath $f)) { Write-Log 'start' 'fail' @{ detail = "missing $f - run bootstrap.ps1 first" }; exit 2 }
 }
 if (-not (Test-Path -LiteralPath $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
+if (-not (Test-Path -LiteralPath $HomeBaseDir)) { New-Item -ItemType Directory -Path $HomeBaseDir -Force | Out-Null }
 
 function Invoke-Herdr {
     param([string[]]$ArgList, [int]$TimeoutSec = 30)
@@ -162,10 +165,10 @@ $state['socket'] = $env:HERDR_SOCKET_PATH
 $state['fingerprint'] = $fingerprint
 Write-JsonFile $startFile $state
 
-# ---- 2. the sb server and the GUI: `cli.mjs up` ----
+# ---- 2. integration, the sb server, the home base with its tower, and the GUI: `cli.mjs up --dir --label` ----
 # Every pi that herdr starts then finds a live server. The URL comes from `up`'s own answer (the server's, already answering 200); no file is read.
 function Invoke-SbUp {
-    $r = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'up', '--timeout', [string]$UpTimeoutSec, '--exact') -TimeoutSec ($UpTimeoutSec + 30)
+    $r = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'up', '--dir', $HomeBaseDir, '--label', $HomeBaseLabel, '--timeout', [string]$UpTimeoutSec, '--exact') -TimeoutSec ($UpTimeoutSec + 30)
     [pscustomobject]@{ Exit = $r.ExitCode; Ok = (Get-JsonLine $r.StdOut); Err = (Get-JsonLine $r.StdErr); Raw = $r }
 }
 
@@ -184,12 +187,14 @@ function Get-UpClass {
         $step = [string]$U.Err.step
         $wait = [string]$U.Err.wait
         if ($wait -eq 'lock' -or $wait -eq 'start' -or $wait -eq 'hello' -or $wait -eq 'exit') { return $wait }
-        if ($step -eq 'herdr' -or $step -eq 'version' -or $step -eq 'server' -or $step -eq 'gui') { return $step }
+        # A busy `base` is another `up --dir` holding desk.lock; any other `base` failure is the folder or Herdr.
+        if ($step -eq 'base' -and ([string]$U.Err.reason) -match '^busy') { return 'basebusy' }
+        if ($step -eq 'herdr' -or $step -eq 'version' -or $step -eq 'server' -or $step -eq 'gui' -or $step -eq 'base' -or $step -eq 'integration') { return $step }
     }
     return 'other'
 }
 
-$upExitCode = @{ 'lock' = 10; 'start' = 11; 'hello' = 12; 'exit' = 13; 'herdr' = 14; 'version' = 15; 'server' = 16; 'gui' = 17; 'other' = 18; 'cannotrun' = 19; 'loader' = 19; 'intercom' = 19; 'acl' = 19; 'usage' = 20; 'nourl' = 21 }
+$upExitCode = @{ 'lock' = 10; 'start' = 11; 'hello' = 12; 'exit' = 13; 'herdr' = 14; 'version' = 15; 'server' = 16; 'gui' = 17; 'other' = 18; 'cannotrun' = 19; 'loader' = 19; 'intercom' = 19; 'acl' = 19; 'usage' = 20; 'nourl' = 21; 'basebusy' = 23; 'base' = 24; 'integration' = 25; 'nobase' = 26 }
 
 function Stop-WithUpFailure {
     param([string]$Class, $U)
@@ -240,6 +245,7 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
         switch ($class) {
             # A start under way ahead of this call, or another requester's, did not finish: one more `up`.
             'lock'  { $retry = $true }
+            'basebusy' { $retry = $true }
             'hello' { $retry = $true }
             'exit'  { $retry = $true }
             'herdr' {
@@ -299,15 +305,27 @@ $sbLog = [string]$upJson.log
 $sbDir = ''
 if ($sbLog) { $sbDir = [IO.Path]::GetFullPath((Split-Path -Parent $sbLog)).TrimEnd('\') }
 $warnCodes = @($upJson.warnings | ForEach-Object { $_.code })
-Write-Log 'start' 'sb-server-up' @{ ms = [int]$sw.ElapsedMilliseconds; pid = $sbPid; version = $upJson.version; server = $upJson.server; mode = $upJson.mode; desk = $upJson.desk; log = $sbLog; steps = @($upJson.steps | ForEach-Object { $_.name + '=' + $_.ms }); warnings = $warnCodes }
+Write-Log 'start' 'sb-server-up' @{ workspace = [string]$upJson.workspace; pane = [string]$upJson.pane; tower = [string]$upJson.tower; created = $upJson.created; integration = [string]$upJson.integration; ms = [int]$sw.ElapsedMilliseconds; pid = $sbPid; version = $upJson.version; server = $upJson.server; mode = $upJson.mode; desk = $upJson.desk; log = $sbLog; steps = @($upJson.steps | ForEach-Object { $_.name + '=' + $_.ms }); warnings = $warnCodes }
 
 $state['sbServerPid'] = $sbPid
 $state['sbServerStart'] = $sbStart
 $state['sbServerLog'] = $sbLog
 $state['sbDir'] = $sbDir
 $state['sbServerRecord'] = if ($sbDir) { Join-Path $sbDir 'server.json' } else { $null }
+# What the desk steps answered: the home base, its pane, the tower the server made, whether this run made the base or the tower, and the integration's state.
+$state['workspaceId'] = [string]$upJson.workspace
+$state['paneId'] = [string]$upJson.pane
+$state['tower'] = [string]$upJson.tower
+$state['created'] = $upJson.created
+$state['integration'] = [string]$upJson.integration
+$state['baseDir'] = $HomeBaseDir
 Write-JsonFile $startFile $state
 
+if (-not $upJson.workspace) {
+    Write-Log 'start' 'fail' @{ detail = 'up --dir answered without a workspace (no home base)' }
+    Write-Host 'FAIL nobase: up answered without a home base'
+    exit 26
+}
 # The URL is checked for its shape only; its token is never logged.
 $url = [string]$upJson.url
 if ($url -notmatch '^http://127\.0\.0\.1:\d+/[0-9a-f]{16,}/$') {
@@ -340,77 +358,6 @@ Write-JsonFile $startFile $state
 Write-Log 'start' 'gui-url' @{ ms = [int]$total.ElapsedMilliseconds }
 Write-Host "GUI_URL=$url"
 Write-Host "SB_DIR=$sbDir"
-
-# ---- 4. tower stopgap (until pi-straw-boss B7's `up --dir`); runs after the URL is out, so it delays nothing ----
-function Get-Agents {
-    $r = Invoke-Herdr @('agent', 'list') 15
-    if ($r.ExitCode -ne 0) { return @() }
-    try { return @(($r.StdOut | ConvertFrom-Json).result.agents) } catch { return @() }
-}
-# A restored tower is known by its workspace's `tower` token (the tower session id) plus a pane whose pi reports
-# sb_role=tower; both appear only after each resumed pi has loaded straw-boss, so wait for them, not just for the panes.
-function Get-Workspaces {
-    $r = Invoke-Herdr @('workspace', 'list') 15
-    if ($r.ExitCode -ne 0) { return @() }
-    try { return @(($r.StdOut | ConvertFrom-Json).result.workspaces) } catch { return @() }
-}
-
-function Invoke-TowerStep {
-    # herdr restores workspaces and resumes pi panes after a server restart ([session] resume_agents_on_restore), and stop.ps1 no longer closes them,
-    # so reuse the restored tower instead of stacking a new one each start (VM 2026-10-26: four bases, three towers).
-    $sw2 = [Diagnostics.Stopwatch]::StartNew()
-    $agents = @(); $towers = @(); $hadWorkspaces = @(Get-Workspaces).Count -gt 0
-    for ($i = 0; $i -lt $RestoreTimeoutSec -and $hadWorkspaces; $i++) {
-        Start-Sleep -Seconds 1
-        $agents = Get-Agents
-        $marked = @(Get-Workspaces | Where-Object { $_.tokens.tower } | ForEach-Object { $_.workspace_id })
-        $towers = @($agents | Where-Object { $_.tokens.sb_role -eq 'tower' -and $marked -contains $_.workspace_id } | Sort-Object { $_.workspace_id })
-        $pending = @($agents | Where-Object { -not $_.tokens.sb_role })
-        if ($towers.Count -gt 0 -and $pending.Count -eq 0) { break }
-    }
-    Write-Log 'start' 'restored' @{ ms = [int]$sw2.ElapsedMilliseconds; agents = $agents.Count; towers = @($towers | ForEach-Object { $_.pane_id }) }
-    if ($towers.Count -gt 0) {
-        $keep = $towers[0]
-        # An extra tower's workspace closes only when it holds nothing else: its mains and members are the PM's work.
-        foreach ($extra in @($towers | Select-Object -Skip 1)) {
-            $others = @($agents | Where-Object { $_.workspace_id -eq $extra.workspace_id -and $_.pane_id -ne $extra.pane_id })
-            if ($others.Count -gt 0) { Write-Log 'start' 'kept-duplicate-tower' @{ workspaceId = $extra.workspace_id; others = $others.Count }; continue }
-            $c = Invoke-Herdr @('workspace', 'close', $extra.workspace_id) 30
-            Write-Log 'start' 'closed-duplicate-tower' @{ workspaceId = $extra.workspace_id; exit = $c.ExitCode }
-        }
-        $state['workspaceId'] = $keep.workspace_id
-        $state['paneId'] = $keep.pane_id
-        $state['reused'] = $true
-        Write-JsonFile $startFile $state
-        Write-Log 'start' 'tower-reused' @{ ms = [int]$sw2.ElapsedMilliseconds; workspaceId = $keep.workspace_id; paneId = $keep.pane_id }
-        return
-    }
-    $ws = Invoke-Herdr @('workspace', 'create', '--cwd', $WorkDir, '--label', 'tower', '--no-focus', '--env', 'STRAW_BOSS_ROLE=tower') 30
-    if ($ws.ExitCode -ne 0) { throw "workspace create: $(Get-FirstLine ($ws.StdErr + $ws.StdOut))" }
-    $wsObj = ($ws.StdOut | ConvertFrom-Json).result
-    $workspaceId = $wsObj.workspace.workspace_id
-    $paneId = $wsObj.root_pane.pane_id
-    $state['workspaceId'] = $workspaceId
-    $state['paneId'] = $paneId
-    $state['reused'] = $false
-    Write-JsonFile $startFile $state
-    Write-Log 'start' 'workspace' @{ workspaceId = $workspaceId; paneId = $paneId }
-
-    $agentName = ('tower-' + $workspaceId).ToLowerInvariant()
-    $ag = Invoke-Herdr @('agent', 'start', $agentName, '--kind', 'pi', '--pane', $paneId, '--timeout', '120000', '--', '--name', 'tower') 150
-    $read = Invoke-Herdr @('pane', 'read', $paneId, '--source', 'visible', '--lines', '60') 20
-    Set-Content -LiteralPath (Join-Path $LogDir 'start-tower-pane.txt') -Value $read.StdOut -Encoding UTF8
-    if ($ag.ExitCode -ne 0) { throw "agent start pi: $(Get-FirstLine ($ag.StdErr + $ag.StdOut))" }
-    Write-Log 'start' 'tower-pi' @{ ms = [int]$sw2.ElapsedMilliseconds; agent = $agentName }
-}
-
-if ($NoTower) {
-    Write-Log 'start' 'tower-skipped' @{ detail = 'NoTower' }
-} else {
-    try { Invoke-TowerStep } catch {
-        Add-Notice ("tower: " + $_.Exception.Message)
-    }
-}
 
 # Snapshot of everything under the herdr server, so stop.ps1 can verify nothing of ours remains.
 $state['tree'] = @(Get-ProcessTree $serverPid)

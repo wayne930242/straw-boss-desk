@@ -8,7 +8,7 @@ import { release } from "node:os";
 import { Follower, type FollowHost, type Screen, type UpResult } from "./follow.js";
 
 // Spike prototype. It runs the kit's start.ps1 (which owns every straw-boss detail), shows a minimal status page while it runs,
-// then loads the GUI URL start.ps1 prints as soon as it prints it (the tower step of start.ps1 goes on in the background).
+// then loads the GUI URL start.ps1 prints as soon as it prints it (start.ps1 has nothing left to do after that print).
 // A Follower (follow.ts) then watches the sb server's slot folder (SB_DIR) and keeps the window on the live URL through restarts,
 // upgrades and crashes, and shows the stopped and failed screens with a Start button.
 // The debug menu exists for the Windows VM session; every action also runs unattended
@@ -57,7 +57,7 @@ let kitStarted = false;
 let follower: Follower | undefined;
 let quitting = false;
 let startChild: ChildProcess | undefined;
-// The previous start.ps1 run, whole: a second one (the follower's) never overlaps it, so the first run's tower step and the next run's `up` do not race.
+// The previous start.ps1 run, whole: a second one (the follower's) never overlaps it, so two `up --dir` never race for desk.lock.
 let kitBusy: Promise<unknown> = Promise.resolve();
 
 const state = (text: string) => { try { liveWin()?.webContents.send("sbd:state", text); } catch { /* closing */ } };
@@ -78,7 +78,7 @@ class StartFailure extends Error {
 
 interface KitRun { url: string; dir: string | undefined; closed: Promise<number | null> }
 
-/** Runs start.ps1 and resolves as soon as it has printed GUI_URL= and SB_DIR=; the run goes on (its tower step) and `closed` settles at its end. */
+/** Runs start.ps1 and resolves as soon as it has printed GUI_URL= and SB_DIR=; the run ends right after, and `closed` settles at its end. */
 async function runStart(args: string[]): Promise<KitRun> {
 	await kitBusy;
 	if (quitting) throw new Error("the app is quitting; start.ps1 is not run");
@@ -138,7 +138,7 @@ async function runStart(args: string[]): Promise<KitRun> {
 	});
 }
 
-// A line the kit printed as NOTICE= (a tower that did not start, a server that ends with its starter): shown for a while, never a failed start.
+// A line the kit printed as NOTICE= (a server that ends with its starter): shown for a while, never a failed start.
 function notice(text: string) {
 	banner(text);
 	setTimeout(() => banner(undefined), 12_000);
@@ -212,8 +212,8 @@ const followHost: FollowHost = {
 	banner,
 	runUp: async (): Promise<UpResult> => {
 		try {
-			// -NoTower: the follower only needs the stack and the URL; the restored tower is already there, and the first run owned the tower step.
-			const run = await runStart(["-NoTower"]);
+			// `up --dir` finds the kept base and its tower (created: false), so the follower's run changes nothing but the stack and the URL.
+			const run = await runStart([]);
 			return { ok: true, url: run.url };
 		} catch (e) {
 			return { ok: false, code: e instanceof StartFailure ? e.code : null, text: (e as Error).message };

@@ -24,6 +24,9 @@ $script:NpmCache  = Join-Path $Tools 'npm-cache'
 $script:DlDir     = Join-Path $Tools 'downloads'
 # The folder panes start in. It sits under the user's profile (the GUI folder picker never leaves home) and keeps the profile's non-ASCII name in play.
 $script:WorkDir   = Join-Path $env:USERPROFILE 'sbd-playground'
+# The home base (desk-mode spec, Notes for the shell): a visible folder under home. `up --dir` needs it to exist and `--label` names the workspace.
+$script:BaseDir   = Join-Path $env:USERPROFILE 'Straw Boss'
+$script:BaseLabel = 'Straw Boss'
 
 foreach ($d in @($SbdRoot, $Tools, $AgentDir, $LogDir, $StateDir, $ResultDir, $HerdrDir, $ClaudeDir, $DlDir)) {
     if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }

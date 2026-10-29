@@ -10,7 +10,9 @@
   Items:
     A0  the four slot variables reach a pane (task 1)
     A1  cold and warm starts, -Runs of each: GUI_URL, SB_DIR, 200, status live/desk/primary, no browser process, time to GUI_URL
-    A2  the tower step runs after GUI_URL; a second start reuses; stop then start reuses the restored tower (one sb_role=tower)
+    A6  (after B7) start.ps1 runs `up --dir`: one home base with one tower tab; a second start makes nothing new; stop then start finds the restored tab
+    A7  (after B7) the integration removed: start.ps1 installs it again (`integration: installed`)
+    A9  (after B7) a pi started in a pane with the integration missing warns once after 20 s
     A3  the prototype follows restart, kill, and /boss gui stop + Start (needs the prototype installed; uses CDP on 127.0.0.1)
     A4  stop order and leftovers; workspaces come back
     A5  injected failures: herdr not running, up --timeout 5 cold, held lock then retry, tsx missing then repair, server started without the switch
@@ -225,28 +227,85 @@ if (Test-Item 'A1') {
     Add-Step 'A1.warm-time' 'PASS' "time to GUI_URL, warm, ms: $($warm -join ', ') (recorded)"
 }
 
-# ---- A2: tower after the URL, reuse -------------------------------------------------------------------------------------
-if (Test-Item 'A2') {
+# ---- A6: `up --dir` through start.ps1 -----------------------------------------------------------------------------------
+function Get-BasePanes {
+    $r = Invoke-Herdr @('pane', 'list') 20
+    if ($r.ExitCode -ne 0) { return @() }
+    try { return @((($r.StdOut | ConvertFrom-Json).result.panes) | Where-Object { $_.tokens.sb_role -eq 'tower' }) } catch { return @() }
+}
+function Get-WorkspaceCount {
+    $r = Invoke-Herdr @('workspace', 'list') 20
+    try { return @((($r.StdOut | ConvertFrom-Json).result.workspaces)).Count } catch { return -1 }
+}
+function Get-TowerTabCount {
+    param([string]$Workspace)
+    $r = Invoke-Herdr @('tab', 'list', '--workspace', $Workspace) 20
+    try { return @((($r.StdOut | ConvertFrom-Json).result.tabs)).Count } catch { return -1 }
+}
+if (Test-Item 'A6') {
     Reset-KitState
-    $s = Test-OneStart 'A2.first'
+    $homeBase = Join-Path $env:USERPROFILE 'Straw Boss'
+    $s = Test-OneStart 'A6.first'
     if ($s) {
-        $ev = @(Get-StartEvents $s.Since)
-        $gui = $ev | Where-Object { $_.event -eq 'gui-url' } | Select-Object -First 1
-        $tower = $ev | Where-Object { $_.event -eq 'tower-pi' -or $_.event -eq 'tower-reused' -or $_.event -eq 'workspace' } | Select-Object -First 1
-        $order = ($gui -and $tower -and ((ConvertTo-UtcInstant $gui.ts) -le (ConvertTo-UtcInstant $tower.ts)))
-        Add-Step 'A2.tower-after-url' $(if ($order) { 'PASS' } else { 'FAIL' }) "gui-url at $($gui.ts); first tower event '$($tower.event)' at $($tower.ts)"
+        $rec = $s.Rec
+        $panes = @(Get-BasePanes)
+        $okFirst = ($rec.created -eq $true -and $rec.workspaceId -and $rec.paneId -and $rec.tower -and (Get-WorkspaceCount) -eq 1 -and (Get-TowerTabCount $rec.workspaceId) -eq 1 -and $panes.Count -eq 1)
+        Add-Step 'A6.created' $(if ($okFirst) { 'PASS' } else { 'FAIL' }) "start.json: workspace=$($rec.workspaceId) pane=$($rec.paneId) tower=$($rec.tower) created=$($rec.created) integration=$($rec.integration); workspaces=$(Get-WorkspaceCount); tabs=$(Get-TowerTabCount $rec.workspaceId); sb_role=tower panes=$($panes.Count); base folder $homeBase exists: $(Test-Path -LiteralPath $homeBase)"
         $second = Invoke-Kit 'start.ps1'
-        $ev2 = @(Get-StartEvents $s.Since | Where-Object { $_.event -eq 'herdr-reused' -or $_.event -eq 'tower-reused' })
-        $n = @(Get-TowerAgents).Count
-        $ok2 = ($second.Exit -eq 0 -and (Get-UrlFromOut $second.Out) -and ($ev2 | Where-Object { $_.event -eq 'herdr-reused' }) -and ($ev2 | Where-Object { $_.event -eq 'tower-reused' }) -and $n -eq 1)
-        Add-Step 'A2.second-start-reuses' $(if ($ok2) { 'PASS' } else { 'FAIL' }) "exit $($second.Exit); events: $(($ev2 | ForEach-Object { $_.event }) -join ','); sb_role=tower agents: $n"
+        $rec2 = Read-JsonFile $startFile
+        $ok2 = ($second.Exit -eq 0 -and (Get-UrlFromOut $second.Out) -and $rec2.created -eq $false -and $rec2.workspaceId -eq $rec.workspaceId -and (Get-TowerTabCount $rec.workspaceId) -eq 1)
+        Add-Step 'A6.second-start-no-new-tab' $(if ($ok2) { 'PASS' } else { 'FAIL' }) "exit $($second.Exit); created=$($rec2.created); workspace=$($rec2.workspaceId); tabs=$(Get-TowerTabCount $rec.workspaceId)"
         [void](Invoke-Kit 'stop.ps1' @() 300)
-        $since3 = Get-Date
         $third = Invoke-Kit 'start.ps1'
-        $ev3 = @(Get-StartEvents $since3 | Where-Object { $_.event -eq 'tower-reused' -or $_.event -eq 'workspace' })
-        $n3 = @(Get-TowerAgents).Count
-        $ok3 = ($third.Exit -eq 0 -and ($ev3 | Where-Object { $_.event -eq 'tower-reused' }) -and -not ($ev3 | Where-Object { $_.event -eq 'workspace' }) -and $n3 -eq 1)
-        Add-Step 'A2.restored-tower-reused' $(if ($ok3) { 'PASS' } else { 'FAIL' }) "stop then start: exit $($third.Exit); events: $(($ev3 | ForEach-Object { $_.event }) -join ','); sb_role=tower agents: $n3"
+        $rec3 = Read-JsonFile $startFile
+        $st3 = (Get-Status).Json
+        $towers = @($st3.towers)
+        $ok3 = ($third.Exit -eq 0 -and $rec3.created -eq $false -and $rec3.workspaceId -eq $rec.workspaceId -and (Get-TowerTabCount $rec.workspaceId) -eq 1 -and (Get-WorkspaceCount) -eq 1)
+        Add-Step 'A6.restored-tab-found' $(if ($ok3) { 'PASS' } else { 'FAIL' }) "stop then start: exit $($third.Exit); created=$($rec3.created); workspace=$($rec3.workspaceId); tabs=$(Get-TowerTabCount $rec.workspaceId); status.towers=$($towers.Count) (the tower service's own view; empty when status does not list it, check the log's tower-registered line)"
+    }
+}
+
+# ---- A7: the integration is installed by `up --dir` ---------------------------------------------------------------------
+if (Test-Item 'A7') {
+    Reset-KitState
+    $ext = Join-Path $AgentDir 'extensions\herdr-agent-state.ts'
+    $s = Test-OneStart 'A7.first'
+    if ($s) {
+        [void](Invoke-Kit 'stop.ps1' @() 300)
+        if (Test-Path -LiteralPath $ext) { Remove-Item -LiteralPath $ext -Force }
+        $gone = -not (Test-Path -LiteralPath $ext)
+        $r = Invoke-Kit 'start.ps1'
+        $rec = Read-JsonFile $startFile
+        Add-Step 'A7.reinstalled' $(if ($gone -and $r.Exit -eq 0 -and $rec.integration -eq 'installed' -and (Test-Path -LiteralPath $ext)) { 'PASS' } else { 'FAIL' }) "extension removed: $gone; start.ps1 exit $($r.Exit); integration=$($rec.integration); extension back: $(Test-Path -LiteralPath $ext)"
+        [void](Invoke-Kit 'stop.ps1' @() 300)
+    }
+}
+
+# ---- A9: a pi without the integration warns once after 20 s -------------------------------------------------------------
+if (Test-Item 'A9') {
+    Reset-KitState
+    $ext = Join-Path $AgentDir 'extensions\herdr-agent-state.ts'
+    $s = Test-OneStart 'A9.first'
+    if ($s) {
+        # up --dir installed the integration; remove it again, then start a pi in a new workspace of the base's Herdr.
+        if (Test-Path -LiteralPath $ext) { Remove-Item -LiteralPath $ext -Force }
+        $ws = Invoke-Herdr @('workspace', 'create', '--cwd', $WorkDir, '--label', 'a9', '--no-focus') 30
+        $paneId = $null
+        try { $paneId = ($ws.StdOut | ConvertFrom-Json).result.root_pane.pane_id } catch { }
+        if (-not $paneId) { Add-Step 'A9.pane' 'FAIL' "workspace create: exit $($ws.ExitCode)" }
+        else {
+            $ag = Invoke-Herdr @('agent', 'start', 'a9-pi', '--kind', 'pi', '--pane', $paneId, '--timeout', '120000') 150
+            $text = ''; $seenAt = $null; $sw = [Diagnostics.Stopwatch]::StartNew()
+            while ($sw.Elapsed.TotalSeconds -lt 60 -and -not $seenAt) {
+                Start-Sleep -Seconds 2
+                $read = Invoke-Herdr @('pane', 'read', $paneId, '--source', 'visible', '--lines', '60') 20
+                $text = $read.StdOut
+                if ($text -match 'integration is missing') { $seenAt = [int]$sw.Elapsed.TotalSeconds }
+            }
+            $count = ([regex]::Matches($text, 'integration is missing')).Count
+            Add-Step 'A9.warns' $(if ($seenAt -and $seenAt -ge 15 -and $count -eq 1) { 'PASS' } else { 'FAIL' }) "agent start exit $($ag.ExitCode); warning seen after $seenAt s (expected about 20); occurrences on screen: $count"
+        }
+        [void](Invoke-Kit 'stop.ps1' @() 300)
     }
 }
 
@@ -417,7 +476,7 @@ if (Test-Sub 'b') {
 # c. server.lock held by a live process until 24 s: with -UpTimeoutSec 20 the first up reports wait=lock after its 20 s, start.ps1 retries once, and the retry gets the lock.
 if (Test-Sub 'c') {
     Reset-KitState
-    [void](Invoke-Kit 'start.ps1' @('-NoTower'))
+    [void](Invoke-Kit 'start.ps1')
     [void](Invoke-Kit 'stop.ps1' @() 300)
     $lockFile = Join-Path $sbDir 'server.lock'
     $holder = Start-Process -FilePath $psExe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 120' -WindowStyle Hidden -PassThru
@@ -425,7 +484,7 @@ if (Test-Sub 'c') {
     Write-AllTextUtf8 $lockFile $lockBody
     $rel = Start-Job -ScriptBlock { param($p, $pidToStop) Start-Sleep -Seconds 24; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } -ArgumentList $lockFile
     $since = Get-Date
-    $r = Invoke-Kit 'start.ps1' @('-NoTower', '-UpTimeoutSec', '20')
+    $r = Invoke-Kit 'start.ps1' @('-UpTimeoutSec', '20')
     Wait-Job $rel -Timeout 30 | Out-Null; Remove-Job $rel -Force -ErrorAction SilentlyContinue
     try { if (-not $holder.HasExited) { $holder.Kill() } } catch { }
     $retry = @(Get-StartEvents $since | Where-Object { $_.event -eq 'up-attempt-failed' -and $_.class -eq 'lock' })
@@ -443,7 +502,7 @@ if (Test-Sub 'd') {
         Rename-Item -LiteralPath $tsx -NewName (Split-Path -Leaf $off)
         try {
             $since = Get-Date
-            $r = Invoke-Kit 'start.ps1' @('-NoTower') 2400
+            $r = Invoke-Kit 'start.ps1' 2400
             $ev = @(Get-StartEvents $since)
             $rep = @($ev | Where-Object { $_.event -eq 'repair' })
             $loader = @($ev | Where-Object { $_.event -eq 'up-attempt-failed' -and $_.class -eq 'loader' })
@@ -459,7 +518,7 @@ if (Test-Sub 'd') {
 # e. a server running without the desk switch (someone ran `up` in a shell without it): start.ps1's `up` restarts it ("desk switch") under a new token and ends with a live desk server.
 if (Test-Sub 'e') {
     Reset-KitState
-    $r0 = Invoke-Kit 'start.ps1' @('-NoTower')
+    $r0 = Invoke-Kit 'start.ps1'
     [void](Get-NodeJson @($sbCli, 'stop') 150)
     $saved = $env:STRAW_BOSS_DESK
     Remove-Item Env:STRAW_BOSS_DESK
@@ -467,7 +526,7 @@ if (Test-Sub 'e') {
     $env:STRAW_BOSS_DESK = $saved
     $tokenBefore = (Read-GuiRecord).token
     $since = Get-Date
-    $r = Invoke-Kit 'start.ps1' @('-NoTower')
+    $r = Invoke-Kit 'start.ps1'
     $tokenAfter = (Read-GuiRecord).token
     $st = (Get-Status).Json
     $upEv = @(Get-StartEvents $since | Where-Object { $_.event -eq 'sb-server-up' } | Select-Object -Last 1)

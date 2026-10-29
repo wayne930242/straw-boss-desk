@@ -244,21 +244,19 @@ Add-Check 'stack-start' {
     $ok = Ensure-Started
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     if (-not $ok) { return (Fail ("start.ps1 failed. " + (Get-FirstLine $script:Ctx.StartOut) + ' see logs\start.jsonl')) }
-    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) tower pane=$($s.paneId) sbDir=$($s.sbDir) guiMs=$($s.guiMs) totalMs=$($s.totalMs)" $s
+    Pass "herdr server pid=$($s.serverPid) sb server pid=$($s.sbServerPid) home base pane=$($s.paneId) sbDir=$($s.sbDir) guiMs=$($s.guiMs) totalMs=$($s.totalMs)" $s
 }
 
-Add-Check 'herdr-pane-runs-pi' {
+Add-Check 'home-base-tower' {
     if (-not (Ensure-Started)) { return (Skip 'stack not started') }
     $s = Read-JsonFile (Join-Path $StateDir 'start.json')
     $l = Invoke-Herdr @('pane', 'list') 30
     $panes = @((($l.StdOut | ConvertFrom-Json).result.panes))
-    $tower = $panes | Where-Object { $_.pane_id -eq $s.paneId } | Select-Object -First 1
-    $read = Invoke-Herdr @('pane', 'read', $s.paneId, '--source', 'visible', '--lines', '40') 30
-    $lines = @($read.StdOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 8)
-    $errs = @($read.StdOut -split "`r?`n" | Where-Object { $_ -match 'Failed to load|Cannot find module|Error:|ERR_' } | Select-Object -First 5)
-    $data = [ordered]@{ pane = $tower; screenSample = $lines; loadErrors = $errs }
-    $ev = "tower pane agent=$($tower.agent) status=$($tower.agent_status) sb_role=$($tower.tokens.sb_role); load-error lines on screen=$($errs.Count)"
-    if ($tower.agent -eq 'pi') { if ($errs.Count) { Fail $ev $data } else { Pass $ev $data } } else { Fail $ev $data }
+    $base = $panes | Where-Object { $_.pane_id -eq $s.paneId } | Select-Object -First 1
+    $integ = Test-Path -LiteralPath (Join-Path $AgentDir 'extensions\herdr-agent-state.ts')
+    $data = [ordered]@{ pane = $base; workspace = $s.workspaceId; tower = $s.tower; created = $s.created; integration = $s.integration; integrationFile = $integ }
+    $ev = "home base workspace=$($s.workspaceId) pane=$($s.paneId) sb_role=$($base.tokens.sb_role) tower=$($s.tower) created=$($s.created) integration=$($s.integration) extension file=$integ"
+    if ($base -and $base.tokens.sb_role -eq 'tower' -and $s.tower -and $integ) { Pass $ev $data } else { Fail $ev $data }
 }
 
 Add-Check 'gui-answers-200' {

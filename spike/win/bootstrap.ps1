@@ -237,17 +237,7 @@ Invoke-Stage 'user-path' {
     if (($cur -contains $NpmPrefix) -and ($cur -contains (Split-Path -Parent $t.HerdrExe)) -and ($cur -contains (Split-Path -Parent $t.GitExe))) { "user PATH has npm, herdr and git" }
 }
 
-# Without herdr's pi integration, pi panes never report state to herdr and never join the straw net
-# (GUI shows 0 agents; mac spike finding, confirmed in the Windows VM 2026-10-26).
-Invoke-Stage 'herdr-pi-integration' {
-    if (Test-Path -LiteralPath (Join-Path $AgentDir 'extensions\herdr-agent-state.ts')) { return 'pi integration installed' }
-} {
-    Set-SbdEnv
-    $r = Invoke-Native -File $t.HerdrExe -ArgList @('integration', 'install', 'pi') -TimeoutSec 60
-    if ($r.ExitCode -ne 0) { throw "herdr integration install pi: exit $($r.ExitCode) $($r.StdErr)" }
-} {
-    if (Test-Path -LiteralPath (Join-Path $AgentDir 'extensions\herdr-agent-state.ts')) { 'pi integration installed' }
-}
+# Herdr's pi integration is no longer a stage here: `cli.mjs up --dir` (start.ps1) installs it, and a pi that finds it missing warns after 20 s.
 
 Invoke-Stage 'profile' {
     $a = Join-Path $AgentDir 'AGENTS.md'
