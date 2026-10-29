@@ -22,8 +22,8 @@
 param(
     [int]$ServerTimeoutSec = 45,
     [int]$UpTimeoutSec = 120,
-    [string]$HomeBaseDir = $BaseDir,
-    [string]$HomeBaseLabel = $BaseLabel
+    [string]$HomeBaseDir = '',
+    [string]$HomeBaseLabel = ''
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
@@ -31,6 +31,8 @@ param(
 # into U+FFFD (VM 2026-10-28) and left the app's follower unable to open the slot folder.
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $script:LogFile = Join-Path $LogDir 'start.jsonl'
+if (-not $HomeBaseDir) { $HomeBaseDir = $BaseDir }
+if (-not $HomeBaseLabel) { $HomeBaseLabel = $BaseLabel }
 Set-SbdEnv
 $t = Get-ToolPaths
 $startFile = Join-Path $StateDir 'start.json'
