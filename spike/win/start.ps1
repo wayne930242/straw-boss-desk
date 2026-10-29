@@ -16,8 +16,8 @@
   Exit codes: 0 done; 2 a tool is missing (run bootstrap); 3 a stack from another environment or an unrecorded herdr is running (run stop.ps1);
   4 herdr server silent; 8 reserved; up failed: 10 lock, 11 start, 12 hello, 13 exit, 14 herdr, 15 version, 16 server, 17 gui, 18 other,
   19 server cannot run (up exit 3: loader, intercom, acl), 20 up usage error (a bug here), 21 up answered without a usable URL, 22 the sb server
-  is not in the primary slot, 23 step base busy (another `up --dir` held desk.lock twice), 24 step base failed (the folder, or Herdr said no),
-  25 step integration failed (herdr integration install pi), 26 up answered without a base (workspace).
+  is not in the primary slot, 23 step base busy (another `up --dir` held desk.lock through 3 retries, 3/6/12 s apart), 24 step base failed (the folder, or Herdr said no),
+  25 step integration failed (herdr integration install pi), 26 up answered without a base (workspace), 27 step tower failed.
 #>
 param(
     [int]$ServerTimeoutSec = 45,
@@ -191,12 +191,12 @@ function Get-UpClass {
         if ($wait -eq 'lock' -or $wait -eq 'start' -or $wait -eq 'hello' -or $wait -eq 'exit') { return $wait }
         # A busy `base` is another `up --dir` holding desk.lock; any other `base` failure is the folder or Herdr.
         if ($step -eq 'base' -and ([string]$U.Err.reason) -match '^busy') { return 'basebusy' }
-        if ($step -eq 'herdr' -or $step -eq 'version' -or $step -eq 'server' -or $step -eq 'gui' -or $step -eq 'base' -or $step -eq 'integration') { return $step }
+        if ($step -eq 'herdr' -or $step -eq 'version' -or $step -eq 'server' -or $step -eq 'gui' -or $step -eq 'base' -or $step -eq 'integration' -or $step -eq 'tower') { return $step }
     }
     return 'other'
 }
 
-$upExitCode = @{ 'lock' = 10; 'start' = 11; 'hello' = 12; 'exit' = 13; 'herdr' = 14; 'version' = 15; 'server' = 16; 'gui' = 17; 'other' = 18; 'cannotrun' = 19; 'loader' = 19; 'intercom' = 19; 'acl' = 19; 'usage' = 20; 'nourl' = 21; 'basebusy' = 23; 'base' = 24; 'integration' = 25; 'nobase' = 26 }
+$upExitCode = @{ 'lock' = 10; 'start' = 11; 'hello' = 12; 'exit' = 13; 'herdr' = 14; 'version' = 15; 'server' = 16; 'gui' = 17; 'other' = 18; 'cannotrun' = 19; 'loader' = 19; 'intercom' = 19; 'acl' = 19; 'usage' = 20; 'nourl' = 21; 'basebusy' = 23; 'base' = 24; 'integration' = 25; 'nobase' = 26; 'tower' = 27 }
 
 function Stop-WithUpFailure {
     param([string]$Class, $U)
@@ -211,8 +211,8 @@ function Stop-WithUpFailure {
     if ($U.Err) { $data['step'] = [string]$U.Err.step; $data['wait'] = [string]$U.Err.wait }
     if ($startErr) { $data['startError'] = [string]$startErr.code; $data['startErrorText'] = (Hide-Token ([string]$startErr.text)) }
     Write-Log 'start' 'fail' $data
-    # The log's tail is what a person needs for a start that did not answer or a GUI that did not start.
-    if ($Class -eq 'start' -or $Class -eq 'gui' -or $Class -eq 'other' -or $Class -eq 'hello') {
+    # The log's tail is what a person needs for a start that did not answer, a GUI that did not start, or a tower that did not come up.
+    if ($Class -eq 'start' -or $Class -eq 'gui' -or $Class -eq 'tower' -or $Class -eq 'other' -or $Class -eq 'hello') {
         $tail = Invoke-Native -File $t.NodeExe -ArgList @($sbCli, 'logs', '--lines', '40') -TimeoutSec 60
         Set-Content -LiteralPath (Join-Path $LogDir 'start-sb-log-tail.txt') -Value (Hide-Token $tail.StdOut) -Encoding UTF8
     }
@@ -243,11 +243,13 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
     $tried = [int]$attempts[$class]
     Write-Log 'start' 'up-attempt-failed' @{ round = $round; class = $class; exit = $u.Exit; ms = $u.Raw.Ms; detail = (Hide-Token (Get-FirstLine ([string]$u.Err.reason))) }
     $retry = $false
+    $pause = 1
+    # A real concurrent `up --dir` holds desk.lock for the length of its run, so a busy base is retried three times with a doubling wait (3, 6, 12 s): bounded, 21 s at most.
+    if ($class -eq 'basebusy' -and $tried -lt 3) { $retry = $true; $pause = 3 * [int][math]::Pow(2, $tried) }
     if ($tried -eq 0) {
         switch ($class) {
             # A start under way ahead of this call, or another requester's, did not finish: one more `up`.
             'lock'  { $retry = $true }
-            'basebusy' { $retry = $true }
             'hello' { $retry = $true }
             'exit'  { $retry = $true }
             'herdr' {
@@ -294,7 +296,7 @@ for ($round = 1; $round -le 8 -and -not $upJson; $round++) {
     }
     if (-not $retry) { Stop-WithUpFailure $class $u }
     $attempts[$class] = $tried + 1
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds $pause
 }
 if (-not $upJson) { Stop-WithUpFailure 'other' $u }
 
@@ -361,7 +363,8 @@ Write-Log 'start' 'gui-url' @{ ms = [int]$total.ElapsedMilliseconds }
 Write-Host "GUI_URL=$url"
 Write-Host "SB_DIR=$sbDir"
 
-# Snapshot of everything under the herdr server, so stop.ps1 can verify nothing of ours remains.
+# Snapshot of everything under the herdr server, so stop.ps1 can verify nothing of ours remains. It may miss a tower pi typed into the pane later: stop.ps1 takes
+# its own snapshot at stop time (while the server is up) and merges it with this one, and kills only by a matching start time, so nothing is lost.
 $state['tree'] = @(Get-ProcessTree $serverPid)
 $state['totalMs'] = [int]$total.ElapsedMilliseconds
 Write-JsonFile $startFile $state

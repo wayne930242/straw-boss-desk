@@ -21,7 +21,7 @@ SBD_SHOT=$PWD/docs/spikes/mac-gui.png SBD_SHOT_DELAY_MS=4000 \
 spike/mac/99-stop.sh                         # stop order: cli.mjs stop, wait for the sb server, herdr server stop, leftovers by recorded pid and start time
 ```
 
-`03-up.sh` exit codes: 0 done; 2 pi-straw-boss not installed; 4 the spike's herdr is not running; 10 + N `up` failed with exit N (11 a step failed, 12 usage, 13 the server cannot run); 21 `up` answered without a usable URL; 22 the sb server is not in the primary slot; 23 step `base` busy (another `up --dir` holds `desk.lock`); 24 step `base` failed (the folder, or Herdr said no); 25 step `integration` failed; 26 `up` answered without a base.
+`03-up.sh` exit codes: 0 done; 2 pi-straw-boss not installed; 4 the spike's herdr is not running; 10 + N `up` failed with exit N (11 a step failed, 12 usage, 13 the server cannot run); 21 `up` answered without a usable URL; 22 the sb server is not in the primary slot; 23 step `base` busy (another `up --dir` holds `desk.lock`); 24 step `base` failed (the folder, or Herdr said no); 25 step `integration` failed; 26 `up` answered without a base; 27 step `tower` failed.
 The home base folder is `$HOME/Straw Boss` (`$SPIKE/home/Straw Boss`; visible and under home, as the desk-mode spec asks); `03-up.sh` makes it when missing, since `up --dir` only checks it. `01-install.sh` no longer runs `herdr integration install pi`: `up --dir` does.
 The URL carries the page token: `03-up.sh` prints it once and keeps it on disk only while it runs.
 

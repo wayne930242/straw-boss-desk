@@ -6,7 +6,7 @@
 # desk steps answered (workspace, pane, tower, created, integration) in $SPIKE/run/base.json. The home base folder is $HOME/Straw Boss, made here when missing.
 # Exit codes: 0 done; 2 pi-straw-boss not installed; 4 the spike's herdr is not running; 10+N `up` failed with exit N (11 a step failed, 12 usage, 13 the
 # server cannot run); 21 `up` answered without a usable URL; 22 the sb server is not in the primary slot; 23 step base busy (another `up --dir` holds desk.lock);
-# 24 step base failed (the folder, or Herdr said no); 25 step integration failed; 26 `up` answered without a base (workspace).
+# 24 step base failed (the folder, or Herdr said no); 25 step integration failed; 26 `up` answered without a base (workspace); 27 step tower failed.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -n "${SPIKE_CLEAN:-}" ] || exec "$here/run.sh" "$0" "$@"
@@ -35,9 +35,9 @@ if [ "$code" -ne 0 ]; then
   # The desk steps' failures get their own codes (the Windows kit's 23 to 25): a busy desk.lock, a base that could not be made, the integration.
   failure="$(node -e '
     const line = require("fs").readFileSync(process.argv[1], "utf8").split(/\r?\n/).filter((l) => l.trim().startsWith("{")).pop();
-    try { const j = JSON.parse(line); console.log(j.step === "base" ? (/^busy/.test(String(j.reason)) ? "basebusy" : "base") : j.step === "integration" ? "integration" : ""); } catch { console.log(""); }
+    try { const j = JSON.parse(line); console.log(j.step === "base" ? (/^busy/.test(String(j.reason)) ? "basebusy" : "base") : j.step === "integration" ? "integration" : j.step === "tower" ? "tower" : ""); } catch { console.log(""); }
   ' "$err")"
-  case "$failure" in basebusy) exit 23;; base) exit 24;; integration) exit 25;; esac
+  case "$failure" in basebusy) exit 23;; base) exit 24;; integration) exit 25;; tower) exit 27;; esac
   exit $((10 + code))
 fi
 # url|pid|started|log|desk|server|workspace|pane|tower|created|integration ; a field may be empty
@@ -51,8 +51,6 @@ fields="$(node -e '
 IFS='|' read -r url pid started log desk how workspace pane tower created integration <<< "$fields"
 case "$url" in http://127.0.0.1:*/*/) ;; *) echo "FAIL up answered with a URL of an unexpected shape (not shown)"; exit 21;; esac
 printf '%s' "$url" | grep -Eq '^http://127\.0\.0\.1:[0-9]+/[0-9a-f]{16,}/$' || { echo "FAIL up answered with a URL of an unexpected shape (not shown)"; exit 21; }
-[ -n "$workspace" ] || { echo "FAIL up --dir answered without a home base (workspace)"; exit 26; }
-printf '{"workspace":"%s","pane":"%s","tower":"%s","created":%s,"integration":"%s","dir":"%s"}\n' "$workspace" "$pane" "$tower" "${created:-null}" "$integration" "$base_dir" > "$SPIKE/run/base.json"
 sbdir="$(dirname "$log")"
 if [ "$sbdir" != "$PI_CODING_AGENT_DIR/straw-boss" ]; then
   echo "FAIL slot: the sb server is not in the primary slot ($sbdir)"; exit 22
@@ -62,6 +60,12 @@ fi
 sb_start="$(proc_start "$pid")"
 sb_utc="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
 if [ -n "$sb_start" ] && [ -n "$started" ] && [ "$sb_utc" = "$started" ]; then echo "$pid" > "$SPIKE/run/sb.pid"; echo "$sb_start" > "$SPIKE/run/sb.start"; else echo "NOTICE=the sb server pid $pid has no readable or matching start time; not recorded, 99-stop.sh will not kill it" >&2; fi
+[ -n "$workspace" ] || { echo "FAIL up --dir answered without a home base (workspace)"; exit 26; }
+# base.json is written by node, so an absent field is null and a path with a quote or backslash stays valid JSON.
+node -e '
+  const [workspace, pane, tower, created, integration, dir] = process.argv.slice(1);
+  console.log(JSON.stringify({ workspace, pane, tower, created: created === "true" ? true : created === "false" ? false : null, integration, dir }));
+' "$workspace" "$pane" "$tower" "$created" "$integration" "$base_dir" > "$SPIKE/run/base.json"
 echo "TIMING up ${ms}ms (server=$how desk=$desk pid=$pid started=${started:-unknown})" >&2
 # Warnings: the two a person should see become NOTICE= lines; desk_on would be an environment bug (this script always sets the switch); the rest is logged.
 node -e '

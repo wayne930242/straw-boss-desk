@@ -96,11 +96,6 @@ function Get-TokenHash {
 }
 
 function Invoke-Herdr { param([string[]]$ArgList, [int]$TimeoutSec = 30) Invoke-Native -File $t.HerdrExe -ArgList $ArgList -TimeoutSec $TimeoutSec }
-function Get-TowerAgents {
-    $r = Invoke-Herdr @('agent', 'list') 20
-    if ($r.ExitCode -ne 0) { return @() }
-    try { return @((($r.StdOut | ConvertFrom-Json).result.agents) | Where-Object { $_.tokens.sb_role -eq 'tower' }) } catch { return @() }
-}
 
 # start.jsonl events written after a moment: [{ts, event, ...}]
 function Get-StartEvents {

@@ -18,7 +18,7 @@ All paths are relative to `spike/win/` in the repository.
 | `bootstrap.ps1` | Node, PortableGit, herdr, pi, ttt, playwriter, team profile, 13 pi packages. No admin. Resumable |
 | `start.ps1` / `stop.ps1` | Headless herdr server, then `cli.mjs up --dir` (integration, sb server, home base with its tower, GUI); stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
-| `desk-b7-check.ps1` | Desk B7 acceptance A0 to A5 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
+| `desk-b7-check.ps1` | Desk B7 acceptance A0, A1, A3 to A7 and A9 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
 | `lib\gui-client.mjs`, `lib\cdp-eval.mjs` | Test clients: the GUI's HTTP surface (takes `SB_DIR`, a `gui.json`, or `auto`); a window read over CDP (token-free output) |
@@ -101,7 +101,7 @@ The kit's `XDG_CONFIG_HOME` is `%LOCALAPPDATA%\straw-boss-desk\config` and herdr
 Nothing is written under the user's own `%APPDATA%\herdr`.
 
 `start.ps1` handles `up`'s exits as the plan's table says: `wait: lock`, `hello`, and `exit` get one more `up`, and so does a busy `base` (another `up --dir` held `desk.lock`); step `herdr` gets one more look at herdr (not for a socket mismatch); step `version` (`--exact`: a newer server) runs `cli.mjs restart --downgrade --reason "stack.json pin"` and retries once; exit 3 with `loader` or `intercom` reinstalls `pkg:pi-straw-boss` or `pkg:pi-intercom` through `bootstrap.ps1 -Only ... -Force` and retries once. Nothing else is retried.
-Exit codes of `start.ps1`: 0 done; 2 a tool is missing (run bootstrap); 3 a stack from another start is running, or a herdr answers that `start.json` does not record (run stop first); 4 herdr server silent; `up` failed: 10 `wait: lock`, 11 `wait: start`, 12 `wait: hello`, 13 `wait: exit`, 14 step `herdr`, 15 step `version`, 16 step `server`, 17 step `gui`, 18 another failure, 19 `up` exit 3 (the server cannot run: `loader`, `intercom`, `acl`; `startError.text` is printed for `acl`), 20 `up` usage error (a bug here), 21 `up` answered without a usable URL, 22 the sb server is not in the primary slot, 23 step `base` busy twice, 24 step `base` failed (the folder, or Herdr said no), 25 step `integration` failed, 26 `up` answered without a base (`workspace`).
+Exit codes of `start.ps1`: 0 done; 2 a tool is missing (run bootstrap); 3 a stack from another start is running, or a herdr answers that `start.json` does not record (run stop first); 4 herdr server silent; `up` failed: 10 `wait: lock`, 11 `wait: start`, 12 `wait: hello`, 13 `wait: exit`, 14 step `herdr`, 15 step `version`, 16 step `server`, 17 step `gui`, 18 another failure, 19 `up` exit 3 (the server cannot run: `loader`, `intercom`, `acl`; `startError.text` is printed for `acl`), 20 `up` usage error (a bug here), 21 `up` answered without a usable URL, 22 the sb server is not in the primary slot, 23 step `base` busy through 3 retries (3, 6, 12 s apart), 24 step `base` failed (the folder, or Herdr said no), 25 step `integration` failed, 26 `up` answered without a base (`workspace`), 27 step `tower` failed.
 Failure output: `logs\start.jsonl` (one JSON line per event, `up-attempt-failed` for each failed `up`), `logs\start-up-stderr.txt` and `logs\start-sb-log-tail.txt` (the failing `up`'s stderr and `cli.mjs logs --lines 40`, tokens replaced).
 
 Find the slot folder through `SB_DIR` (or `state\start.json` `sbDir`); `node cli.mjs status` prints one JSON line with `state`, `primary`, `desk`, `url`, `log`. `gui-client.mjs` takes `SB_DIR` or `auto`.
@@ -155,7 +155,7 @@ On the VM display:
 1. Open Edge and download `http://192.168.64.1:8099/straw-boss-desk-proto-Setup-0.0.1.exe`.
    The file gets Mark-of-the-Web. Screenshot the Edge download warning and the SmartScreen dialog ("Windows protected your PC", "More info", "Run anyway"). This is the unsigned-build experience a PM will have.
 2. Run it from the Edge download list. The NSIS installer is one-click and per-user (no admin prompt expected). Note whether UAC appears.
-3. The app starts after install (`runAfterFinish`). It shows the status page, runs `%USERPROFILE%\sbd-kit\start.ps1`, loads the GUI as soon as `GUI_URL=` is printed , then follows the GUI: a restart, upgrade or crash moves the window to the new URL, and a stopped GUI or server shows a screen with a Start button. Screenshot the status page and the GUI.
+3. The app starts after install (`runAfterFinish`). It shows the status page, runs `%USERPROFILE%\sbd-kit\start.ps1`, loads the GUI as soon as `GUI_URL=` is printed, then follows the GUI: a restart, upgrade or crash moves the window to the new URL, and a stopped GUI or server shows a screen with a Start button. Screenshot the status page and the GUI.
 4. Find the install folder: `ssh VM "dir %LOCALAPPDATA%\Programs"`; the executable is `Straw Boss Desk Proto.exe`.
 
 Prototype log: `%LOCALAPPDATA%\straw-boss-desk\logs\proto.jsonl`.
