@@ -126,7 +126,7 @@ if [ -n "$herdr_pid" ] && [ -z "$herdr_start" ] && kill -0 "$herdr_pid" 2>/dev/n
 for p in $(leftovers); do still="$still $p"; done
 if [ -z "$still" ]; then
   if [ -n "$herdr_pid" ]; then rm -f "$HERDR_SOCKET_PATH"; fi
-  rm -f "$run/sb.pid" "$run/sb.start" "$run/herdr.pid" "$run/herdr.start" "$run/tower.pane" "$tree" "$run/stop.out" "$run/stop.err" "$run/herdr-stop.out" "$run/up.err" "$run/pane-env.txt"
+  rm -f "$run/sb.pid" "$run/sb.start" "$run/herdr.pid" "$run/herdr.start" "$run/tower.pane" "$run/base.json" "$tree" "$run/stop.out" "$run/stop.err" "$run/herdr-stop.out" "$run/up.err" "$run/pane-env.txt"
   echo "stopped"
 else
   echo "STILL RUNNING:$still"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M1 assertions after 03-up.sh (and optionally 03-tower.sh): the GUI answers 200, `cli.mjs status` says live, primary and desk, the `open` shim recorded nothing,
+# M1 and M4 assertions after 03-up.sh: the GUI answers 200, `cli.mjs status` says live, primary and desk, the `open` shim recorded nothing,
 # and only one server.json exists (no servers/ folder). Prints PASS/FAIL lines, never the URL's token. Exit 1 on any FAIL.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,4 +26,13 @@ check "herdr-socket" "$([ "$(field herdr)" = "$HERDR_SOCKET_PATH" ] && echo 1 ||
 opened="$SPIKE/run/opened-urls.txt"
 check "no-browser" "$([ ! -s "$opened" ] && echo 1 || echo 0)" "open shim recorded $([ -s "$opened" ] && wc -l < "$opened" | tr -d ' ' || echo 0) call(s)"
 check "one-record" "$([ -f "$dir/server.json" ] && [ ! -e "$dir/servers" ] && echo 1 || echo 0)" "server.json at the top level, servers/ $([ -e "$dir/servers" ] && echo present || echo absent)"
+# M4 (desk B7, after the B6 + B7 release): `up --dir` made one home base with one tower tab and installed Herdr's pi integration.
+if [ -f "$SPIKE/run/base.json" ]; then
+  ws="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).workspace)' "$SPIKE/run/base.json")"
+  nws="$(herdr workspace list | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).result.workspaces.length)')"
+  ntab="$(herdr tab list --workspace "$ws" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).result.tabs.length)')"
+  ntow="$(herdr pane list | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).result.panes.filter((p)=>p.tokens&&p.tokens.sb_role==="tower").length)')"
+  check "one-base" "$([ "$nws" = 1 ] && [ "$ntab" = 1 ] && [ "$ntow" = 1 ] && echo 1 || echo 0)" "workspaces=$nws tabs in $ws=$ntab sb_role=tower panes=$ntow"
+  check "integration" "$([ -f "$PI_CODING_AGENT_DIR/extensions/herdr-agent-state.ts" ] && echo 1 || echo 0)" "extensions/herdr-agent-state.ts $([ -f "$PI_CODING_AGENT_DIR/extensions/herdr-agent-state.ts" ] && echo present || echo absent)"
+fi
 exit "$bad"

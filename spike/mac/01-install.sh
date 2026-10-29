@@ -70,11 +70,8 @@ configure_stub() {
 JSON
   node -e 'const f=process.argv[1],fs=require("fs"),s=JSON.parse(fs.readFileSync(f,"utf8"));s.defaultProvider="stub";s.defaultModel="stub-1";fs.writeFileSync(f,JSON.stringify(s,null,2))' "$PI_CODING_AGENT_DIR/settings.json"
 }
-# herdr's pi integration is a pi extension that reports each session's file to herdr. Without it herdr panes carry no
-# agent_session, pi-intercom cannot place a session in its workspace and tab, and pi-straw-boss leaves it out of the net.
-install_herdr_integration() { herdr integration install pi; }
+# herdr's pi integration (a pi extension that reports each session's file to herdr) is not installed here: `cli.mjs up --dir` in 03-up.sh installs it.
 t install_packages
-t install_herdr_integration
 t configure_stub
 node -v; herdr --version; pi --version
 du -sh "$TOOLS/node" "$TOOLS/herdr" "$TOOLS/npm" "$PI_CODING_AGENT_DIR" "$SPIKE/npm-cache" 2>&1 | sed "s|$SPIKE|\$SPIKE|"
