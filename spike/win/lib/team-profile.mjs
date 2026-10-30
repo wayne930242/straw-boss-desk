@@ -60,6 +60,7 @@ function lookup(obj, path) {
   return o;
 }
 function setPath(obj, path, value) {
+  if (path.some((k) => k === "__proto__" || k === "constructor" || k === "prototype")) throw new Error(`refusing key ${shown(path.join("."))}; nothing was changed`);
   let o = obj;
   for (const k of path.slice(0, -1)) {
     if (!isPlain(o[k])) o[k] = {};
