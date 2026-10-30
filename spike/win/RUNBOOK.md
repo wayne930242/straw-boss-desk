@@ -85,7 +85,7 @@ When a pinned npm step still fails on the network or with "no such version", its
 ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\bootstrap.ps1 -TeamProfile"
 ```
 
-The default bootstrap does not run it. `-TeamProfile` (or `-Only team-profile` / `-Only team-packages`) replaces the spike's inline `profile` stage with these, as in `docs/specs/2026-10-27-team-profile.md` section 7:
+The default bootstrap does not run it. `-TeamProfile` (or `-Only team-profile` / `-Only team-pkg:<package name>`) replaces the spike's inline `profile` stage with these, as in `docs/specs/2026-10-27-team-profile.md` section 7:
 
 - **`team-profile`** installs `profile\` from the kit (not from npm; the npm release comes later) into `%LOCALAPPDATA%\straw-boss-desk\agent`: `AGENTS.md`, `rules\*.md`, `skills\pm-workflow\`, and the merged keys of `config\settings.json` (into `settings.json`) and `config\herdr-agents.json` (into `herdr-agents\config.json`). Files are written as UTF-8 without BOM and LF, through Node.
   - It records every file's SHA256 and every merged key's value in `agent\.straw-boss-profile\manifest.json`, and follows the four file states: missing, write it; equal to the recorded hash, replace it; different or with no record (the spike's old `AGENTS.md`), leave it and put the new version under `.straw-boss-profile\pending\<profile version>\`; no longer shipped, delete it if unchanged, else leave it and report it. A merged key is set when absent or still what was last written, otherwise kept and reported. A PM's changed file is never overwritten. The report is in the stage evidence and `bootstrap.jsonl` (`file-kept`, `key-kept`).

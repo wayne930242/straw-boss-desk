@@ -8,14 +8,14 @@
 .PARAMETER Arch
   x64 (default; PMs use x64 laptops, so this exercises Windows-on-ARM x64 emulation in the VM) or arm64 (Node and Git only; herdr has no arm64 build).
 .PARAMETER Only
-  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, team-profile, packages, team-packages.
+  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, team-profile, packages, and team-pkg:<package name> for each package a recipe lists.
 .PARAMETER Force
   Ignore detect and reinstall.
 .PARAMETER TeamProfile
   Opt in to the team profile stages (docs/specs/2026-10-27-team-profile.md, section 7). Without it the spike's inline `profile` stage runs, as before.
   With it, `team-profile` takes the place of `profile`: it installs profile\ from the kit (not from npm) into the agent dir without overwriting a file
-  the PM changed, and applies the recipe (straw.relay, the AGENTS.md block); `team-packages` then installs the recipe's packages skills-only.
-  `-Only team-profile` or `-Only team-packages` switches it on as well.
+  the PM changed, and applies the recipe (straw.relay, the AGENTS.md block); `team-pkg:<name>` then installs each of the recipe's packages skills-only.
+  `-Only team-profile` or `-Only team-pkg:<name>` switches it on as well.
 .PARAMETER Recipe
   The recipe file for -TeamProfile (default: test-recipe.strawboss.json in the kit). It is validated first; an invalid recipe stops the run before any install.
 #>
@@ -34,7 +34,7 @@ $t = Get-ToolPaths
 $script:Summary = New-Object System.Collections.ArrayList
 $script:StateFile = Join-Path $StateDir 'bootstrap-state.json'
 
-$teamOn = [bool]$TeamProfile -or ($Only -contains 'team-profile') -or ($Only -contains 'team-packages')
+$teamOn = [bool]$TeamProfile -or ($Only -contains 'team-profile') -or (@($Only | Where-Object { $_ -like 'team-pkg:*' }).Count -gt 0)
 if ($teamOn -and -not $Recipe) { $Recipe = Join-Path $KitDir 'test-recipe.strawboss.json' }
 $script:TeamRecipe = $null
 
