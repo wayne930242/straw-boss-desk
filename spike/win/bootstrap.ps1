@@ -8,14 +8,23 @@
 .PARAMETER Arch
   x64 (default; PMs use x64 laptops, so this exercises Windows-on-ARM x64 emulation in the VM) or arm64 (Node and Git only; herdr has no arm64 build).
 .PARAMETER Only
-  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, packages.
+  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, team-profile, packages, team-packages.
 .PARAMETER Force
   Ignore detect and reinstall.
+.PARAMETER TeamProfile
+  Opt in to the team profile stages (docs/specs/2026-10-27-team-profile.md, section 7). Without it the spike's inline `profile` stage runs, as before.
+  With it, `team-profile` takes the place of `profile`: it installs profile\ from the kit (not from npm) into the agent dir without overwriting a file
+  the PM changed, and applies the recipe (straw.relay, the AGENTS.md block); `team-packages` then installs the recipe's packages skills-only.
+  `-Only team-profile` or `-Only team-packages` switches it on as well.
+.PARAMETER Recipe
+  The recipe file for -TeamProfile (default: test-recipe.strawboss.json in the kit). It is validated first; an invalid recipe stops the run before any install.
 #>
 param(
     [ValidateSet('x64', 'arm64')][string]$Arch = 'x64',
     [string[]]$Only,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$TeamProfile,
+    [string]$Recipe
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
@@ -25,7 +34,11 @@ $t = Get-ToolPaths
 $script:Summary = New-Object System.Collections.ArrayList
 $script:StateFile = Join-Path $StateDir 'bootstrap-state.json'
 
-Write-Log 'bootstrap' 'begin' @{ arch = $Arch; os = (Get-OsInfo); force = [bool]$Force; only = $Only }
+$teamOn = [bool]$TeamProfile -or ($Only -contains 'team-profile') -or ($Only -contains 'team-packages')
+if ($teamOn -and -not $Recipe) { $Recipe = Join-Path $KitDir 'test-recipe.strawboss.json' }
+$script:TeamRecipe = $null
+
+Write-Log 'bootstrap' 'begin' @{ arch = $Arch; os = (Get-OsInfo); force = [bool]$Force; only = $Only; teamProfile = $teamOn; recipe = $Recipe }
 
 function Invoke-Stage {
     param([string]$Name, [scriptblock]$Detect, [scriptblock]$Install, [scriptblock]$Verify)
@@ -140,6 +153,42 @@ function Get-InstalledVersion {
     return $null
 }
 
+
+# ---- team profile helpers (the file-state logic lives in lib\team-profile.mjs, tested on the Mac) ----
+# Runs one command of the installer under the private Node and returns its JSON line.
+function Invoke-TeamProfile {
+    param([string]$Command, [string[]]$Extra = @())
+    $a = @((Join-Path $KitDir 'lib\team-profile.mjs'), $Command, '--root', $KitDir, '--agent-dir', $AgentDir, '--pins', (Join-Path $KitDir 'pins.json'))
+    if ($Recipe) { $a += @('--recipe', $Recipe) }
+    $r = Invoke-Native -File $t.NodeExe -ArgList ($a + $Extra) -TimeoutSec 120
+    $line = ($r.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+    $json = $null
+    if ($line) { try { $json = $line | ConvertFrom-Json } catch { } }
+    [pscustomobject]@{ ExitCode = $r.ExitCode; Json = $json; Raw = $r }
+}
+
+function Test-SkillsOnlyListed {
+    param([string]$Name, [string]$Version)
+    $cfg = Read-JsonFile (Join-Path $AgentDir 'settings.json')
+    if (-not $cfg -or -not $cfg.packages) { return $false }
+    foreach ($e in @($cfg.packages)) {
+        if ($e -is [string]) { continue }
+        if ($e.source -eq "npm:$Name@$Version" -and $e.PSObject.Properties['extensions'] -and @($e.extensions).Count -eq 0) { return $true }
+    }
+    return $false
+}
+
+function Format-TeamNotices {
+    param($Json)
+    $parts = @()
+    foreach ($n in @($Json.notices)) {
+        if ($n.kind -eq 'key-kept') { $parts += "kept your $($n.file) key $($n.key)" }
+        elseif ($n.kind -eq 'file-kept') { $parts += "kept your $($n.file) ($($n.reason)); team version in $($n.pending)" }
+        elseif ($n.kind -eq 'dropped-file-kept') { $parts += "$($n.file) is no longer shipped but was edited; left in place" }
+    }
+    return ($parts -join '; ')
+}
+
 # ---- node ----
 $nodePin = $pins.binaries.node.$Arch
 Invoke-Stage 'node' {
@@ -166,6 +215,20 @@ Invoke-Stage 'node' {
     "$v arch=$a npm=$n"
 }
 Set-SbdEnv
+
+# An invalid recipe stops the run here, before anything else is installed.
+if ($teamOn) {
+    if (-not (Test-Path -LiteralPath $Recipe)) { Write-Log 'team-profile' 'fail' @{ detail = "recipe not found: $Recipe" }; exit 1 }
+    $v = Invoke-TeamProfile 'validate'
+    if (-not $v.Json -or -not $v.Json.ok) {
+        $why = if ($v.Json) { "$($v.Json.error)" } else { (Get-FirstLine ($v.Raw.StdErr + $v.Raw.StdOut)) }
+        Write-Log 'team-profile' 'fail' @{ detail = "recipe $Recipe refused, nothing was installed by the team stages: $why" }
+        Write-Host "bootstrap stopped: invalid recipe ($why)"
+        exit 1
+    }
+    $script:TeamRecipe = $v.Json.recipe
+    Write-Log 'team-profile' 'recipe-valid' @{ detail = "$($v.Json.recipe.id) $($v.Json.recipe.version)" }
+}
 
 # ---- git (PortableGit) ----
 $gitPin = $pins.binaries.git.$Arch
@@ -257,6 +320,8 @@ Invoke-Stage 'user-path' {
 
 # Herdr's pi integration is no longer a stage here: `cli.mjs up --dir` (start.ps1) installs it, and a pi that finds it missing warns after 20 s.
 
+# With -TeamProfile this stage is replaced by team-profile below.
+if (-not $teamOn) {
 Invoke-Stage 'profile' {
     $a = Join-Path $AgentDir 'AGENTS.md'
     $m = Join-Path $AgentDir 'herdr-agents\config.json'
@@ -318,6 +383,27 @@ Invoke-Stage 'profile' {
     if ($ok) { throw "missing: $($ok -join ', ')" }
     "agent dir $AgentDir"
 }
+}
+
+# Team profile (opt-in): profile\ from the kit into the agent dir, then the recipe. A file the PM changed is never overwritten; the new version goes to
+# <agent dir>\.straw-boss-profile\pending\<version>\. Clones, bases, forge logins and the trust screen are wizard steps (Tasks item 4), not done here.
+if ($teamOn) {
+    Invoke-Stage 'team-profile' {
+        $r = Invoke-TeamProfile 'verify'
+        if ($r.ExitCode -eq 0 -and $r.Json -and $r.Json.verified) { return "profile $($r.Json.profileVersion) + recipe $($r.Json.recipe.id) $($r.Json.recipe.version) already as installed; $(@($r.Json.notices).Count) kept: $(Format-TeamNotices $r.Json)" }
+    } {
+        $r = Invoke-TeamProfile 'install'
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "team profile install failed: $(if ($r.Json) { $r.Json.error } else { Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut) })" }
+        foreach ($c in @($r.Json.changes)) { Write-Log 'team-profile' $c.kind @{ detail = "$($c.file)$($c.key)" } }
+        foreach ($n in @($r.Json.notices)) { Write-Log 'team-profile' $n.kind @{ detail = "$($n.file)$($n.key) $($n.reason) $($n.pending)" } }
+    } {
+        $r = Invoke-TeamProfile 'verify'
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.verified) { throw "verify failed: managed files or keys differ from the manifest after install: $(($r.Json.changes | ForEach-Object { "$($_.kind) $($_.file)$($_.key)" }) -join ', ')" }
+        $m = Read-JsonFile (Join-Path $AgentDir '.straw-boss-profile\manifest.json')
+        $nFiles = @($m.files.PSObject.Properties).Count
+        "profile $($r.Json.profileVersion) + recipe $($r.Json.recipe.id) $($r.Json.recipe.version): $nFiles files with hashes in the manifest; $(@($r.Json.notices).Count) kept: $(Format-TeamNotices $r.Json)"
+    }
+}
 
 # pi looks for Git Bash only under Program Files and on PATH; PortableGit lives in our tools folder,
 # so without shellPath the bash tool is dead (VM 2026-10-26). Merge it into the existing settings.json.
@@ -359,6 +445,32 @@ foreach ($pkg in $pins.piPackages) {
         $gap = ''
         if ($pk.gap) { $gap = ' GAP: ' + $pk.gap }
         "$($pk.name)@$v$gap"
+    }
+}
+
+# ---- recipe packages (team profile, opt-in): installed at their pins, listed skills-only ----
+if ($teamOn -and $script:TeamRecipe) {
+    foreach ($rp in @($script:TeamRecipe.packages)) {
+        if (-not $rp) { continue }
+        $pk = $rp
+        Invoke-Stage ('team-pkg:' + $pk.name) {
+            $v = Get-InstalledVersion $t.AgentNm $pk.name
+            if ($v -eq $pk.version -and (Test-SkillsOnlyListed $pk.name $pk.version)) { return "$($pk.name)@$v (skills only)" }
+        } {
+            Assert-NpmIntegrity $pk.name $pk.version $pk.integrity
+            $r = Invoke-Native -File $t.PiCmd -ArgList @('install', "npm:$($pk.name)@$($pk.version)") -TimeoutSec 1800
+            $fs = Get-FsErrors ($r.StdOut + "`n" + $r.StdErr)
+            Set-Content -LiteralPath (Join-Path $LogDir ("pi-install-" + ($pk.name -replace '[^A-Za-z0-9]', '_') + '.log')) -Value ($r.StdOut + "`n--- stderr ---`n" + $r.StdErr) -Encoding UTF8
+            if ($r.ExitCode -ne 0) { throw (Get-NpmStepFailure "$($pk.name)@$($pk.version)" "pi install exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $(Get-FirstLine $r.StdOut) $($fs -join ' | ')" ($r.StdErr + ' ' + $r.StdOut)) }
+            $m = Invoke-TeamProfile 'skills-only' @('--only', $pk.name)
+            if ($m.ExitCode -ne 0 -or -not $m.Json -or -not $m.Json.ok) { throw "could not list $($pk.name) skills-only: $(if ($m.Json) { $m.Json.error } else { Get-FirstLine ($m.Raw.StdErr + $m.Raw.StdOut) })" }
+            [pscustomobject]@{ FsErrors = $fs }
+        } {
+            $v = Get-InstalledVersion $t.AgentNm $pk.name
+            if ($v -ne $pk.version) { throw "installed version '$v' (expected $($pk.version)); looked in $($t.AgentNm)" }
+            if (-not (Test-SkillsOnlyListed $pk.name $pk.version)) { throw "$($pk.name) is not listed in settings.json with extensions []" }
+            "$($pk.name)@$v (skills only: extensions [])"
+        }
     }
 }
 

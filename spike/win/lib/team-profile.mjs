@@ -1,12 +1,13 @@
 // Spike installer for the team profile (docs/specs/2026-10-27-team-profile.md, section 7): copies the profile in `profile/` and the
 // test recipe's additions into a pi agent directory without ever overwriting a file the PM changed.
 //
-// usage: node team-profile.mjs <install|verify|use-team|skills-only> [options]
+// usage: node team-profile.mjs <validate|install|verify|use-team|skills-only> [options]
 //   --root <dir>        folder that holds profile/ and recipe/ (default: the kit folder, else the repository root)
 //   --agent-dir <dir>   the pi agent directory (default: $PI_CODING_AGENT_DIR)
 //   --recipe <file>     a recipe to validate and apply (optional)
 //   --pins <file>       pins.json; its package names are the reserved names a recipe may not list
 //   --file <relpath>    use-team: the file to switch to the team version (repeatable)
+//   --only <name>       skills-only: just this recipe package
 // Prints one JSON line. Exit 0 on success, 1 on any failure (an invalid recipe prints its errors and installs nothing).
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -292,18 +293,19 @@ async function main() {
   const here = dirname(fileURLToPath(import.meta.url));
   const root = opts.root ?? (existsSync(join(here, "..", "profile")) ? join(here, "..") : join(here, "..", "..", ".."));
   const agentDir = opts.agentDir ?? process.env.PI_CODING_AGENT_DIR;
-  if (!agentDir) throw new Error("--agent-dir or PI_CODING_AGENT_DIR is required");
+  if (!agentDir && opts.command !== "validate") throw new Error("--agent-dir or PI_CODING_AGENT_DIR is required");
   const profile = loadProfile(join(root, "profile"));
   let recipe = null;
   if (opts.recipe) recipe = await loadRecipe({ recipePath: opts.recipe, recipeDir: join(root, "recipe"), reservedPackages: opts.pins ? reservedFromPins(opts.pins) : [] });
   let out;
-  if (opts.command === "install") out = install({ profile, agentDir, recipe });
+  if (opts.command === "validate") out = { profileVersion: profile.version };
+  else if (opts.command === "install") out = install({ profile, agentDir, recipe });
   else if (opts.command === "verify") {
     out = install({ profile, agentDir, recipe, dryRun: true });
     out.verified = out.changes.length === 0 && !out.manifestChanged;
     if (!out.verified) process.exitCode = 1;
   } else if (opts.command === "use-team") out = { used: useTeamVersion({ profile, agentDir, files: opts.file }) };
-  else if (opts.command === "skills-only") out = { marked: markSkillsOnly({ agentDir, packages: recipe?.packages ?? [] }) };
+  else if (opts.command === "skills-only") out = { marked: markSkillsOnly({ agentDir, packages: (recipe?.packages ?? []).filter((p) => !opts.only || p.name === opts.only) }) };
   else throw new Error(`unknown command '${opts.command}'`);
   if (recipe) out.recipe = { id: recipe.id, version: recipe.version, packages: recipe.packages ?? [] };
   console.log(JSON.stringify({ ok: true, ...out }));

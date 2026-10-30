@@ -1,0 +1,42 @@
+{
+  "recipe": 1,
+  "id": "spike-pm",
+  "name": "Spike PM 測試配方",
+  "version": "1.0.0",
+  "forges": [
+    {
+      "kind": "github",
+      "host": "github.com"
+    },
+    {
+      "kind": "gitlab",
+      "host": "gitlab.waydo.example"
+    }
+  ],
+  "repos": [
+    {
+      "url": "https://gitlab.waydo.example/product/web.git",
+      "folder": "web",
+      "defaultBranch": "develop",
+      "label": "官網"
+    },
+    {
+      "url": "https://github.com/waydo/handbook.git",
+      "folder": "handbook"
+    }
+  ],
+  "straw": {
+    "relay": "https://relay.spike.example"
+  },
+  "linear": {
+    "enabled": true
+  },
+  "instructions": "- 這是 spike 的測試配方，不屬於任何真實團隊。\n- 用繁體中文（臺灣用語）回答。",
+  "packages": [
+    {
+      "name": "@zeldrisho/pi-coderabbit-skills",
+      "version": "0.1.3",
+      "integrity": "sha512-5O/nfBCSoYIZs2YW98/3kFVLc1fy+7PI1+WC3AaGwXeGFU3Bf+l8woOCfGdtACQHepgtBcNq9quAq+hmOY1S3g=="
+    }
+  ]
+}

@@ -15,10 +15,11 @@ All paths are relative to `spike/win/` in the repository.
 | --- | --- |
 | `pins.json` | Every download pinned by version and SHA256; npm packages by version and registry integrity |
 | `lib.ps1` | Shared helpers (paths, JSON-lines log, `Invoke-Native`, env isolation) |
-| `bootstrap.ps1` | Node, PortableGit, herdr, pi, ttt, playwriter, team profile, 13 pi packages. No admin. Resumable |
+| `bootstrap.ps1` | Node, PortableGit, herdr, pi, ttt, playwriter, team profile, 13 pi packages. No admin. Resumable. `-TeamProfile` adds the opt-in team profile stages (see Step 2) |
 | `start.ps1` / `stop.ps1` | Headless herdr server, then `cli.mjs up --dir` (integration, sb server, home base with its tower, GUI); stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
 | `desk-b7-check.ps1` | Desk B7 acceptance A0, A1, A3 to A7 and A9 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
+| `lib\team-profile.mjs`, `test-recipe.strawboss.json` | The installer behind `-TeamProfile` (its tests: `node --test spike/win/test/` on the Mac), and the recipe it applies by default |
 | `npm-stale-check.ps1` | What `bootstrap.ps1` says for a pinned npm package when the registry is down and npm's cache holds an old package list (VM 2026-10-30: E404 for `pi-straw-boss@0.48.0`, which exists). Works in a scratch `SBD_ROOT` with a stand-in registry (`lib\npm-stale-fixture.mjs`); needs no network; PASS/FAIL lines |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
@@ -59,7 +60,7 @@ ssh VM "mkdir sbd-kit && tar -xf sbd-kit.zip -C sbd-kit"
 ssh VM "dir sbd-kit"
 ```
 
-Expected: `bootstrap.ps1`, `lib.ps1`, `pins.json`, `lib\`.
+Expected: `bootstrap.ps1`, `lib.ps1`, `pins.json`, `test-recipe.strawboss.json`, `lib\`, `profile\`, `recipe\` (`pack-kit.sh` stages the last two in from the repository root).
 If `scp` fails on the Chinese user name, record that as a finding and fall back to the UTM shared folder or `curl.exe` from the feed server.
 
 ## Step 2: bootstrap (10 to 25 minutes)
@@ -77,6 +78,24 @@ Use `-Only pkg:pi-lens -Force` to retry one stage.
 
 Every npm step asks the registry for fresh package metadata (`NPM_CONFIG_PREFER_ONLINE=true`, set by `Set-SbdEnv`), because npm trusts a cached copy for 5 minutes and, when the registry does not answer, uses it: a pin published after that copy fails as "not found" (VM 2026-10-30: three ETIMEDOUT, then E404 for `pi-straw-boss@0.48.0`, which exists).
 When a pinned npm step still fails on the network or with "no such version", its message starts with the plain sentence "The npm registry could not be reached or is out of date, so <name>@<version> was not installed. Check the network and run this again; nothing was installed in its place.", followed by the technical detail. Nothing falls back to another version. `npm-stale-check.ps1` reproduces it without a network.
+
+### Step 2b: the team profile stage (opt-in)
+
+```bash
+ssh VM "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\sbd-kit\bootstrap.ps1 -TeamProfile"
+```
+
+The default bootstrap does not run it. `-TeamProfile` (or `-Only team-profile` / `-Only team-packages`) replaces the spike's inline `profile` stage with these, as in `docs/specs/2026-10-27-team-profile.md` section 7:
+
+- **`team-profile`** installs `profile\` from the kit (not from npm; the npm release comes later) into `%LOCALAPPDATA%\straw-boss-desk\agent`: `AGENTS.md`, `rules\*.md`, `skills\pm-workflow\`, and the merged keys of `config\settings.json` (into `settings.json`) and `config\herdr-agents.json` (into `herdr-agents\config.json`). Files are written as UTF-8 without BOM and LF, through Node.
+  - It records every file's SHA256 and every merged key's value in `agent\.straw-boss-profile\manifest.json`, and follows the four file states: missing, write it; equal to the recorded hash, replace it; different or with no record (the spike's old `AGENTS.md`), leave it and put the new version under `.straw-boss-profile\pending\<profile version>\`; no longer shipped, delete it if unchanged, else leave it and report it. A merged key is set when absent or still what was last written, otherwise kept and reported. A PM's changed file is never overwritten. The report is in the stage evidence and `bootstrap.jsonl` (`file-kept`, `key-kept`).
+  - "Use the team version" (the PM's copy saved under `.straw-boss-profile\backup\<timestamp>\`): `node lib\team-profile.mjs use-team --root <kit> --agent-dir <agent dir> --file rules/bash-not-powershell.md`.
+  - It applies the recipe (`-Recipe <file>`, default `test-recipe.strawboss.json`): it is validated by `recipe\validate.mjs` first and an invalid recipe stops the run before any other stage (exit 1, the rule and field named, never a value). Then `straw.relay` goes to `agent\straw-boss\config.json` as `link.relay`, and `instructions` is appended to `AGENTS.md` as `## Team: <name>`.
+- **`team-pkg:<name>`** installs each of the recipe's `packages` at its pin (registry integrity checked first, like the pi packages) with `pi install`, then lists it in `settings.json` as `{ "source": "npm:<name>@<version>", "extensions": [] }`: skills only, no code that runs inside pi. The test recipe adds `@zeldrisho/pi-coderabbit-skills@0.1.3`.
+
+A rerun changes nothing: detect runs the installer's `verify` (a dry run) and skips the stage when no file or key would change. `-Force` runs the installer again; it still writes nothing that is already as recorded.
+
+Left for the wizard (Tasks item 4), deliberately not done here: the trust screen, forge logins (`gh`, `glab`) and their keyring check, cloning the recipe's `repos` and opening them as bases, the Linear step, and recipe updates from `updateUrl`. The recipe's `forges`, `repos`, `linear` and `profile` fields are validated and then ignored.
 
 What this step records without any extra work:
 
@@ -126,7 +145,7 @@ It starts the stack itself if it is not running (through `cmd.exe` with start.ps
 | `paths-chinese-profile` | Node, Git, `pi list`, and bash handle the Chinese profile path and a Chinese folder and file name |
 | `npm-install-fs-errors` | EPERM, ENAMETOOLONG, locked-file lines from all install logs; a 330-character path test; stages slower than 2 minutes |
 | `pi-packages-installed` | All 13 packages at the versions in the kit's `pins.json` (for example pi-intercom 0.18.1), listed in `settings.json` as `npm:<name>@<version>` with no stale entry for an older pin, plus the list of npm-versus-fork gaps. A stale kit copy checks stale pins: the evidence names the `pins.json` it read |
-| `anchorloop-write-edit-no-python` | The exact message pi-anchorloop appends to a write or edit result when `python3` is missing |
+| `anchorloop-write-edit-no-python` | pi-anchorloop 2.2.x's own TypeScript validator (`pi/support/validators.ts`, copied out of `node_modules` because Node does not strip types there) runs on this machine without `python3` and answers a probe `SKILL.md` with its suggestions; SKIP if the hook no longer calls `validateFile(filePath, cwd)` |
 | `claude-sdk-executable` | Which `@anthropic-ai/claude-agent-sdk-win32-*` package is installed, and whether its `claude.exe --version` runs |
 | `stack-start` | `start.ps1` succeeded and what it recorded |
 | `home-base-tower` | The base pane `start.json` names carries `sb_role=tower`, the tower id is recorded, and the integration's extension file is in the agent dir |
@@ -136,7 +155,7 @@ It starts the stack itself if it is not running (through `cmd.exe` with start.ps
 | `ttt-version-only` | `ttt --help` runs |
 
 `FAIL` on `environment` means the profile name was ASCII; the Chinese-path scenario was then not exercised.
-`anchorloop-write-edit-no-python` passes by capturing the message; the finding is the message text itself.
+`anchorloop-write-edit-no-python` passes when the validator ran and gave its suggestion; it fails if the validator did not run.
 
 ## Step 5: GUI screenshots (5 minutes, author optional)
 
@@ -245,7 +264,7 @@ Each is recorded by a check; none is fixed in this repository.
 1. herdr's Windows socket is a named pipe built from `HERDR_SOCKET_PATH`. A path with non-ASCII characters or `AppData` in it is untested. `start.ps1` fails at "herdr server did not answer" if it breaks.
 2. `herdr agent start --kind pi` needs the new pane's shell at a prompt. The default shell on Windows (PowerShell or cmd) decides whether the `STRAW_BOSS_ROLE` env reaches pi.
 3. pi-straw-boss reads the owner's start time with `ps -o lstart`; on Windows `ps` is missing, so `gui.json` has no `started` and a surviving session never adopts the server after its owner ends.
-4. pi-aaaav (now pi-anchorloop) ran `python3` after every write and edit; without Python (or with the Microsoft Store `python3.exe` stub) every edit result carries a validator warning.
+4. pi-aaaav (now pi-anchorloop) ran `python3` after every write and edit; without Python (or with the Microsoft Store `python3.exe` stub) every edit result carried a validator warning. Fixed since pi-anchorloop 2.2.x: the validator is TypeScript and runs in-process.
 5. Agent SDK platform packages: `@anthropic-ai/claude-agent-sdk-win32-x64` and `-win32-arm64` both exist at 0.3.310 on npm. Under x64 emulation Node reports `x64`, so npm installs the x64 one.
 6. PortableGit 2.56 uses the `ucrt64` layout and ships `git-credential-manager.exe` (a .NET Framework build). Git Credential Manager is therefore available without a separate install.
 7. pi finds `bash.exe` through `where bash.exe`. The private `tools\git\bin` is first on PATH; `C:\Windows\System32\bash.exe` (the WSL launcher) must not win.
