@@ -249,12 +249,13 @@ Each is recorded by a check; none is fixed in this repository.
 ## Versions pinned, and gaps against the author's setup
 
 Pinned by SHA256: Node 24.22.1 (LTS, the same as the author's), PortableGit 2.56.0.3, herdr 0.9.5.
-Pinned by npm integrity: pi 1.4.0 and the 13 pi packages at the author's `settings.json` versions, ttt 3.12.0 (latest), playwriter 0.8.0 (the author's pin).
+Pinned by npm integrity: pi 1.4.0 and the 13 pi packages at the versions the author pins in `weihung-basic-agent/scripts/pi_root/pins.py` (checked 2026-10-30; the newest npm release where the author runs a git fork), ttt 3.12.0 (latest), playwriter 0.9.0 (the author's pin). Each pin's `dist.integrity` is the registry's.
 
 | Package | Author's setup | Kit | Gap |
 | --- | --- | --- | --- |
-| pi-claude-bridge | git fork `cf8c6e1` | npm 0.9.3 | Four fork commits are missing: no Claude Code setting sources on the provider path, require pi 1.2.0+, parallel tool calls after a non-streaming fallback, fail the turn when a never-received tool call holds an MCP handler |
-| pi-herdr-agents | git fork `4f37f3e` | npm 3.3.1 | The fork adds open upstream PR 84 (keep auto-exit children open on an aborted run) and a fork-only exit hold |
+| pi-claude-bridge | git fork `9822631` | npm 0.9.3 (still the newest) | The fork is 33 unreleased upstream main commits plus its own fixes; missing from 0.9.3: no Claude Code setting sources on the provider path, require pi 1.2.0+, parallel tool calls after a non-streaming fallback (PR 225 open), fail the turn when a never-received tool call holds an MCP handler (PR 226 open) |
+| pi-herdr-agents | git fork `19ba73e` | npm 3.6.1 (PMs get the newest release, the PM's decision) | Upstream still lacks open PR 84 (keep auto-exit children open on an aborted run) and the fork-only exit hold; 3.6.1 now carries PRs 99 and 94 and the reload fix of 95 |
+| pi-lens | git fork `1cdd03e` | npm 4.4.7 | npm has no `dispatch.disabledRunners` (apmantza/pi-lens PR 5011, open), so the dotnet-build runner cannot be switched off; the profile does not use the key |
 | pi-herdr-roles | 0.1.0 | 0.1.0 | The author filters out the `orchestrate` skill; the kit does not |
 
 ## Upstream seams used as hacks (nothing is rebuilt in this repository)

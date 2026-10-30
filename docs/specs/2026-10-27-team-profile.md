@@ -553,16 +553,16 @@ The pins in `spike/win/pins.json` against the design's "Team profile packages" l
 | Design name | Pinned | Latest on npm | Note |
 | --- | --- | --- | --- |
 | pi-straw-boss | 0.44.1 | 0.44.1 | |
-| pi-herdr-agents | 3.3.1 | 3.3.1 | Gap already recorded: the author runs a fork with PR #84 and an exit hold that 3.3.1 lacks. Whether PMs need either is unchecked. |
+| pi-herdr-agents | 3.6.1 | 3.6.1 | The PM decided on 2026-10-30 (the author asleep and had pre-authorized own-scope choices): PMs get the newest npm release, not the author's fork. 3.6.1 still lacks open PR #84 (Escape in an auto-exit child closes it) and the fork-only exit hold, which only an extension waiting out a quota reset uses. Both are recorded as the `gap` note in `pins.json`. |
 | its roles | pi-herdr-roles 0.1.0 | 0.1.0 | `visual-tester` is unusable as shipped (needs `chrome-cdp` and `scripts/cdp.mjs`); out of v1. Also ships the `plan` and `orchestrate` skills, harmless for PMs. |
-| pi-intercom | 0.17.1 | | The author runs 0.18.1. |
-| ask-user | @juicesharp/rpiv-ask-user-question 2.13.9 | 2.15.0 | Exists. Its tool is `ask_user_question`. |
-| todo | @juicesharp/rpiv-todo 2.13.9 | 2.15.0 | Exists. |
-| pi-lens | 4.4.3 | | The author runs 4.4.5. |
-| cc-safety-net | 2.6.13 | | The author runs 2.6.19. |
+| pi-intercom | 0.18.1 | 0.18.1 | |
+| ask-user | @juicesharp/rpiv-ask-user-question 2.15.0 | 2.15.0 | Exists. Its tool is `ask_user_question`. |
+| todo | @juicesharp/rpiv-todo 2.15.0 | 2.15.0 | Exists. |
+| pi-lens | 4.4.7 | 4.4.7 | The author runs a git fork for `dispatch.disabledRunners`, which npm lacks (`gap` note). |
+| cc-safety-net | 2.7.0 | 2.7.1 | The author pins 2.7.0. 2.7.0 blocks `curl` and `wget` requests that send a body to a non-loopback host; the profile has no such call. |
 | memory | @pify/memory 0.14.0 | | |
-| pi-aaaav | pi-anchorloop 2.0.0 | 2.0.2 | Replaced by pi-anchorloop (commit 3d25dcd). 2.0.0 already has the TTSR loader the guard rules need. Its second-thought extension needs a TypeSafe key the stack does not have, so it records `unknown` and stays silent. |
-| pi-claude-bridge | 0.9.3 | 0.9.3 | Gap already recorded in the design's seams table (the author's fork has four more commits). |
+| pi-aaaav | pi-anchorloop 2.2.3 | 2.2.3 | Replaced by pi-anchorloop (commit 3d25dcd). 2.0.0 already had the TTSR loader the guard rules need. 2.2.0 adds the loop book (opened by the first `todo` create; it needs the todo package, which the profile has) and an anchor gate that only warns, once per missing phase, when a write or edit starts work. Its second-thought extension needs a TypeSafe key the stack does not have, so it records `unknown` and stays silent. |
+| pi-claude-bridge | 0.9.3 | 0.9.3 | Gap already recorded in the design's seams table; PMs get the newest npm release like pi-herdr-agents, and `pins.json` records what the author's fork has beyond it. |
 | pi-robot-hand | 0.3.2 | | For `secret_drop` only; AGENTS.md bans `robot_hand`. |
 | pi-herdr-doc-review | 0.7.0 | | Its `show_doc` opens a document beside the session's comms in the GUI; the workflow does not need it yet. |
 | (new) the profile package | | | Published from `profile/` (section 7). |
@@ -716,7 +716,7 @@ A human checkpoint stays after the scripts: the author reads the confirmation qu
 5. The installer stage and its tests, in the phase 2 bootstrap engine. Until then, a spike stage in `spike/win/bootstrap.ps1` that installs from `profile/` and applies a test recipe, so the VM runs can start.
 6. The `stack.json` profile entry.
 7. The PM-run driver and scenarios A to C; the VM and macOS runs; the account checks of section 8.
-8. Pins: read the changelogs from each pinned version to the current one, then move pi-anchorloop to 2.0.2, both rpiv packages to 2.15.0, pi-intercom to 0.18.1, pi-lens to 4.4.5, and cc-safety-net to 2.6.19, in one pins commit. Ask the author whether PMs need the pi-herdr-agents fork's exit hold.
+8. Pins: read the changelogs from each pinned version to the current one, then move pi-anchorloop to 2.0.2, both rpiv packages to 2.15.0, pi-intercom to 0.18.1, pi-lens to 4.4.5, and cc-safety-net to 2.6.19, in one pins commit. Decided 2026-10-30: PMs get the newest npm release of pi-herdr-agents and pi-claude-bridge, not the author's forks, and the `gap` notes in `pins.json` say what is still missing. Done in the pins commit of `chore/kit-npm-pins`, which moved each package to the version the author pins in `pins.py` (at or above these floors).
 9. Edits to `docs/specs/2026-10-25-design.md`, for the author or a session the author authorizes:
    - Profile row: the generic team profile is an npm package published from `profile/`, and team specifics come from a recipe; point to this spec.
    - Git hosting row: login and token storage go through `gh` and `glab` in the OS credential store, served to Git by their credential helpers. Device code for github.com, a token with the `api` scope for self-hosted GitLab. The forges come from the recipe. Electron `safeStorage` no longer holds the code-host token.
@@ -730,4 +730,4 @@ A human checkpoint stays after the scripts: the author reads the confirmation qu
 
 ## Open questions
 
-None. The recipe questions were answered on 2026-10-27 (Decisions 9 to 14). Still open inside Tasks, item 8: whether PMs need the pi-herdr-agents fork's exit hold.
+None. The recipe questions were answered on 2026-10-27 (Decisions 9 to 14). The question inside Tasks, item 8 (whether PMs need the pi-herdr-agents fork's exit hold) was decided on 2026-10-30: they do not.

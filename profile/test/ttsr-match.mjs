@@ -1,4 +1,4 @@
-// A small mirror of pi-anchorloop 2.0.0 pi/ttsr.ts: the frontmatter subset, condition
+// A small mirror of pi-anchorloop 2.2.3 pi/ttsr.ts: the frontmatter subset, condition
 // compiling, scope tokens, and the tool-call match for bash. Keep it in step with that file.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
