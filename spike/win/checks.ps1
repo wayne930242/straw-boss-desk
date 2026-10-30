@@ -210,20 +210,25 @@ Add-Check 'pi-packages-installed' {
 }
 
 # ---------------------------------------------------------------- anchorloop without python3
+# pi-anchorloop 2.2.x validates a written or edited file in-process (pi/support/validators.ts, no Python). The probe is a SKILL.md with an extra
+# frontmatter field: the validator must run on this machine, with no python3, and answer with its suggestions.
 Add-Check 'anchorloop-write-edit-no-python' {
     $pkg = Join-Path $t.AgentNm 'pi-anchorloop'
     if (-not (Test-Path -LiteralPath $pkg)) { return (Fail 'pi-anchorloop not installed') }
-    $target = Join-Path $WorkDir 'anchorloop-probe.txt'
-    Set-Content -LiteralPath $target -Value 'probe' -Encoding UTF8
-    $r = Invoke-Node @((Join-Path $libDir 'anchorloop-validate.mjs'), $pkg, $target, $WorkDir)
+    $probeDir = Join-Path $WorkDir 'anchorloop-probe'
+    New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
+    $target = Join-Path $probeDir 'SKILL.md'
+    Write-AllTextUtf8 $target "---`nname: probe`ndescription: probe`nextra: field`n---`nbody`n"
+    $r = Invoke-Node @((Join-Path $libDir 'anchorloop-validate.mjs'), $pkg, $target, $WorkDir, (Join-Path $ResultDir 'anchorloop-validate'))
     if (-not $r.Json) { return (Fail ("no JSON: " + (Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut)))) }
     $j = $r.Json
     $py = (Get-FirstLine (Invoke-Native -File 'where.exe' -ArgList @('python3') -TimeoutSec 15).StdOut)
-    $data = [ordered]@{ python3Ran = $j.python3Ran; faithfulToSource = $j.faithfulToSource; python3OnPath = $py; validatorMessage = $j.message }
-    $ev = "python3 on PATH='$py'; python3Ran=$($j.python3Ran); message appended to every write/edit result: '$($j.message)'"
-    if (-not $j.faithfulToSource) { return (Skip ("pi-anchorloop source changed, replica not faithful. " + $ev)) }
-    # The behaviour under test is the message itself; with no python it is a warning that lands in the model's context after every edit.
-    if ($j.python3Ran) { Pass $ev $data } else { Pass ("(expected gap) " + $ev) $data }
+    $data = [ordered]@{ version = $j.version; ran = $j.ran; faithfulToSource = $j.faithfulToSource; python3OnPath = $py; validatorMessage = $j.message }
+    $ev = "pi-anchorloop $($j.version); python3 on PATH='$py'; validator ran=$($j.ran); message appended to a write/edit result: '$($j.message)'"
+    if (-not $j.faithfulToSource) { return (Skip ("pi-anchorloop source changed, the hook no longer calls validateFile(filePath, cwd) from ./support/validators.ts. " + $ev)) }
+    if (-not $j.ran) { return (Fail $ev $data) }
+    if ($j.message -notmatch 'extra frontmatter fields') { return (Fail ("validator ran but gave no suggestion for the probe. " + $ev) $data) }
+    Pass $ev $data
 }
 
 # ---------------------------------------------------------------- Claude Code executable from the Agent SDK

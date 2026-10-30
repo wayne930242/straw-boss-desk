@@ -1,19 +1,29 @@
 // What pi-anchorloop's tool_result hook does after a write or edit, run without a model.
-// It copies the spawn from pi-anchorloop/pi/validate-tool-use.ts (the file is read first and the call is asserted to be unchanged),
-// so the message printed is the one pi would append to the tool result on this machine.
-// usage: node anchorloop-validate.mjs <pi-anchorloop package dir> <file to "write"> <cwd>
-import { readFileSync } from "node:fs";
+// pi-anchorloop 2.2.x validates in-process (pi/support/validators.ts, no Python). This loads that TypeScript validator itself and calls it
+// the way pi/validate-tool-use.ts does, after asserting that file still does (`faithfulToSource`). Node refuses to strip types inside
+// node_modules, so the validator is copied to a scratch folder first (it imports only node builtins).
+// usage: node anchorloop-validate.mjs <pi-anchorloop package dir> <file to "write"> <cwd> [<scratch dir>]
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
-const [pkg, filePath, cwd] = process.argv.slice(2);
-const src = readFileSync(join(pkg, "pi", "validate-tool-use.ts"), "utf8");
-const faithful = src.includes('spawnSync("python3", [HOOK_SCRIPT]');
-const hook = join(pkg, "hooks", "validate_tool_use.py");
-const payload = JSON.stringify({ tool_name: "Edit", tool_input: { file_path: filePath }, cwd });
-const proc = spawnSync("python3", [hook], { input: payload, encoding: "utf-8", timeout: 15_000 });
+const [pkg, filePath, cwd, scratchArg] = process.argv.slice(2);
+const hook = readFileSync(join(pkg, "pi", "validate-tool-use.ts"), "utf8");
+const faithful = hook.includes('from "./support/validators.ts"') && hook.includes("validateFile(filePath, cwd)");
+const version = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version;
+const scratch = scratchArg ? (mkdirSync(scratchArg, { recursive: true }), scratchArg) : mkdtempSync(join(tmpdir(), "anchorloop-validate-"));
+let ran = false;
 let message;
-if (proc.error || proc.status !== 0) message = `Validator did not run: ${proc.error?.message || (proc.stderr || "").trim() || `exit ${proc.status}`}`;
-else if (!(proc.stdout || "").trim()) message = "(validator ran, no advice)";
-else message = JSON.parse(proc.stdout).additionalContext;
-console.log(JSON.stringify({ faithfulToSource: faithful, python3Ran: !proc.error && proc.status === 0, message }));
+try {
+  const copy = join(scratch, "validators.ts");
+  copyFileSync(join(pkg, "pi", "support", "validators.ts"), copy);
+  const { validateFile } = await import(pathToFileURL(copy).href);
+  message = validateFile(filePath, cwd) || "(validator ran, no advice)";
+  ran = true;
+} catch (error) {
+  message = `Validator did not run: ${error instanceof Error ? error.message : String(error)}`;
+} finally {
+  if (!scratchArg) rmSync(scratch, { recursive: true, force: true });
+}
+console.log(JSON.stringify({ version, faithfulToSource: faithful, ran, message }));
