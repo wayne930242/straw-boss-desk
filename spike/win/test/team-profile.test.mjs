@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { composeAgents, install, loadProfile, loadRecipe, markSkillsOnly, normalizeText, useTeamVersion } from "../lib/team-profile.mjs";
+import { TEAM_BEGIN, TEAM_END, composeAgents, install, loadProfile, loadRecipe, managedPath, markSkillsOnly, neutralize, normalizeText, replaceTeamBlock, safeRel, useTeamVersion } from "../lib/team-profile.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -113,9 +114,10 @@ describe("file states", () => {
   it("recipe instructions become one Team block in the recorded AGENTS.md; a recipe update changes only that block", () => {
     const profile = makeProfile(profileDir);
     install({ profile, agentDir, recipe: { id: "r", name: "Waydo", version: "1.0.0", instructions: "- rule one" } });
-    assert.equal(read(agentDir, "AGENTS.md"), "# Team\n\nbe plain\n\n## Team: Waydo\n\n- rule one\n");
+    const block = (body) => `${TEAM_BEGIN}\n## Team: Waydo\n\n${body}\n${TEAM_END}\n`;
+    assert.equal(read(agentDir, "AGENTS.md"), `# Team\n\nbe plain\n\n${block("- rule one")}`);
     const result = install({ profile, agentDir, recipe: { id: "r", name: "Waydo", version: "1.1.0", instructions: "- rule two" } });
-    assert.equal(read(agentDir, "AGENTS.md"), "# Team\n\nbe plain\n\n## Team: Waydo\n\n- rule two\n");
+    assert.equal(read(agentDir, "AGENTS.md"), `# Team\n\nbe plain\n\n${block("- rule two")}`);
     assert.deepEqual(kinds(result), ["file-replaced:AGENTS.md"]);
   });
 
@@ -268,7 +270,7 @@ describe("recipe", () => {
       assert.ok(existsSync(join(agentDir, ...rel.split("/"))), rel);
     }
     assert.equal(readJson(agentDir, "straw-boss/config.json").link.relay, "https://relay.waydo.example/");
-    assert.match(read(agentDir, "AGENTS.md"), /\n## Team: Waydo PM 工作環境\n\n- 文案用語/);
+    assert.match(read(agentDir, "AGENTS.md"), /\n<!-- straw-boss:team-block:begin -->\n## Team: Waydo PM 工作環境\n\n- 文案用語/);
     const verify = spawnSync(process.execPath, args("verify"), { encoding: "utf8" });
     assert.equal(verify.status, 0, verify.stdout);
     const again = JSON.parse(spawnSync(process.execPath, args("install"), { encoding: "utf8" }).stdout);
@@ -296,5 +298,300 @@ describe("recipe packages are skills-only", () => {
   it("fails when the package was not installed", () => {
     put(agentDir, "settings.json", JSON.stringify({ packages: [] }));
     assert.throws(() => markSkillsOnly({ agentDir, packages: [{ name: "z", version: "1.0.0" }] }), /not listed/);
+  });
+});
+
+describe("a PM value that is not an object under a profile key (R-F001)", () => {
+  it("keeps a scalar or an array where the profile wants an object, and reports it", () => {
+    put(agentDir, "herdr-agents/config.json", JSON.stringify({ models: ["mine"] }));
+    put(agentDir, "settings.json", JSON.stringify({ quietStartup: { nested: 1 }, defaultModel: "m1" }));
+    const profile = makeProfile(profileDir, { settings: { defaultModel: "m1", quietStartup: { level: "header" } } });
+    const result = install({ profile, agentDir });
+    assert.deepEqual(readJson(agentDir, "herdr-agents/config.json"), { models: ["mine"] });
+    // an object the PM has with other keys is an object: the new key goes in beside theirs
+    assert.deepEqual(readJson(agentDir, "settings.json").quietStartup, { nested: 1, level: "header" });
+    assert.deepEqual(result.notices.map((n) => `${n.kind}:${n.file}:${n.key}`).sort(), ["key-kept:herdr-agents/config.json:models.agents.scout", "key-kept:herdr-agents/config.json:models.default"]);
+    const again = install({ profile, agentDir });
+    assert.deepEqual(again.changes, []);
+    assert.deepEqual(readJson(agentDir, "herdr-agents/config.json"), { models: ["mine"] });
+  });
+
+  it("a scalar under a parent key is kept the same way", () => {
+    put(agentDir, "herdr-agents/config.json", JSON.stringify({ models: "pm-own-value" }));
+    const result = install({ profile: makeProfile(profileDir), agentDir });
+    assert.deepEqual(readJson(agentDir, "herdr-agents/config.json"), { models: "pm-own-value" });
+    assert.equal(result.notices.length, 2);
+  });
+});
+
+describe("paths cannot leave the agent folder (R-F002)", () => {
+  const hostile = ["../victim.txt", "a/../../victim.txt", "/etc/passwd", "C:/Windows/x", "C:x", "\\\\server\\share\\x", "..\\x", "rules//a.md", "./a.md", "rules/a.md:stream", "", "a\u0000b"];
+
+  it("safeRel refuses every escaping or odd form", () => {
+    for (const rel of hostile) assert.throws(() => safeRel(rel), /refusing/, JSON.stringify(rel));
+    for (const rel of ["rules/a.md", "skills/pm-workflow/SKILL.md", ".straw-boss-profile/manifest.json"]) assert.equal(safeRel(rel), rel);
+  });
+
+  it("managedPath keeps the result inside the agent folder", () => {
+    assert.equal(managedPath(agentDir, "rules/a.md"), join(agentDir, "rules", "a.md"));
+    assert.throws(() => managedPath(agentDir, "../x"), /refusing/);
+  });
+
+  it("a hostile manifest key deletes nothing and writes nothing", () => {
+    const victim = join(tmp, "victim.txt");
+    writeFileSync(victim, "x");
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir });
+    const m = manifest();
+    m.files["../victim.txt"] = createHash("sha256").update("x").digest("hex");
+    put(agentDir, ".straw-boss-profile/manifest.json", JSON.stringify(m));
+    const before = readFileSync(join(agentDir, "rules/a.md"), "utf8");
+    assert.throws(() => install({ profile: makeProfile(profileDir, { version: "1.1.0", rules: { "a.md": "rule a v2\n" } }), agentDir }), /refusing manifest path/);
+    assert.equal(read(tmp, "victim.txt"), "x");
+    assert.equal(read(agentDir, "rules/a.md"), before, "nothing was written before the refusal");
+  });
+
+  it("a manifest that is not an object of files is refused with a plain message", () => {
+    put(agentDir, ".straw-boss-profile/manifest.json", JSON.stringify({ files: ["x"], keys: {} }));
+    assert.throws(() => install({ profile: makeProfile(profileDir), agentDir }), /not a manifest this installer wrote/);
+  });
+
+  it("use-team refuses a --file that escapes, and nothing is written outside", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir });
+    for (const rel of ["../x", "/abs", "C:/x", "a/../../x"]) assert.throws(() => useTeamVersion({ profile, agentDir, files: [rel] }), /refusing/, rel);
+    assert.deepEqual(listFiles(tmp).filter((f) => f === "x" || f === "abs"), []);
+  });
+
+  it("use-team through the CLI exits 1 on an escaping --file", () => {
+    install({ profile: makeProfile(profileDir), agentDir });
+    const run = spawnSync(process.execPath, [cli, "use-team", "--root", tmp, "--agent-dir", agentDir, "--file", "../victim"], { encoding: "utf8" });
+    assert.equal(run.status, 1);
+    assert.match(JSON.parse(run.stdout).error, /refusing --file/);
+  });
+
+  it("a profile version that is not a folder name is refused", () => {
+    const profile = makeProfile(profileDir);
+    for (const version of ["../x", "a/b", "", ".hidden", "1.0.0\\x"]) assert.throws(() => install({ profile: { ...profile, version }, agentDir }), /refusing profile version/, version);
+    assert.throws(() => makeProfile(profileDir, { version: "../evil" }), /refusing profile version/);
+  });
+});
+
+describe("symbolic links and junctions are refused (R-F006)", () => {
+  const outside = () => {
+    const dir = join(tmp, "outside");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  it("a rules folder that is a link is refused and nothing is written through it", () => {
+    const dir = outside();
+    symlinkSync(dir, join(agentDir, "rules"), "junction");
+    assert.throws(() => install({ profile: makeProfile(profileDir), agentDir }), /symbolic link or junction/);
+    assert.deepEqual(readdirSync(dir), []);
+    assert.ok(!existsSync(join(agentDir, "AGENTS.md")), "nothing was written before the refusal");
+  });
+
+  it("a dangling link at a path the installer would create is not written through", () => {
+    const dir = outside();
+    symlinkSync(join(dir, "created-here.md"), join(agentDir, "AGENTS.md"));
+    assert.throws(() => install({ profile: makeProfile(profileDir), agentDir }), /symbolic link or junction/);
+    assert.ok(!existsSync(join(dir, "created-here.md")));
+  });
+
+  it("a state folder that is a link is refused", () => {
+    symlinkSync(outside(), join(agentDir, ".straw-boss-profile"), "junction");
+    assert.throws(() => install({ profile: makeProfile(profileDir), agentDir }), /symbolic link or junction/);
+    assert.deepEqual(readdirSync(join(tmp, "outside")), []);
+  });
+
+  it("a settings.json that is a link is refused by the merge and by skills-only", () => {
+    const target = join(outside(), "real-settings.json");
+    writeFileSync(target, "{}");
+    symlinkSync(target, join(agentDir, "settings.json"));
+    assert.throws(() => install({ profile: makeProfile(profileDir), agentDir }), /symbolic link or junction/);
+    assert.throws(() => markSkillsOnly({ agentDir, packages: [{ name: "a", version: "1.0.0" }] }), /symbolic link or junction/);
+    assert.equal(readFileSync(target, "utf8"), "{}");
+  });
+
+  it("the agent folder itself may be a link", () => {
+    const real = outside();
+    const linked = join(tmp, "agent-link");
+    symlinkSync(real, linked, "junction");
+    install({ profile: makeProfile(profileDir), agentDir: linked });
+    assert.equal(read(real, "rules/a.md"), "rule a v1\n");
+  });
+});
+
+describe("a PM-edited AGENTS.md and a recipe update", () => {
+  it("keeps the PM's file, puts the whole new version under pending, and reports it every run", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir, recipe: { id: "r", name: "Waydo", version: "1.0.0", instructions: "- one" } });
+    put(agentDir, "AGENTS.md", read(agentDir, "AGENTS.md") + "\nmy own line\n");
+    const mine = read(agentDir, "AGENTS.md");
+    const update = { id: "r", name: "Waydo", version: "1.1.0", instructions: "- two" };
+    const result = install({ profile, agentDir, recipe: update });
+    assert.equal(read(agentDir, "AGENTS.md"), mine);
+    assert.equal(read(agentDir, ".straw-boss-profile/pending/1.0.0/AGENTS.md"), composeAgents(profile.files.get("AGENTS.md"), update));
+    assert.deepEqual(result.notices.map((n) => `${n.kind}:${n.file}:${n.reason}`), ["file-kept:AGENTS.md:edited"]);
+    assert.equal(install({ profile, agentDir, recipe: update }).notices.length, 1);
+  });
+});
+
+describe("a relay the PM changed is kept", () => {
+  it("keeps a PM-edited link.relay and reports it; a recipe update does not take it back", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir, recipe: { id: "r", name: "W", version: "1.0.0", straw: { relay: "https://relay.a.example/" } } });
+    put(agentDir, "straw-boss/config.json", JSON.stringify({ link: { relay: "https://mine.example/" }, other: 1 }));
+    const result = install({ profile, agentDir, recipe: { id: "r", name: "W", version: "1.1.0", straw: { relay: "https://relay.b.example/" } } });
+    assert.deepEqual(readJson(agentDir, "straw-boss/config.json"), { link: { relay: "https://mine.example/" }, other: 1 });
+    assert.deepEqual(result.notices.map((n) => `${n.kind}:${n.file}:${n.key}`), ["key-kept:straw-boss/config.json:link.relay"]);
+    assert.equal(manifest().keys["straw-boss/config.json"]["link.relay"], "https://relay.a.example/");
+  });
+});
+
+describe("verify with only notices", () => {
+  it("exits 0 and says verified when the only difference is a file the PM kept", () => {
+    put(agentDir, "AGENTS.md", "# the PM's own\n");
+    const args = (command) => [cli, command, "--root", repoRoot, "--agent-dir", agentDir];
+    const first = JSON.parse(spawnSync(process.execPath, args("install"), { encoding: "utf8" }).stdout);
+    assert.equal(first.notices.length, 1);
+    const verify = spawnSync(process.execPath, args("verify"), { encoding: "utf8" });
+    assert.equal(verify.status, 0, verify.stdout);
+    const out = JSON.parse(verify.stdout);
+    assert.equal(out.verified, true);
+    assert.equal(out.notices.length, 1);
+    assert.equal(out.changes.length, 0);
+  });
+});
+
+describe("the team block markers (R-F007)", () => {
+  const faker = [
+    "- real rule",
+    "# Safety",
+    "## Team: Someone Else",
+    "---",
+    "  ===",
+    TEAM_END,
+    "text <!-- more --> text",
+    `${TEAM_BEGIN}`,
+    "- last",
+  ].join("\n");
+
+  it("instructions that fake a marker or a heading are neutralized", () => {
+    const text = composeAgents("# Profile\n\nbase\n", { name: "Waydo", instructions: faker });
+    assert.equal(text.split(TEAM_BEGIN).length - 1, 1);
+    assert.equal(text.split(TEAM_END).length - 1, 1);
+    assert.ok(text.indexOf(TEAM_BEGIN) < text.indexOf(TEAM_END));
+    const region = text.slice(text.indexOf(TEAM_BEGIN), text.indexOf(TEAM_END) + TEAM_END.length);
+    const headings = region.split("\n").filter((l) => /^#{1,6}\s/.test(l));
+    assert.deepEqual(headings, ["## Team: Waydo"]);
+    assert.ok(!/^(-{3,}|={3,})\s*$/m.test(region));
+    assert.ok(region.includes("\\# Safety"));
+    assert.ok(region.includes("- last"));
+  });
+
+  it("a team name cannot carry a marker either", () => {
+    const text = composeAgents("base\n", { name: `x ${TEAM_END} y`, instructions: "- a" });
+    assert.equal(text.split(TEAM_END).length - 1, 1);
+  });
+
+  it("neutralize leaves ordinary text and bullet lists alone", () => {
+    assert.equal(neutralize("- a\n- b\n  - c\n1. d\ntext # not a heading\n"), "- a\n- b\n  - c\n1. d\ntext # not a heading\n");
+  });
+
+  it("a rerun replaces exactly the region between the markers", () => {
+    const base = "# Profile\n\nbase\n";
+    const one = composeAgents(base, { name: "W", instructions: "- one" });
+    const two = composeAgents(one, { name: "W", instructions: "- two\n- three" });
+    assert.equal(two, composeAgents(base, { name: "W", instructions: "- two\n- three" }));
+    // text around the region is untouched
+    const edited = `intro\n\n${one}\noutro\n`;
+    assert.equal(replaceTeamBlock(edited, `${TEAM_BEGIN}\nnew\n${TEAM_END}\n`), `intro\n\n# Profile\n\nbase\n\n${TEAM_BEGIN}\nnew\n${TEAM_END}\n\noutro\n`);
+    // a recipe without instructions drops the block
+    assert.equal(composeAgents(one, { name: "W" }), base);
+    assert.equal(composeAgents(one, null), base);
+    assert.throws(() => replaceTeamBlock(`x\n${TEAM_BEGIN}\ny\n`, null), /no end marker/);
+  });
+
+  it("a recipe that loses its instructions removes the block on update", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir, recipe: { id: "r", name: "W", version: "1.0.0", instructions: "- one", straw: { relay: "https://r.example/" } } });
+    install({ profile, agentDir, recipe: { id: "r", name: "W", version: "1.1.0" } });
+    assert.equal(read(agentDir, "AGENTS.md"), "# Team\n\nbe plain\n");
+    assert.equal(readJson(agentDir, "straw-boss/config.json").link.relay, "https://r.example/");
+  });
+});
+
+describe("a crash between the writes (R-F003, R-F005)", () => {
+  /** Runs install, throwing after the nth step as a killed process would, then the clean install again. */
+  const snapshot = (dir) => Object.fromEntries(listFiles(dir).filter((f) => statSync(join(dir, f)).isFile()).map((f) => [f, readFileSync(join(dir, f), "utf8")]));
+
+  it("leaves no temp files and, whatever step it stops at, the next run reaches the same final state", () => {
+    const v1 = makeProfile(profileDir, { rules: { "a.md": "rule a v1\n", "b.md": "rule b\n" } });
+    const recipe1 = { id: "r", name: "W", version: "1.0.0", instructions: "- one", straw: { relay: "https://r.example/" } };
+    const v2 = makeProfile(join(tmp, "profile2"), { version: "1.1.0", rules: { "a.md": "rule a v2\n", "c.md": "rule c\n" }, settings: { defaultModel: "m2", quietStartup: "header" } });
+    const recipe2 = { ...recipe1, version: "1.1.0", instructions: "- two" };
+
+    // the reference: v1 then v2 with no crash
+    install({ profile: v1, agentDir, recipe: recipe1 });
+    install({ profile: v2, agentDir, recipe: recipe2 });
+    const expected = snapshot(agentDir);
+    assert.ok(!listFiles(agentDir).some((f) => f.includes(".sbd-tmp-")));
+    assert.ok(!existsSync(join(agentDir, "rules", "b.md")), "b.md was removed");
+
+    for (let stop = 1; ; stop++) {
+      rmSync(agentDir, { recursive: true, force: true });
+      mkdirSync(agentDir);
+      install({ profile: v1, agentDir, recipe: recipe1 });
+      let steps = 0;
+      let crashed = false;
+      try {
+        install({
+          profile: v2,
+          agentDir,
+          recipe: recipe2,
+          afterStep: () => {
+            if (++steps === stop) throw new Error("simulated crash");
+          },
+        });
+      } catch (error) {
+        assert.match(error.message, /simulated crash/);
+        crashed = true;
+      }
+      assert.ok(!listFiles(agentDir).some((f) => f.includes(".sbd-tmp-")), `no temp file after a crash at step ${stop}`);
+      for (const f of ["settings.json", "herdr-agents/config.json", "straw-boss/config.json", ".straw-boss-profile/manifest.json"]) JSON.parse(read(agentDir, f)); // never torn
+      const rerun = install({ profile: v2, agentDir, recipe: recipe2 });
+      assert.deepEqual(rerun.notices, [], `step ${stop}: nothing is reported as the PM's edit`);
+      assert.deepEqual(snapshot(agentDir), expected, `final state after a crash at step ${stop}`);
+      assert.deepEqual(install({ profile: v2, agentDir, recipe: recipe2 }).changes, []);
+      if (!crashed) break;
+    }
+  });
+
+  it("a dropped file is deleted before the manifest stops listing it", () => {
+    install({ profile: makeProfile(profileDir, { rules: { "a.md": "rule a v1\n", "b.md": "rule b\n" } }), agentDir });
+    const next = makeProfile(profileDir, { version: "1.1.0" });
+    const order = [];
+    install({ profile: next, agentDir, afterStep: (label) => order.push(label) });
+    assert.ok(order.indexOf("remove rules/b.md") >= 0);
+    assert.equal(order.at(-1), "write manifest");
+    assert.ok(order.indexOf("remove rules/b.md") < order.indexOf("write manifest"));
+  });
+
+  it("use-team records the new hash and leaves no temp file; a crash after its target write is picked up by the next install", () => {
+    install({ profile: makeProfile(profileDir), agentDir });
+    put(agentDir, "rules/a.md", "mine\n");
+    const next = makeProfile(profileDir, { version: "1.1.0", rules: { "a.md": "rule a v2\n" } });
+    install({ profile: next, agentDir });
+    const manifestBefore = read(agentDir, ".straw-boss-profile/manifest.json");
+    useTeamVersion({ profile: next, agentDir, files: ["rules/a.md"] });
+    assert.equal(manifest().files["rules/a.md"], createHash("sha256").update("rule a v2\n").digest("hex"));
+    assert.ok(!listFiles(agentDir).some((f) => f.includes(".sbd-tmp-")));
+    // the crash: the target already holds the team version, the manifest and pending copy are as they were
+    put(agentDir, ".straw-boss-profile/manifest.json", manifestBefore);
+    const result = install({ profile: next, agentDir });
+    assert.deepEqual(result.notices, []);
+    assert.deepEqual(kinds(result), ["file-recorded:rules/a.md"]);
   });
 });

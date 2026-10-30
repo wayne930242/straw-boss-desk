@@ -10,8 +10,8 @@
 //   --only <name>       skills-only: just this recipe package
 // Prints one JSON line. Exit 0 on success, 1 on any failure (an invalid recipe prints its errors and installs nothing).
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const STATE_DIR = ".straw-boss-profile";
@@ -47,7 +47,18 @@ export function leaves(obj, prefix = []) {
   return out;
 }
 
-const getPath = (obj, path) => path.reduce((o, k) => (isPlain(o) && k in o ? o[k] : undefined), obj);
+const ABSENT = Symbol("absent");
+const BLOCKED = Symbol("blocked");
+/** The value at path, ABSENT when no such key exists, or BLOCKED when a parent on the way holds something that is not an object (the PM's own value). */
+function lookup(obj, path) {
+  let o = obj;
+  for (const k of path) {
+    if (!isPlain(o)) return BLOCKED;
+    if (!Object.hasOwn(o, k)) return ABSENT;
+    o = o[k];
+  }
+  return o;
+}
 function setPath(obj, path, value) {
   let o = obj;
   for (const k of path.slice(0, -1)) {
@@ -55,6 +66,71 @@ function setPath(obj, path, value) {
     o = o[k];
   }
   o[path[path.length - 1]] = value;
+}
+
+const shown = (v) => JSON.stringify(String(v).slice(0, 80));
+
+/** A relative POSIX path that stays inside its folder: no `..`, no root, drive, UNC or stream (`:`), no backslash, no empty segment. */
+export function safeRel(rel, what = "path") {
+  const bad = (why) => {
+    throw new Error(`refusing ${what} ${shown(rel)}: ${why}; nothing was changed`);
+  };
+  if (typeof rel !== "string" || rel === "") bad("it is empty");
+  if (/[\u0000-\u001f]/.test(rel)) bad("it has a control character");
+  if (rel.includes("\\")) bad("it has a backslash");
+  if (rel.includes(":")) bad("it has a drive letter or stream marker");
+  if (rel.startsWith("/")) bad("it is absolute");
+  for (const seg of rel.split("/")) if (seg === "" || seg === "." || seg === "..") bad("it has an empty, '.' or '..' segment");
+  return rel;
+}
+
+/** One folder name that goes into a path (the profile version). */
+function safeSegment(value, what) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(value)) throw new Error(`refusing ${what} ${shown(value)}: not usable as a folder name; nothing was changed`);
+  return value;
+}
+
+/**
+ * The absolute path of rel under agentDir, after safeRel, a check that it resolves inside agentDir, and a check that no part of it that
+ * exists is a symbolic link or junction (a link could point anywhere, and a dangling one would be written through).
+ */
+export function managedPath(agentDir, rel, what = "path") {
+  safeRel(rel, what);
+  const root = resolve(agentDir);
+  const full = resolve(root, ...rel.split("/"));
+  if (!full.startsWith(root + sep)) throw new Error(`refusing ${what} ${shown(rel)}: it resolves outside the agent folder; nothing was changed`);
+  let walked = root;
+  for (const seg of rel.split("/")) {
+    walked = join(walked, seg);
+    let st;
+    try {
+      st = lstatSync(walked);
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") break;
+      throw error;
+    }
+    if (st.isSymbolicLink()) throw new Error(`refusing ${what} ${shown(rel)}: ${shown(relative(root, walked))} is a symbolic link or junction; remove it or fix the folder, nothing was changed`);
+  }
+  return full;
+}
+
+/** A write that never leaves a partial file: a temp file in the same folder, renamed over the target. */
+function writeAtomic(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.sbd-tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, data);
+    renameSync(tmp, path);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+}
+
+/** SHA256 of a regular file; anything else (a folder, a device) is refused rather than read. */
+function fileHash(path, rel) {
+  if (!lstatSync(path).isFile()) throw new Error(`${shown(rel)} exists but is not a regular file; nothing was changed`);
+  return sha256(readFileSync(path));
 }
 
 function readJsonOr(path, fallback) {
@@ -70,11 +146,12 @@ function readJsonOr(path, fallback) {
 /** What the profile package ships: managed files as {relpath: Buffer}, plus the two config objects. */
 export function loadProfile(profileDir) {
   const pkg = JSON.parse(readFileSync(join(profileDir, "package.json"), "utf8"));
+  safeSegment(pkg.version, "profile version");
   const files = new Map();
   for (const rel of ["AGENTS.md"]) files.set(rel, readFileSync(join(profileDir, rel), "utf8"));
   for (const sub of ["rules", "skills"]) {
     if (!existsSync(join(profileDir, sub))) continue;
-    for (const rel of walk(join(profileDir, sub), profileDir)) files.set(rel, readFileSync(join(profileDir, rel), "utf8"));
+    for (const rel of walk(join(profileDir, sub), profileDir)) files.set(safeRel(rel, "profile file"), readFileSync(join(profileDir, rel), "utf8"));
   }
   return {
     name: pkg.name,
@@ -85,22 +162,60 @@ export function loadProfile(profileDir) {
   };
 }
 
-/** AGENTS.md plus the recipe's team block, the text the installer records and protects. */
+export const TEAM_BEGIN = "<!-- straw-boss:team-block:begin -->";
+export const TEAM_END = "<!-- straw-boss:team-block:end -->";
+
+/**
+ * Makes text from a recipe inert inside the team block: it can neither fake a block marker (`<!--` is escaped) nor pass for a section of the
+ * profile (a heading or a rule line gets a backslash, so it reads as plain text, not Markdown structure).
+ */
+export function neutralize(text) {
+  return normalizeText(text)
+    .replaceAll("<!--", "&lt;!--")
+    .replaceAll("-->", "--&gt;")
+    .split("\n")
+    .map((line) => (/^ {0,3}(#{1,6}(\s|$)|([-*_=])(\s*\3){2,}\s*$)/.test(line) ? line.replace(/^( {0,3})/, "$1\\") : line))
+    .join("\n");
+}
+
+/** text with the region between the team markers (markers included) replaced by block, or removed when block is null; appended when there is no region. */
+export function replaceTeamBlock(text, block) {
+  const begin = text.indexOf(TEAM_BEGIN);
+  if (begin < 0) return block ? `${text.replace(/\n*$/, "\n")}\n${block}` : text;
+  const end = text.indexOf(TEAM_END, begin);
+  if (end < 0) throw new Error("the team block has a begin marker but no end marker; nothing was changed");
+  const before = text.slice(0, begin);
+  const after = text.slice(end + TEAM_END.length).replace(/^\n/, "");
+  if (block) return before + block + after;
+  return before.replace(/\n+$/, "\n") + (after ? `\n${after}` : "");
+}
+
+/** AGENTS.md plus the recipe's team block between markers, the text the installer records and protects. */
 export function composeAgents(base, recipe) {
-  let text = normalizeText(base);
+  let text = replaceTeamBlock(normalizeText(base), null);
   if (!text.endsWith("\n")) text += "\n";
-  if (recipe?.instructions) text += `\n## Team: ${recipe.name}\n\n${normalizeText(recipe.instructions).replace(/\n+$/, "")}\n`;
+  if (recipe?.instructions) {
+    const block = `${TEAM_BEGIN}\n## Team: ${neutralize(String(recipe.name)).replace(/\n/g, " ")}\n\n${neutralize(recipe.instructions).replace(/\n+$/, "")}\n${TEAM_END}\n`;
+    text = replaceTeamBlock(text, block);
+  }
   return text;
 }
 
 /**
  * Installs (or, with dryRun, only plans) the profile into agentDir.
  * Returns { changes, notices, ... }: `changes` are writes made (or that would be), `notices` are things kept for the PM.
+ * Every path is checked while planning, so a refusal happens before the first write. Writes run in an order a crash can resume from: content files and
+ * merged keys, then deletions, the manifest last (a rerun re-records what is already in place and finishes what is left).
+ * afterStep is a test seam: called with a label after each write or deletion.
  */
-export function install({ profile, agentDir, recipe = null, dryRun = false }) {
+export function install({ profile, agentDir, recipe = null, dryRun = false, afterStep = null }) {
+  safeSegment(profile.version, "profile version");
   const stateDir = join(agentDir, STATE_DIR);
-  const manifestPath = join(stateDir, MANIFEST);
+  const manifestPath = managedPath(agentDir, `${STATE_DIR}/${MANIFEST}`, "manifest path");
   const old = readJsonOr(manifestPath, { version: 1, files: {}, keys: {} });
+  if (!isPlain(old) || !isPlain(old.files ?? {}) || !isPlain(old.keys ?? {})) throw new Error(`${manifestPath} is not a manifest this installer wrote; fix or remove it, nothing was changed`);
+  old.files ??= {};
+  old.keys ??= {};
   const next = { version: 1, profile: { name: profile.name, version: profile.version }, recipe: recipe ? { id: recipe.id, version: recipe.version } : null, files: {}, keys: {} };
   const changes = [];
   const notices = [];
@@ -114,7 +229,7 @@ export function install({ profile, agentDir, recipe = null, dryRun = false }) {
   for (const [rel, raw] of shipped) {
     const text = normalizeText(raw);
     const hash = sha256(Buffer.from(text, "utf8"));
-    const path = join(agentDir, rel);
+    const path = managedPath(agentDir, rel, "profile file");
     const recorded = old.files[rel];
     if (!existsSync(path)) {
       writes.push([path, text]);
@@ -122,7 +237,7 @@ export function install({ profile, agentDir, recipe = null, dryRun = false }) {
       next.files[rel] = hash;
       continue;
     }
-    const current = sha256(readFileSync(path));
+    const current = fileHash(path, rel);
     if (current === hash) {
       next.files[rel] = hash;
       if (recorded !== hash) changes.push({ kind: "file-recorded", file: rel });
@@ -132,22 +247,24 @@ export function install({ profile, agentDir, recipe = null, dryRun = false }) {
       next.files[rel] = hash;
     } else {
       // Changed by the PM, or the spike's file with no record: keep it, put the team version aside.
-      const pending = join(stateDir, "pending", profile.version, rel);
-      if (!existsSync(pending) || sha256(readFileSync(pending)) !== hash) {
+      const pendingRel = `${STATE_DIR}/pending/${profile.version}/${rel}`;
+      const pending = managedPath(agentDir, pendingRel, "pending path");
+      if (!existsSync(pending) || fileHash(pending, pendingRel) !== hash) {
         writes.push([pending, text]);
         changes.push({ kind: "pending-written", file: rel });
       }
-      notices.push({ kind: "file-kept", file: rel, reason: recorded === undefined ? "no-record" : "edited", pending: posix(join(STATE_DIR, "pending", profile.version, rel)) });
+      notices.push({ kind: "file-kept", file: rel, reason: recorded === undefined ? "no-record" : "edited", pending: pendingRel });
       if (recorded !== undefined) next.files[rel] = recorded;
     }
   }
 
   // ---- files the profile no longer ships ----
+  // The manifest is the only place these paths come from, and anything can have written it: each one is checked like any other path.
   for (const [rel, recorded] of Object.entries(old.files)) {
+    const path = managedPath(agentDir, rel, "manifest path");
     if (shipped.has(rel)) continue;
-    const path = join(agentDir, rel);
     if (!existsSync(path)) continue;
-    if (sha256(readFileSync(path)) === recorded) {
+    if (fileHash(path, rel) === recorded) {
       removes.push(path);
       changes.push({ kind: "file-removed", file: rel });
     } else {
@@ -163,30 +280,31 @@ export function install({ profile, agentDir, recipe = null, dryRun = false }) {
   ];
   if (recipe?.straw?.relay) targets.push(["straw-boss/config.json", [[["link", "relay"], recipe.straw.relay]]]);
   for (const [rel, entries] of targets) {
-    const path = join(agentDir, ...rel.split("/"));
+    const path = managedPath(agentDir, rel, "config path");
     const doc = readJsonOr(path, {});
     if (!isPlain(doc)) throw new Error(`${path} is not a JSON object; nothing was changed`);
-    const recordedKeys = old.keys[rel] ?? {};
+    const recordedKeys = isPlain(old.keys[rel]) ? old.keys[rel] : {};
     const keysNext = {};
     let touched = false;
     for (const [keyPath, value] of entries) {
       const key = keyPath.join(".");
-      const current = getPath(doc, keyPath);
+      const current = lookup(doc, keyPath);
       const recorded = recordedKeys[key];
-      if (current === undefined) {
+      if (current === ABSENT) {
         setPath(doc, keyPath, value);
         touched = true;
         changes.push({ kind: "key-set", file: rel, key });
         keysNext[key] = value;
-      } else if (same(current, value)) {
+      } else if (current !== BLOCKED && same(current, value)) {
         keysNext[key] = value;
         if (!same(recorded, value)) changes.push({ kind: "key-recorded", file: rel, key });
-      } else if (recorded !== undefined && same(current, recorded)) {
+      } else if (current !== BLOCKED && recorded !== undefined && same(current, recorded)) {
         setPath(doc, keyPath, value);
         touched = true;
         changes.push({ kind: "key-replaced", file: rel, key });
         keysNext[key] = value;
       } else {
+        // Changed by the PM, or a parent of the key holds a value of theirs that is not an object (a scalar or an array): never overwritten.
         notices.push({ kind: "key-kept", file: rel, key });
         if (recorded !== undefined) keysNext[key] = recorded;
       }
@@ -201,49 +319,61 @@ export function install({ profile, agentDir, recipe = null, dryRun = false }) {
   const sortObj = (o) => Object.fromEntries(Object.keys(o).sort().map((k) => [k, isPlain(o[k]) ? sortObj(o[k]) : o[k]]));
   const manifestText = JSON.stringify(sortObj(next), null, 2) + "\n";
   const manifestChanged = !existsSync(manifestPath) || readFileSync(manifestPath, "utf8") !== manifestText;
-  if (manifestChanged) writes.push([manifestPath, manifestText]);
 
   if (!dryRun) {
     for (const [path, text] of writes) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, text, "utf8");
+      writeAtomic(path, text);
+      afterStep?.(`write ${relative(agentDir, path)}`);
     }
-    for (const path of removes) rmSync(path, { force: true });
+    for (const path of removes) {
+      rmSync(path, { force: true });
+      afterStep?.(`remove ${relative(agentDir, path)}`);
+    }
+    if (manifestChanged) {
+      writeAtomic(manifestPath, manifestText);
+      afterStep?.("write manifest");
+    }
   }
   return { changes, notices, manifestChanged, profileVersion: profile.version };
 }
 
 /** "Use the team version": the PM's copy is saved under backup/<timestamp>/, then the pending copy takes its place. */
 export function useTeamVersion({ profile, agentDir, files, now = new Date() }) {
-  const stateDir = join(agentDir, STATE_DIR);
-  const manifestPath = join(stateDir, MANIFEST);
+  safeSegment(profile.version, "profile version");
+  const manifestPath = managedPath(agentDir, `${STATE_DIR}/${MANIFEST}`, "manifest path");
   const manifest = readJsonOr(manifestPath, null);
   if (!manifest) throw new Error("no manifest: nothing was installed here");
+  if (!isPlain(manifest.files)) throw new Error(`${manifestPath} is not a manifest this installer wrote; fix or remove it, nothing was changed`);
   const stamp = now.toISOString().replace(/[:.]/g, "-");
-  const done = [];
-  for (const rel of files) {
-    const pending = join(stateDir, "pending", profile.version, rel);
-    if (!existsSync(pending)) throw new Error(`no pending version of ${rel}`);
-    const target = join(agentDir, rel);
-    if (existsSync(target)) {
-      const backup = join(stateDir, "backup", stamp, rel);
-      mkdirSync(dirname(backup), { recursive: true });
-      writeFileSync(backup, readFileSync(target));
-    }
-    mkdirSync(dirname(target), { recursive: true });
-    const bytes = readFileSync(pending);
-    writeFileSync(target, bytes);
-    rmSync(pending, { force: true });
-    manifest.files[rel] = sha256(bytes);
-    done.push({ file: rel, backup: posix(join(STATE_DIR, "backup", stamp, rel)) });
+  // Check every file before touching any of them.
+  const plan = files.map((rel) => ({
+    rel,
+    target: managedPath(agentDir, rel, "--file"),
+    pendingRel: `${STATE_DIR}/pending/${profile.version}/${rel}`,
+    backupRel: `${STATE_DIR}/backup/${stamp}/${rel}`,
+  }));
+  for (const p of plan) {
+    p.pending = managedPath(agentDir, p.pendingRel, "pending path");
+    p.backup = managedPath(agentDir, p.backupRel, "backup path");
+    if (!existsSync(p.pending)) throw new Error(`no pending version of ${p.rel}`);
   }
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  const done = [];
+  for (const p of plan) {
+    if (existsSync(p.target)) writeAtomic(p.backup, readFileSync(p.target));
+    const bytes = readFileSync(p.pending);
+    writeAtomic(p.target, bytes);
+    // The manifest records the new hash before the pending copy goes, so a crash in between leaves a state the next install sorts out.
+    manifest.files[p.rel] = sha256(bytes);
+    writeAtomic(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    rmSync(p.pending, { force: true });
+    done.push({ file: p.rel, backup: posix(p.backupRel) });
+  }
   return done;
 }
 
 /** Lists a recipe package in settings.json as { source, extensions: [] }, so it adds skills but loads no code (spec section 5). */
 export function markSkillsOnly({ agentDir, packages }) {
-  const path = join(agentDir, "settings.json");
+  const path = managedPath(agentDir, "settings.json", "settings path");
   const doc = readJsonOr(path, null);
   if (!doc) throw new Error("settings.json missing; install the profile first");
   const list = Array.isArray(doc.packages) ? doc.packages : [];
@@ -260,7 +390,7 @@ export function markSkillsOnly({ agentDir, packages }) {
     }
   }
   doc.packages = list;
-  if (marked.length > 0) writeFileSync(path, JSON.stringify(doc, null, 2) + "\n", "utf8");
+  if (marked.length > 0) writeAtomic(path, JSON.stringify(doc, null, 2) + "\n");
   return marked;
 }
 
