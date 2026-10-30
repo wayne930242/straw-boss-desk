@@ -27,6 +27,9 @@ param(
     [string]$Recipe
 )
 
+# A relative -Recipe is taken against the PowerShell location, here and nowhere else; node and every later check get the absolute path.
+if ($Recipe) { $Recipe = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Recipe) }
+
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
 $script:LogFile = Join-Path $LogDir 'bootstrap.jsonl'
 $pins = Get-Pins
@@ -462,8 +465,17 @@ if ($teamOn -and $script:TeamRecipe) {
             $fs = Get-FsErrors ($r.StdOut + "`n" + $r.StdErr)
             Set-Content -LiteralPath (Join-Path $LogDir ("pi-install-" + ($pk.name -replace '[^A-Za-z0-9]', '_') + '.log')) -Value ($r.StdOut + "`n--- stderr ---`n" + $r.StdErr) -Encoding UTF8
             if ($r.ExitCode -ne 0) { throw (Get-NpmStepFailure "$($pk.name)@$($pk.version)" "pi install exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $(Get-FirstLine $r.StdOut) $($fs -join ' | ')" ($r.StdErr + ' ' + $r.StdOut)) }
-            $m = Invoke-TeamProfile 'skills-only' @('--only', $pk.name)
-            if ($m.ExitCode -ne 0 -or -not $m.Json -or -not $m.Json.ok) { throw "could not list $($pk.name) skills-only: $(if ($m.Json) { $m.Json.error } else { Get-FirstLine ($m.Raw.StdErr + $m.Raw.StdOut) })" }
+            # pi install lists the package with every resource type on. If it cannot then be listed skills-only, take it out again:
+            # a package must never stay enabled with its extensions (spec section 5).
+            $m = $null
+            $why = $null
+            try { $m = Invoke-TeamProfile 'skills-only' @('--only', $pk.name) } catch { $why = $_.Exception.Message }
+            if (-not $why -and ($m.ExitCode -ne 0 -or -not $m.Json -or -not $m.Json.ok)) { $why = if ($m.Json) { "$($m.Json.error)" } else { Get-FirstLine ($m.Raw.StdErr + $m.Raw.StdOut) } }
+            if ($why) {
+                $rm = Invoke-Native -File $t.PiCmd -ArgList @('remove', "npm:$($pk.name)@$($pk.version)") -TimeoutSec 300
+                Write-Log ('team-pkg:' + $pk.name) 'rolled-back' @{ detail = "pi remove exit $($rm.ExitCode); not left enabled with its extensions" }
+                throw "could not list $($pk.name) skills-only, so it was removed again (pi remove exit $($rm.ExitCode)): $why"
+            }
             [pscustomobject]@{ FsErrors = $fs }
         } {
             $v = Get-InstalledVersion $t.AgentNm $pk.name
