@@ -553,7 +553,7 @@ The pins in `spike/win/pins.json` against the design's "Team profile packages" l
 | Design name | Pinned | Latest on npm | Note |
 | --- | --- | --- | --- |
 | pi-straw-boss | 0.44.1 | 0.44.1 | |
-| pi-herdr-agents | 3.6.1 | 3.6.1 | The PM decided on 2026-10-30 (the author asleep and had pre-authorized own-scope choices): PMs get the newest npm release, not the author's fork. 3.6.1 still lacks open PR #84 (Escape in an auto-exit child closes it) and the fork-only exit hold, which only an extension waiting out a quota reset uses. Both are recorded as the `gap` note in `pins.json`. |
+| pi-herdr-agents | 3.6.1 | 3.6.1 | Decided on 2026-10-30 by the desk's coordinating agent session, under the author's standing authorization for own-scope choices while the author was away: PMs get the newest npm release, not the author's fork. 3.6.1 still lacks open PR #84 (Escape in an auto-exit child closes it) and the fork-only exit hold, which only an extension waiting out a quota reset uses. Both are recorded as the `gap` note in `pins.json`. |
 | its roles | pi-herdr-roles 0.1.0 | 0.1.0 | `visual-tester` is unusable as shipped (needs `chrome-cdp` and `scripts/cdp.mjs`); out of v1. Also ships the `plan` and `orchestrate` skills, harmless for PMs. |
 | pi-intercom | 0.18.1 | 0.18.1 | |
 | ask-user | @juicesharp/rpiv-ask-user-question 2.15.0 | 2.15.0 | Exists. Its tool is `ask_user_question`. |
