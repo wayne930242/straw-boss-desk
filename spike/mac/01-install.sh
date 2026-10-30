@@ -5,6 +5,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -n "${SPIKE_CLEAN:-}" ] || exec "$here/run.sh" "$0" "$@"
 # shellcheck source=env.sh
 . "$here/env.sh"
+# shellcheck source=_npm.sh
+. "$here/_npm.sh"
 [ -n "$SPIKE" ] && [ "$HOME" = "$SPIKE/home" ] || exit 1
 mkdir -p "$HOME/projects/demo" "$TOOLS" "$SPIKE/run" "$SPIKE/tmp" "$SPIKE/dl" "$SPIKE/work" "$PI_CODING_AGENT_DIR" "$XDG_CONFIG_HOME/herdr"
 t() { local s=$SECONDS; "$@"; echo "TIMING $1 $((SECONDS - s))s" >&2; }
@@ -29,11 +31,11 @@ install_herdr() {
   rm -rf "${d:?}"
 }
 install_pi() {
-  [ -x "$TOOLS/npm/bin/pi" ] || npm install -g "@earendil-works/pi-coding-agent@$SBD_PI_VERSION"
+  [ -x "$TOOLS/npm/bin/pi" ] || pinned "@earendil-works/pi-coding-agent@$SBD_PI_VERSION" npm install -g "@earendil-works/pi-coding-agent@$SBD_PI_VERSION"
 }
 install_packages() {
-  pi install "npm:pi-intercom@$SBD_INTERCOM_VERSION"
-  pi install "npm:pi-straw-boss@$SBD_STRAW_BOSS_VERSION"
+  pinned "pi-intercom@$SBD_INTERCOM_VERSION" pi install "npm:pi-intercom@$SBD_INTERCOM_VERSION"
+  pinned "pi-straw-boss@$SBD_STRAW_BOSS_VERSION" pi install "npm:pi-straw-boss@$SBD_STRAW_BOSS_VERSION"
 }
 # herdr config: no onboarding, update checks, or sounds; panes start non-login shells so PATH keeps the spike's dirs in front; agents resume after a restart.
 write_config() {

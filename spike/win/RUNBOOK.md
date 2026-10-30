@@ -19,6 +19,7 @@ All paths are relative to `spike/win/` in the repository.
 | `start.ps1` / `stop.ps1` | Headless herdr server, then `cli.mjs up --dir` (integration, sb server, home base with its tower, GUI); stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
 | `desk-b7-check.ps1` | Desk B7 acceptance A0, A1, A3 to A7 and A9 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
+| `npm-stale-check.ps1` | What `bootstrap.ps1` says for a pinned npm package when the registry is down and npm's cache holds an old package list (VM 2026-10-30: E404 for `pi-straw-boss@0.48.0`, which exists). Works in a scratch `SBD_ROOT` with a stand-in registry (`lib\npm-stale-fixture.mjs`); needs no network; PASS/FAIL lines |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
 | `lib\gui-client.mjs`, `lib\cdp-eval.mjs` | Test clients: the GUI's HTTP surface (takes `SB_DIR`, a `gui.json`, or `auto`); a window read over CDP (token-free output) |
@@ -73,6 +74,9 @@ The script prints a table and exits 1 if any stage failed; the per-stage JSON is
 
 If a stage fails, read its line in `bootstrap.jsonl` (the `fsErrors` field lists EPERM, ENAMETOOLONG, and locked-file lines), then run the script again: verified stages are skipped.
 Use `-Only pkg:pi-lens -Force` to retry one stage.
+
+Every npm step asks the registry for fresh package metadata (`NPM_CONFIG_PREFER_ONLINE=true`, set by `Set-SbdEnv`), because npm trusts a cached copy for 5 minutes and, when the registry does not answer, uses it: a pin published after that copy fails as "not found" (VM 2026-10-30: three ETIMEDOUT, then E404 for `pi-straw-boss@0.48.0`, which exists).
+When a pinned npm step still fails on the network or with "no such version", its message starts with the plain sentence "The npm registry could not be reached or is out of date, so <name>@<version> was not installed. Check the network and run this again; nothing was installed in its place.", followed by the technical detail. Nothing falls back to another version. `npm-stale-check.ps1` reproduces it without a network.
 
 What this step records without any extra work:
 

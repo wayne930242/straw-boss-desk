@@ -14,6 +14,7 @@ spike/mac/02-herdr-server.sh                 # monitor 2: headless herdr server
 spike/mac/03-up.sh                           # cli.mjs up --dir "$HOME/Straw Boss" --label "Straw Boss" --exact: Herdr's pi integration, the sb server, the home base and its tower, the GUI; prints GUI_URL= and SB_DIR=, records the sb server pid and start time and the base (run/base.json)
 spike/mac/08-check.sh                        # M1: GUI 200, status live/primary/desk, no `open` call recorded, one server.json; M4: one base with one tower tab, the integration installed
 spike/mac/09-pane-env.sh                     # a pane sees the server's STRAW_BOSS_DESK, XDG_CONFIG_HOME, HERDR_SOCKET_PATH, PI_CODING_AGENT_DIR
+spike/mac/10-npm-stale.sh                    # what a pinned install says when npm's registry is down or its cached package list is old (stand-in registry on 127.0.0.1, no network); PASS/FAIL
 spike/mac/07-follow-check.sh                 # M2 without a screen: the shared follower follows restart, kill -9 and stop + Start (no window)
 SBD_SHOT=$PWD/docs/spikes/mac-gui.png SBD_SHOT_DELAY_MS=4000 \
   SBD_SCRIPT=$PWD/spike/mac/electron/scripts/new-base-create.js \
@@ -23,6 +24,7 @@ spike/mac/99-stop.sh                         # stop order: cli.mjs stop, wait fo
 
 `03-up.sh` exit codes: 0 done; 2 pi-straw-boss not installed; 4 the spike's herdr is not running; 10 + N `up` failed with exit N (11 a step failed, 12 usage, 13 the server cannot run); 21 `up` answered without a usable URL; 22 the sb server is not in the primary slot; 23 step `base` busy (another `up --dir` holds `desk.lock`); 24 step `base` failed (the folder, or Herdr said no); 25 step `integration` failed; 26 `up` answered without a base; 27 step `tower` failed.
 The home base folder is `$HOME/Straw Boss` (`$SPIKE/home/Straw Boss`; visible and under home, as the desk-mode spec asks); `03-up.sh` makes it when missing, since `up --dir` only checks it. `01-install.sh` no longer runs `herdr integration install pi`: `up --dir` does.
+`01-install.sh` installs the pinned npm packages with `NPM_CONFIG_PREFER_ONLINE=true` (`_npm.sh`), because npm trusts its cached package list for 5 minutes and uses it when the registry does not answer, which makes a pin that exists fail as "not found" (VM 2026-10-30). When a pinned install fails like that, it prints that the npm registry could not be reached or is out of date, and installs nothing in its place. `10-npm-stale.sh` shows both cases against a stand-in registry.
 The URL carries the page token: `03-up.sh` prints it once and keeps it on disk only while it runs.
 
 `99-stop.sh` follows the plan's **Stop order**: `cli.mjs stop` first (45 s), so a pi session's look cannot start a new server while herdr shuts down; then the sb server pid is waited for (10 s) and killed only while its recorded start time matches; then `herdr server stop`; then what is left of the recorded tree and the pi-intercom broker of this agent dir. Workspaces are not closed, and `gui.json` and `server.json` stay. It prints `stopped`, or `STILL RUNNING:` with exit 1.

@@ -80,25 +80,43 @@ function Install-Archive {
     return $dest
 }
 
-# A failed `npm view` is a registry or network problem, not an integrity mismatch: name it as what it is (VM 2026-10-27: an ETIMEDOUT
+# A failed npm step is a registry or network problem, not an integrity mismatch: name it as what it is (VM 2026-10-27: an ETIMEDOUT
 # and a registry 404 were both reported as "registry integrity mismatch"). Only a registry answer that differs from the pin is a mismatch.
+# npm also answers from its cached copy of a package's metadata when the registry does not, and says E404/ETARGET "no such version" for a version published
+# after that copy was made (VM 2026-10-30: three ETIMEDOUT, then E404 for pi-straw-boss@0.48.0, which exists). So a "no such version" answer for a pinned
+# version is a registry-side failure as well. --prefer-online (NPM_CONFIG_PREFER_ONLINE from Set-SbdEnv) makes npm ask the registry first, but it cannot
+# help when the registry does not answer.
 function Get-NpmFailureKind {
     param([string]$Text)
     if ($Text -match 'ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPROTO|ERR_SOCKET|CERT_|UNABLE_TO_VERIFY|network') { return 'network failure' }
-    if ($Text -match 'E404|\b404\b|Not Found') { return 'registry returned 404 (package or version not found, or the registry or a proxy failed)' }
+    if ($Text -match 'E404|\b404\b|Not Found|ETARGET|notarget|No match found|No matching version') { return 'npm found no such version (the registry said 404, or the registry did not answer and npm used an old cached copy)' }
     if ($Text -match 'E401|E403|\b40[13]\b') { return 'registry refused the request (401/403)' }
     if ($Text -match 'E50\d|\b50[0-4]\b') { return 'registry server error (5xx)' }
-    return 'npm view failed'
+    return 'npm failed'
+}
+
+# The sentence a PM can act on, put first in the message of every registry-side failure of a pinned npm step. Nothing falls back to another version.
+function Get-RegistryAdvice {
+    param([string]$What)
+    return "The npm registry could not be reached or is out of date, so $What was not installed. Check the network and run this again; nothing was installed in its place. "
+}
+
+# The failure message of a pinned npm step ($What is name@version): the plain sentence first when the cause is on the registry side, then the technical detail.
+function Get-NpmStepFailure {
+    param([string]$What, [string]$Detail, [string]$Text)
+    if ((Get-NpmFailureKind $Text) -eq 'npm failed') { return $Detail }
+    return (Get-RegistryAdvice $What) + 'Detail: ' + $Detail
 }
 
 function Assert-NpmIntegrity {
     param([string]$Name, [string]$Version, [string]$Integrity)
-    $r = Invoke-Native -File $t.NpmCmd -ArgList @('view', "$Name@$Version", 'dist.integrity') -TimeoutSec 120
+    $r = Invoke-Native -File $t.NpmCmd -ArgList @('view', "$Name@$Version", 'dist.integrity', '--prefer-online') -TimeoutSec 120
     $got = (Get-FirstLine $r.StdOut).Trim()
-    if ($r.TimedOut) { throw "registry lookup for $Name@$Version timed out after 120 s (network failure, not an integrity mismatch)" }
+    if ($r.TimedOut) { throw ((Get-RegistryAdvice "$Name@$Version") + "Detail: registry lookup for $Name@$Version timed out after 120 s (network failure, not an integrity mismatch)") }
     if ($r.ExitCode -ne 0) {
         $detail = (($r.StdErr + "`n" + $r.StdOut) -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 6) -join ' | '
-        throw "registry lookup failed for ${Name}@${Version}: $(Get-NpmFailureKind ($r.StdErr + ' ' + $r.StdOut)) (npm view exit $($r.ExitCode); this is not an integrity mismatch): $detail"
+        $text = $r.StdErr + ' ' + $r.StdOut
+        throw (Get-NpmStepFailure "$Name@$Version" "registry lookup failed for ${Name}@${Version}: $(Get-NpmFailureKind $text) (npm view exit $($r.ExitCode); this is not an integrity mismatch): $detail" $text)
     }
     if (-not $got) { throw "registry answered without dist.integrity for $Name@$Version (npm view printed nothing; not an integrity mismatch)" }
     if ($got -ne $Integrity) { throw "registry integrity mismatch for $Name@$Version`n  pinned $Integrity`n  registry $got" }
@@ -107,10 +125,10 @@ function Assert-NpmIntegrity {
 function Install-NpmGlobal {
     param($Pkg)
     Assert-NpmIntegrity $Pkg.name $Pkg.version $Pkg.integrity
-    $r = Invoke-Native -File $t.NpmCmd -ArgList @('install', '-g', '--prefix', $NpmPrefix, "$($Pkg.name)@$($Pkg.version)") -TimeoutSec 1800
+    $r = Invoke-Native -File $t.NpmCmd -ArgList @('install', '-g', '--prefix', $NpmPrefix, '--prefer-online', "$($Pkg.name)@$($Pkg.version)") -TimeoutSec 1800
     $fs = Get-FsErrors ($r.StdOut + "`n" + $r.StdErr)
     Set-Content -LiteralPath (Join-Path $LogDir ("npm-" + ($Pkg.name -replace '[^A-Za-z0-9]', '_') + '.log')) -Value ($r.StdOut + "`n--- stderr ---`n" + $r.StdErr) -Encoding UTF8
-    if ($r.ExitCode -ne 0) { throw "npm install -g $($Pkg.name)@$($Pkg.version) exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $($fs -join ' | ')" }
+    if ($r.ExitCode -ne 0) { throw (Get-NpmStepFailure "$($Pkg.name)@$($Pkg.version)" "npm install -g $($Pkg.name)@$($Pkg.version) exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $($fs -join ' | ')" ($r.StdErr + ' ' + $r.StdOut)) }
     [pscustomobject]@{ FsErrors = $fs }
 }
 
@@ -333,7 +351,7 @@ foreach ($pkg in $pins.piPackages) {
         $r = Invoke-Native -File $t.PiCmd -ArgList @('install', "npm:$($pk.name)@$($pk.version)") -TimeoutSec 1800
         $fs = Get-FsErrors ($r.StdOut + "`n" + $r.StdErr)
         Set-Content -LiteralPath (Join-Path $LogDir ("pi-install-" + ($pk.name -replace '[^A-Za-z0-9]', '_') + '.log')) -Value ($r.StdOut + "`n--- stderr ---`n" + $r.StdErr) -Encoding UTF8
-        if ($r.ExitCode -ne 0) { throw "pi install exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $(Get-FirstLine $r.StdOut) $($fs -join ' | ')" }
+        if ($r.ExitCode -ne 0) { throw (Get-NpmStepFailure "$($pk.name)@$($pk.version)" "pi install exit $($r.ExitCode): $(Get-FirstLine $r.StdErr) $(Get-FirstLine $r.StdOut) $($fs -join ' | ')" ($r.StdErr + ' ' + $r.StdOut)) }
         [pscustomobject]@{ FsErrors = $fs }
     } {
         $v = Get-InstalledVersion $t.AgentNm $pk.name

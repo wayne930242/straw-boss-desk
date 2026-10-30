@@ -237,6 +237,9 @@ function Set-SbdEnv {
     $env:NPM_CONFIG_UPDATE_NOTIFIER = 'false'
     $env:NPM_CONFIG_FUND = 'false'
     $env:NPM_CONFIG_AUDIT = 'false'
+    # npm answers from its cached copy of a package's metadata for up to 5 minutes without asking the registry, so a pinned version published after the
+    # copy was made fails as "not found" (VM 2026-10-30, pi-straw-boss@0.48.0). Ask the registry first, for npm and for every npm that pi starts.
+    $env:NPM_CONFIG_PREFER_ONLINE = 'true'
     # Desk mode and the primary slot: the same variables go to herdr, to every cli.mjs call, and (through herdr) to every pane's pi, so they all compute
     # the one slot (desk-b7 plan, task 1). Nothing here points at the user's own %APPDATA%\herdr.
     $env:STRAW_BOSS_DESK = '1'
