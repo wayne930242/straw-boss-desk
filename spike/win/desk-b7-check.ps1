@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  DRAFT, NOT YET RUN. Desk B7 acceptance on pi-straw-boss 0.46.0 (docs/specs/2026-10-28-desk-b7.md, Acceptance A1 to A5, and task 1's pane-environment check as A0).
+  Desk B7 acceptance on pi-straw-boss 0.48.0 (docs/specs/2026-10-28-desk-b7.md, Acceptance A1 to A5, and task 1's pane-environment check as A0).
 .DESCRIPTION
   Run in the Windows VM under the filtered token, as the 0.46.0 pass did, after bootstrap.ps1 and with the prototype installed (for A3):
     powershell -NoProfile -ExecutionPolicy Bypass -File desk-b7-check.ps1 [-Only A0,A1,...] [-Runs 5]

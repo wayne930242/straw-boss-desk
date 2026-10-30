@@ -1,12 +1,12 @@
 # Phase 0 spike, macOS
 
-Reproduces the run in `docs/spikes/mac.md` on pi-straw-boss 0.46.0 (the desk B7 plan, `docs/specs/2026-10-28-desk-b7.md`, tasks 5 and 8: the start order after the B6 + B7 release): private Node, herdr, pi, pi-straw-boss and pi-intercom under a throwaway HOME (`/tmp/sbd-spike`, override with `SPIKE=`), a headless `herdr server`, the sb server and its GUI brought up by `cli.mjs up --dir`, and an Electron window that loads the GUI and follows it through a restart.
+Reproduces the run in `docs/spikes/mac.md` on pi-straw-boss 0.48.0 (the desk B7 plan, `docs/specs/2026-10-28-desk-b7.md`, tasks 5 and 8: the start order after the B6 + B7 release): private Node, herdr, pi, pi-straw-boss and pi-intercom under a throwaway HOME (`/tmp/sbd-spike`, override with `SPIKE=`), a headless `herdr server`, the sb server and its GUI brought up by `cli.mjs up --dir`, and an Electron window that loads the GUI and follows it through a restart.
 
 Everything runs through `run.sh`, which drops the caller's environment so a spike started from inside a herdr pane cannot join that herdr. Long-lived steps (`02`, `05`, `06`) are meant to run under `MonitorCreate`, one monitor each; stop only the monitors you started.
 The environment (`env.sh`) sets `STRAW_BOSS_DESK=1` and puts herdr's socket at its default for the spike's own `XDG_CONFIG_HOME` (`$SPIKE/home/.config/herdr/herdr.sock`), so the sb server is the **primary** server of this environment: its files are in `$SPIKE/home/.pi/agent/straw-boss/` and it holds Straw Link. `_isolated.sh` refuses any socket outside `$SPIKE`, or one that is not that default, or longer than 100 bytes. Nothing under `~/.config/herdr` or `~/.pi` is read or written.
 
 ```sh
-spike/mac/01-install.sh                      # Node, herdr, pi, packages (pi-straw-boss 0.46.0, pi-intercom 0.18.1), config, stub model (~20-80 s)
+spike/mac/01-install.sh                      # Node, herdr, pi, packages (pi-straw-boss 0.48.0, pi-intercom 0.18.1), config, stub model (~20-80 s)
 spike/mac/04-electron-build.sh               # Electron + TypeScript, compile the window app with the shared follow.ts (~15-45 s)
 spike/mac/98-reset.sh                        # clear runtime state for a fresh run (optional; refuses while a recorded process runs)
 spike/mac/06-stub-llm.sh                     # monitor 1: local stand-in model on 127.0.0.1:18999 (only if a pi session should complete a turn)
