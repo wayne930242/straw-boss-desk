@@ -394,8 +394,8 @@ if ($teamOn) {
     } {
         $r = Invoke-TeamProfile 'install'
         if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "team profile install failed: $(if ($r.Json) { $r.Json.error } else { Get-FirstLine ($r.Raw.StdErr + $r.Raw.StdOut) })" }
-        foreach ($c in @($r.Json.changes)) { Write-Log 'team-profile' $c.kind @{ detail = "$($c.file)$($c.key)" } }
-        foreach ($n in @($r.Json.notices)) { Write-Log 'team-profile' $n.kind @{ detail = "$($n.file)$($n.key) $($n.reason) $($n.pending)" } }
+        foreach ($c in @($r.Json.changes)) { Write-Log 'team-profile' $c.kind @{ detail = "$($c.file) $($c.key)".Trim() } }
+        foreach ($n in @($r.Json.notices)) { Write-Log 'team-profile' $n.kind @{ detail = "$($n.file) $($n.key) $($n.reason) $($n.pending)".Trim() } }
     } {
         $r = Invoke-TeamProfile 'verify'
         if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.verified) { throw "verify failed: managed files or keys differ from the manifest after install: $(($r.Json.changes | ForEach-Object { "$($_.kind) $($_.file)$($_.key)" }) -join ', ')" }

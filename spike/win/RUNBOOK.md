@@ -19,7 +19,7 @@ All paths are relative to `spike/win/` in the repository.
 | `start.ps1` / `stop.ps1` | Headless herdr server, then `cli.mjs up --dir` (integration, sb server, home base with its tower, GUI); stops only what it recorded |
 | `checks.ps1` | The unattended checks, results in `results\checks-*.json` |
 | `desk-b7-check.ps1` | Desk B7 acceptance A0, A1, A3 to A7 and A9 (docs/specs/2026-10-28-desk-b7.md); ran in the VM 2026-10-28, report in `~/.local/share/sbd-review/desk-b7-now/report.md`. `-Only A5d` runs one injection |
-| `lib\team-profile.mjs`, `test-recipe.strawboss.json` | The installer behind `-TeamProfile` (its tests: `node --test spike/win/test/` on the Mac), and the recipe it applies by default |
+| `lib\team-profile.mjs`, `test-recipe.strawboss.json` | The installer behind `-TeamProfile` (its tests: `node --test "spike/win/test/*.test.mjs"` on the Mac), and the recipe it applies by default |
 | `npm-stale-check.ps1` | What `bootstrap.ps1` says for a pinned npm package when the registry is down and npm's cache holds an old package list (VM 2026-10-30: E404 for `pi-straw-boss@0.48.0`, which exists). Works in a scratch `SBD_ROOT` with a stand-in registry (`lib\npm-stale-fixture.mjs`); needs no network; PASS/FAIL lines |
 | `check-claude.ps1`, `check-github.ps1`, `check-gitlab.ps1`, `check-ttt.ps1` | Account checks, run with the author present |
 | `ui-run.ps1`, `shot.ps1` | Start a program on the interactive desktop from SSH; desktop screenshot |
@@ -94,6 +94,8 @@ The default bootstrap does not run it. `-TeamProfile` (or `-Only team-profile` /
 - **`team-pkg:<name>`** installs each of the recipe's `packages` at its pin (registry integrity checked first, like the pi packages) with `pi install`, then lists it in `settings.json` as `{ "source": "npm:<name>@<version>", "extensions": [] }`: skills only, no code that runs inside pi. The test recipe adds `@zeldrisho/pi-coderabbit-skills@0.1.3`.
 
 A rerun changes nothing: detect runs the installer's `verify` (a dry run) and skips the stage when no file or key would change. `-Force` runs the installer again; it still writes nothing that is already as recorded.
+
+To see that pi loads the profile without a model, start it in RPC mode under `Set-SbdEnv` (`pi --mode rpc --no-session --offline`, `get_commands` on stdin): `skill:pm-workflow` is listed, the default model is the profile's, and stderr is empty. Do not use `pi -p` for this and leave it to time out: the killed pi leaves `agent\intercom\broker.pid` behind, and when Windows reuses that pid for a live process the next `start.ps1` fails with "Refusing to replace live intercom broker process" (VM 2026-10-31: `new-base-via-gui-api` and `terminal-mirror-rows` failed until the file was removed).
 
 Left for the wizard (Tasks item 4), deliberately not done here: the trust screen, forge logins (`gh`, `glab`) and their keyring check, cloning the recipe's `repos` and opening them as bases, the Linear step, and recipe updates from `updateUrl`. The recipe's `forges`, `repos`, `linear` and `profile` fields are validated and then ignored.
 
