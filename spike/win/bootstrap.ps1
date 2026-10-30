@@ -473,8 +473,12 @@ if ($teamOn -and $script:TeamRecipe) {
             if (-not $why -and ($m.ExitCode -ne 0 -or -not $m.Json -or -not $m.Json.ok)) { $why = if ($m.Json) { "$($m.Json.error)" } else { Get-FirstLine ($m.Raw.StdErr + $m.Raw.StdOut) } }
             if ($why) {
                 $rm = Invoke-Native -File $t.PiCmd -ArgList @('remove', "npm:$($pk.name)@$($pk.version)") -TimeoutSec 300
-                Write-Log ('team-pkg:' + $pk.name) 'rolled-back' @{ detail = "pi remove exit $($rm.ExitCode); not left enabled with its extensions" }
-                throw "could not list $($pk.name) skills-only, so it was removed again (pi remove exit $($rm.ExitCode)): $why"
+                if ($rm.ExitCode -ne 0) {
+                    Write-Log ('team-pkg:' + $pk.name) 'rollback-failed' @{ detail = "pi remove exit $($rm.ExitCode): $(Get-FirstLine ($rm.StdErr + ' ' + $rm.StdOut))" }
+                    throw "could not list $($pk.name) skills-only, and removing it failed (pi remove exit $($rm.ExitCode)), so it may still be enabled with its extensions; remove it from settings.json before starting pi: $why"
+                }
+                Write-Log ('team-pkg:' + $pk.name) 'rolled-back' @{ detail = "pi remove exit 0; not left enabled with its extensions" }
+                throw "could not list $($pk.name) skills-only, so it was removed again: $why"
             }
             [pscustomobject]@{ FsErrors = $fs }
         } {
