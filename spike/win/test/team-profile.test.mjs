@@ -595,3 +595,117 @@ describe("a crash between the writes (R-F003, R-F005)", () => {
     assert.deepEqual(kinds(result), ["file-recorded:rules/a.md"]);
   });
 });
+
+describe("P3 round: Windows-special names, temp files, --file, Markdown (RC-F002..F005)", () => {
+  const outside = () => {
+    const dir = join(tmp, "outside");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  it("RC-F002: safeRel refuses segments ending in a dot or a space and Windows device names, with any extension and case", () => {
+    const refused = ["x.", "rules/x. ", "rules/a ", "rules/...", "CON", "con", "rules/NUL.md", "aux.tar.gz", "Prn.txt", "COM1", "com9.md", "LPT3.x", "skills/Lpt1/SKILL.md", "COM\u00b9", "lpt\u00b2.md", "COM\u00b3.txt"];
+    for (const rel of refused) assert.throws(() => safeRel(rel), /refusing/, JSON.stringify(rel));
+    for (const rel of ["rules/console.md", "rules/null.md", "rules/com.md", "rules/com10.md", "rules/com0.md", "rules/lpt.md", "rules/a.b.md", ".straw-boss-profile/manifest.json", "rules/con-x.md"]) assert.equal(safeRel(rel), rel);
+  });
+
+  it("RC-F002: a manifest key or a --file with such a segment is refused before any write", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir });
+    for (const rel of ["rules/NUL.md", "rules/a.md."]) assert.throws(() => useTeamVersion({ profile, agentDir, files: [rel] }), /refusing --file/, rel);
+    const m = manifest();
+    m.files["rules/CON.md"] = "0".repeat(64);
+    put(agentDir, ".straw-boss-profile/manifest.json", JSON.stringify(m));
+    assert.throws(() => install({ profile: makeProfile(profileDir, { version: "1.1.0", rules: { "a.md": "rule a v2\n" } }), agentDir }), /refusing manifest path/);
+    assert.equal(read(agentDir, "rules/a.md"), "rule a v1\n");
+  });
+
+  it("RC-F003: a link planted at the old predictable temp name is not written through", () => {
+    const target = join(outside(), "victim.txt");
+    mkdirSync(join(agentDir, "rules"), { recursive: true });
+    symlinkSync(target, join(agentDir, "rules", `a.md.sbd-tmp-${process.pid}`));
+    install({ profile: makeProfile(profileDir), agentDir });
+    assert.ok(!existsSync(target), "nothing was written outside the agent folder");
+    assert.equal(read(agentDir, "rules/a.md"), "rule a v1\n");
+  });
+
+  it("RC-F003: no temp file is left behind after any write", () => {
+    const seen = [];
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir, afterStep: () => seen.push(listFiles(agentDir).filter((f) => f.includes(".sbd-tmp-"))) });
+    assert.ok(seen.every((names) => names.length === 0), "no temp file remains after a write");
+    assert.ok(!listFiles(agentDir).some((f) => f.includes(".sbd-tmp-")));
+  });
+
+  it("RC-F003: a folder swapped for a link after planning is caught right before the next write", () => {
+    const dir = outside();
+    const profile = makeProfile(profileDir);
+    assert.throws(
+      () =>
+        install({
+          profile,
+          agentDir,
+          afterStep: (label) => {
+            if (label === "write AGENTS.md") symlinkSync(dir, join(agentDir, "rules"), "junction");
+          },
+        }),
+      /symbolic link or junction/,
+    );
+    assert.deepEqual(readdirSync(dir), [], "nothing was written through the link");
+    assert.ok(!listFiles(agentDir).some((f) => f.includes(".sbd-tmp-")));
+  });
+
+  it("RC-F004: use-team refuses a file the manifest does not record and the profile does not ship", () => {
+    const profile = makeProfile(profileDir);
+    install({ profile, agentDir });
+    put(agentDir, ".straw-boss-profile/pending/1.0.0/.straw-boss-profile/manifest.json", "{}");
+    put(agentDir, ".straw-boss-profile/pending/1.0.0/rules/other.md", "x");
+    const before = read(agentDir, ".straw-boss-profile/manifest.json");
+    for (const rel of [".straw-boss-profile/manifest.json", "rules/other.md", "settings.json"]) assert.throws(() => useTeamVersion({ profile, agentDir, files: [rel] }), /not a file this installer manages/, rel);
+    assert.equal(read(agentDir, ".straw-boss-profile/manifest.json"), before);
+  });
+
+  it("RC-F004: a repeated --file is switched once, and a later bad one stops everything before the first switch", () => {
+    install({ profile: makeProfile(profileDir), agentDir });
+    put(agentDir, "rules/a.md", "mine\n");
+    const next = makeProfile(profileDir, { version: "1.1.0", rules: { "a.md": "rule a v2\n" } });
+    install({ profile: next, agentDir });
+    assert.throws(() => useTeamVersion({ profile: next, agentDir, files: ["rules/a.md", "rules/zzz.md"] }), /not a file this installer manages/);
+    assert.equal(read(agentDir, "rules/a.md"), "mine\n", "nothing was switched");
+    const done = useTeamVersion({ profile: next, agentDir, files: ["rules/a.md", "rules/a.md"] });
+    assert.equal(done.length, 1);
+    assert.equal(read(agentDir, "rules/a.md"), "rule a v2\n");
+  });
+
+  it("RC-F004: a file the PM already had (no record) can still be switched to the team version", () => {
+    put(agentDir, "rules/a.md", "mine\n");
+    const profile = makeProfile(profileDir);
+    const result = install({ profile, agentDir });
+    assert.equal(result.notices[0].reason, "no-record");
+    assert.equal(useTeamVersion({ profile, agentDir, files: ["rules/a.md"] }).length, 1);
+    assert.equal(read(agentDir, "rules/a.md"), "rule a v1\n");
+  });
+
+  it("RC-F005: setext underlines of any length are escaped", () => {
+    assert.equal(neutralize("title\n=\nmore\n--\nx\n-\ny\n  ===  \n"), "title\n\\=\nmore\n\\--\nx\n\\-\ny\n  \\===  \n");
+  });
+
+  it("RC-F005: an unclosed code fence is escaped; a closed one is left alone", () => {
+    assert.equal(neutralize("a\n```js\nlet x\n"), "a\n\\```js\nlet x\n");
+    assert.equal(neutralize("~~~\nx\n~~~~\ny\n~~~\nz"), "~~~\nx\n~~~~\ny\n\\~~~\nz");
+    assert.equal(neutralize("```\nx\n```\ny"), "```\nx\n```\ny");
+    assert.equal(neutralize("````\n```\nx\n````"), "````\n```\nx\n````");
+    assert.equal(neutralize("text ``` inline\n``` not `a fence`"), "text ``` inline\n``` not `a fence`");
+  });
+
+  it("RC-F005: the block cannot change the rendering of the rest of AGENTS.md, markers intact", () => {
+    const text = composeAgents("# Profile\n\nbase\n", { name: "W", instructions: "intro\n=\n```sh\nrm -rf x\n- more\n--" });
+    const region = text.slice(text.indexOf(TEAM_BEGIN), text.indexOf(TEAM_END) + TEAM_END.length);
+    assert.ok(region.endsWith(TEAM_END));
+    assert.equal(text.split(TEAM_BEGIN).length - 1, 1);
+    assert.equal(text.split(TEAM_END).length - 1, 1);
+    const lines = region.split("\n");
+    assert.ok(!lines.some((l) => /^ {0,3}(=+|-+)\s*$/.test(l)), "no setext underline");
+    assert.ok(!lines.some((l) => /^ {0,3}(`{3,}|~{3,})/.test(l)), "no fence is left open");
+  });
+});

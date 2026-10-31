@@ -9,7 +9,7 @@
 //   --file <relpath>    use-team: the file to switch to the team version (repeatable)
 //   --only <name>       skills-only: just this recipe package
 // Prints one JSON line. Exit 0 on success, 1 on any failure (an invalid recipe prints its errors and installs nothing).
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -71,7 +71,13 @@ function setPath(obj, path, value) {
 
 const shown = (v) => JSON.stringify(String(v).slice(0, 80));
 
-/** A relative POSIX path that stays inside its folder: no `..`, no root, drive, UNC or stream (`:`), no backslash, no empty segment. */
+/** Names Windows maps to a device whatever the extension (`NUL.md` is still the null device): CON, PRN, AUX, NUL, COM1-9, LPT1-9 and the superscript digits COM¹²³ and LPT¹²³. */
+const DEVICE_NAME = /^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])(\..*)?$/i;
+
+/**
+ * A relative POSIX path that stays inside its folder: no `..`, no root, drive, UNC or stream (`:`), no backslash, no empty segment, and no
+ * segment Windows rewrites (a trailing dot or space is dropped, a device name opens a device instead of a file).
+ */
 export function safeRel(rel, what = "path") {
   const bad = (why) => {
     throw new Error(`refusing ${what} ${shown(rel)}: ${why}; nothing was changed`);
@@ -81,7 +87,11 @@ export function safeRel(rel, what = "path") {
   if (rel.includes("\\")) bad("it has a backslash");
   if (rel.includes(":")) bad("it has a drive letter or stream marker");
   if (rel.startsWith("/")) bad("it is absolute");
-  for (const seg of rel.split("/")) if (seg === "" || seg === "." || seg === "..") bad("it has an empty, '.' or '..' segment");
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === "." || seg === "..") bad("it has an empty, '.' or '..' segment");
+    if (/[. ]$/.test(seg)) bad("a segment ends in a dot or a space, which Windows drops");
+    if (DEVICE_NAME.test(seg)) bad("a segment is a Windows device name");
+  }
   return rel;
 }
 
@@ -100,27 +110,41 @@ export function managedPath(agentDir, rel, what = "path") {
   const root = resolve(agentDir);
   const full = resolve(root, ...rel.split("/"));
   if (!full.startsWith(root + sep)) throw new Error(`refusing ${what} ${shown(rel)}: it resolves outside the agent folder; nothing was changed`);
+  assertNoLinks(root, full, what, rel);
+  return full;
+}
+
+/** Throws when any part of full below root that exists is a symbolic link or junction; a part that does not exist yet is fine. */
+function assertNoLinks(root, full, what, rel = posix(relative(root, full))) {
   let walked = root;
-  for (const seg of rel.split("/")) {
+  for (const seg of relative(root, full).split(sep)) {
     walked = join(walked, seg);
     let st;
     try {
       st = lstatSync(walked);
     } catch (error) {
-      if (error.code === "ENOENT" || error.code === "ENOTDIR") break;
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return;
       throw error;
     }
     if (st.isSymbolicLink()) throw new Error(`refusing ${what} ${shown(rel)}: ${shown(relative(root, walked))} is a symbolic link or junction; remove it or fix the folder, nothing was changed`);
   }
-  return full;
 }
 
-/** A write that never leaves a partial file: a temp file in the same folder, renamed over the target. */
-function writeAtomic(path, data) {
+/**
+ * A write that never leaves a partial file: a temp file in the same folder, renamed over the target. The temp name is random and created with
+ * `wx`, so an existing entry (a planted link included) makes the write fail instead of being followed. Folders can change after planning, so the path
+ * is checked for links again right before the temp file is written and right before the rename.
+ */
+function writeAtomic(agentDir, path, data) {
+  const root = resolve(agentDir);
+  if (!resolve(path).startsWith(root + sep)) throw new Error(`refusing to write ${shown(path)}: it is outside the agent folder; nothing was changed`);
+  assertNoLinks(root, path, "write path");
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.sbd-tmp-${process.pid}`;
+  const tmp = `${path}.sbd-tmp-${randomBytes(8).toString("hex")}`;
   try {
-    writeFileSync(tmp, data);
+    assertNoLinks(root, path, "write path");
+    writeFileSync(tmp, data, { flag: "wx" });
+    assertNoLinks(root, path, "write path");
     renameSync(tmp, path);
   } catch (error) {
     rmSync(tmp, { force: true });
@@ -168,14 +192,28 @@ export const TEAM_END = "<!-- straw-boss:team-block:end -->";
 
 /**
  * Makes text from a recipe inert inside the team block: it can neither fake a block marker (`<!--` is escaped) nor pass for a section of the
- * profile (a heading or a rule line gets a backslash, so it reads as plain text, not Markdown structure).
+ * profile (a heading, a rule line or a setext underline gets a backslash, so it reads as plain text, not Markdown structure). A code fence
+ * that is never closed is escaped too, so the rest of AGENTS.md still renders as it would without the block.
  */
 export function neutralize(text) {
-  return normalizeText(text)
-    .replaceAll("<!--", "&lt;!--")
-    .replaceAll("-->", "--&gt;")
-    .split("\n")
-    .map((line) => (/^ {0,3}(#{1,6}(\s|$)|([-*_=])(\s*\3){2,}\s*$)/.test(line) ? line.replace(/^( {0,3})/, "$1\\") : line))
+  const lines = normalizeText(text).replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;").split("\n");
+  const escape = new Set();
+  // A code fence that is never closed would turn everything after the block into code, so its opening line is escaped. Fences are tracked as
+  // CommonMark closes them: same character, at least as long, nothing after it.
+  let open = null;
+  lines.forEach((line, i) => {
+    if (open) {
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1][0] === open.char && close[1].length >= open.len) open = null;
+      return;
+    }
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence && !(fence[1][0] === "`" && fence[2].includes("`"))) open = { char: fence[1][0], len: fence[1].length, line: i };
+  });
+  if (open) escape.add(open.line);
+  // A heading, a rule or a setext underline (a line of only `=` or `-`, even one character) would pass for structure of the profile or turn the line above into a heading.
+  return lines
+    .map((line, i) => (escape.has(i) || /^ {0,3}(#{1,6}(\s|$)|([-*_=])(\s*\3){2,}\s*$|(=+|-+)\s*$)/.test(line) ? line.replace(/^( {0,3})/, "$1\\") : line))
     .join("\n");
 }
 
@@ -323,7 +361,7 @@ export function install({ profile, agentDir, recipe = null, dryRun = false, afte
 
   if (!dryRun) {
     for (const [path, text] of writes) {
-      writeAtomic(path, text);
+      writeAtomic(agentDir, path, text);
       afterStep?.(`write ${relative(agentDir, path)}`);
     }
     for (const path of removes) {
@@ -331,7 +369,7 @@ export function install({ profile, agentDir, recipe = null, dryRun = false, afte
       afterStep?.(`remove ${relative(agentDir, path)}`);
     }
     if (manifestChanged) {
-      writeAtomic(manifestPath, manifestText);
+      writeAtomic(agentDir, manifestPath, manifestText);
       afterStep?.("write manifest");
     }
   }
@@ -347,7 +385,14 @@ export function useTeamVersion({ profile, agentDir, files, now = new Date() }) {
   if (!isPlain(manifest.files)) throw new Error(`${manifestPath} is not a manifest this installer wrote; fix or remove it, nothing was changed`);
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   // Check every file before touching any of them.
-  const plan = files.map((rel) => ({
+  // Only a file this installer manages can be switched: one the manifest records, or one the profile ships (a file the PM already had has no record
+  // yet, and its pending copy is what this switches). A repeated --file counts once, so nothing is half-switched by the second pass.
+  const unique = [...new Set(files)];
+  for (const rel of unique) {
+    safeRel(rel, "--file");
+    if (!Object.hasOwn(manifest.files, rel) && !profile.files.has(rel)) throw new Error(`refusing --file ${shown(rel)}: it is not a file this installer manages; nothing was changed`);
+  }
+  const plan = unique.map((rel) => ({
     rel,
     target: managedPath(agentDir, rel, "--file"),
     pendingRel: `${STATE_DIR}/pending/${profile.version}/${rel}`,
@@ -360,12 +405,12 @@ export function useTeamVersion({ profile, agentDir, files, now = new Date() }) {
   }
   const done = [];
   for (const p of plan) {
-    if (existsSync(p.target)) writeAtomic(p.backup, readFileSync(p.target));
+    if (existsSync(p.target)) writeAtomic(agentDir, p.backup, readFileSync(p.target));
     const bytes = readFileSync(p.pending);
-    writeAtomic(p.target, bytes);
+    writeAtomic(agentDir, p.target, bytes);
     // The manifest records the new hash before the pending copy goes, so a crash in between leaves a state the next install sorts out.
     manifest.files[p.rel] = sha256(bytes);
-    writeAtomic(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    writeAtomic(agentDir, manifestPath, JSON.stringify(manifest, null, 2) + "\n");
     rmSync(p.pending, { force: true });
     done.push({ file: p.rel, backup: posix(p.backupRel) });
   }
@@ -391,7 +436,7 @@ export function markSkillsOnly({ agentDir, packages }) {
     }
   }
   doc.packages = list;
-  if (marked.length > 0) writeAtomic(path, JSON.stringify(doc, null, 2) + "\n");
+  if (marked.length > 0) writeAtomic(agentDir, path, JSON.stringify(doc, null, 2) + "\n");
   return marked;
 }
 
