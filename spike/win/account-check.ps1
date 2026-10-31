@@ -24,7 +24,7 @@
 .PARAMETER SkipPush
   Do the login and the storage checks, but not the push.
 .PARAMETER SearchScope
-  full (default): every file under the app data folder, except the downloaded archives. core: leaves out the big read-only tool installs (tools\git, tools\node,
+  full (default): every file under the app data folder, the downloaded archives (tools\downloads) included. core: leaves out the big read-only tool installs (tools\git, tools\node,
   tools\npm\node_modules, tools\npm-cache\_cacache), which hold ~60,000 files and make a full pass take over 40 minutes in the VM under load; run `full` as well
   when there is time. rest: only those four trees, so core + rest together cover everything full does.
 .PARAMETER SkipSearch
@@ -125,7 +125,22 @@ function Get-CredentialTargets {
     return $names
 }
 
-# gh and glab keep a token in plain text when the credential store fails (Get-PlainTokenLines, in lib\account-verdict.ps1, finds it).
+# gh and glab keep a token in plain text when the credential store fails (Get-HostTokenFindings, in lib\account-verdict.ps1, finds it, and only in the
+# checked host's own block). gh: hosts.yml has the hosts at the top level; a legacy config.yml has them under hosts:. glab: config.yml, hosts: <host>: token.
+function Get-GhFindings {
+    param([string]$File)
+    $prefix = @(); if ($File -eq 'config.yml') { $prefix = @('hosts') }
+    return (Get-HostTokenFindings -Path (Join-Path $cfgDir $File) -HostName $forgeHost -Key 'oauth_token' -Prefix $prefix)
+}
+function Get-GlabFindings {
+    return (Get-HostTokenFindings -Path (Join-Path $cfgDir 'config.yml') -HostName $forgeHost -Key 'token' -Prefix @('hosts') -DirectOnly)
+}
+function Add-OtherHostStep {
+    param([string[]]$Names)
+    if (@($Names).Count -gt 0) {
+        Add-Step 'other-host-token' 'FAIL' "plain-text token for another host in the configuration folder ($cfgDir): $((@($Names) | Select-Object -Unique) -join ', '). It is not this login's token, so $forgeHost is not logged out; log that host out with the launcher (auth logout --hostname <host>)"
+    }
+}
 function Get-YamlKeys {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
@@ -137,11 +152,15 @@ function Remove-Login {
     $args2 = @('auth', 'logout', '--hostname', $forgeHost)
     $r = Invoke-Forge $args2
     $left = @()
-    if ($Cli -eq 'gh') { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'hosts.yml') 'oauth_token') + @(Get-PlainTokenLines (Join-Path $cfgDir 'config.yml') 'oauth_token') } else { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'config.yml') 'token') }
-    Add-Step "logout:$Why" (Test-Status ($r.ExitCode -eq 0 -and $left.Count -eq 0)) "$Cli auth logout exit $($r.ExitCode); plain-text token lines left in the configuration folder: $($left.Count); $(Get-Line ($r.StdOut + ' ' + $r.StdErr))"
+    # Only the checked host's own token lines: a token for another host stays after this logout and is reported by its own step.
+    $left = 0
+    if ($Cli -eq 'gh') { $left = (Get-GhFindings 'hosts.yml').Own + (Get-GhFindings 'config.yml').Own } else { $left = (Get-GlabFindings).Own }
+    Add-Step "logout:$Why" (Test-Status ($r.ExitCode -eq 0 -and $left -eq 0)) "$Cli auth logout exit $($r.ExitCode); plain-text token lines of $forgeHost left in the configuration folder: $left; $(Get-Line ($r.StdOut + ' ' + $r.StdErr))"
 }
 
 # ---- the token search: bytes of the token (UTF-8 and UTF-16LE) in every file of the places the kit writes to ----
+# No size limit: a file is read in 4 MB chunks, so its size only costs time. A file or folder that cannot be read is listed with the reason (SkippedPaths and
+# SkippedReasons run in step), and Retry reads each unread file once more after the CLIs have exited.
 function Initialize-Scanner {
     if ('SbdTokenScan' -as [type]) { return }
     Add-Type -TypeDefinition @'
@@ -150,9 +169,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 public static class SbdTokenScan {
-    public static int Files; public static long Bytes; public static int Skipped;
+    public static int Files; public static long Bytes;
     public static List<string> Hits = new List<string>();
-    public static List<string> SkippedNames = new List<string>();
+    public static List<string> SkippedPaths = new List<string>();
+    public static List<string> SkippedReasons = new List<string>();
     static bool Has(byte[] hay, int len, byte[] needle) {
         int n = needle.Length;
         for (int i = 0; i + n <= len; i++) {
@@ -162,24 +182,27 @@ public static class SbdTokenScan {
         }
         return false;
     }
-    static bool FileHas(string path, byte[][] needles, long maxBytes) {
+    static bool FileHas(string path, byte[][] needles) {
         using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
-            if (fs.Length > maxBytes) { Skipped++; SkippedNames.Add(path); return false; }
-            Files++;
             int max = 0; foreach (byte[] nd in needles) if (nd.Length > max) max = nd.Length;
             int chunk = 4 * 1024 * 1024; byte[] buf = new byte[chunk + max];
             int carry = 0; int read;
             while ((read = fs.Read(buf, carry, chunk)) > 0) {
                 int len = carry + read; Bytes += read;
-                foreach (byte[] nd in needles) if (Has(buf, len, nd)) return true;
+                foreach (byte[] nd in needles) if (Has(buf, len, nd)) { Files++; return true; }
                 carry = Math.Min(max - 1, len);
                 Buffer.BlockCopy(buf, len - carry, buf, 0, carry);
             }
+            Files++;
         }
         return false;
     }
-    public static void Reset() { Files = 0; Bytes = 0; Skipped = 0; Hits.Clear(); SkippedNames.Clear(); }
-    public static void Scan(string[] roots, string token, string[] skipDirs, long maxBytes) {
+    static string Why(string what, Exception e) {
+        return what + ": " + e.GetType().Name + " 0x" + e.HResult.ToString("X8") + " " + e.Message.Replace("\r", " ").Replace("\n", " ");
+    }
+    static void Skip(string path, string reason) { SkippedPaths.Add(path); SkippedReasons.Add(reason); }
+    public static void Reset() { Files = 0; Bytes = 0; Hits.Clear(); SkippedPaths.Clear(); SkippedReasons.Clear(); }
+    public static void Scan(string[] roots, string token, string[] skipDirs) {
         byte[][] needles = new byte[][] { Encoding.UTF8.GetBytes(token), Encoding.Unicode.GetBytes(token) };
         Stack<string> dirs = new Stack<string>();
         foreach (string r in roots) if (Directory.Exists(r)) dirs.Push(r);
@@ -190,23 +213,38 @@ public static class SbdTokenScan {
             if (skip) continue;
             try {
                 foreach (string f in Directory.EnumerateFiles(d)) {
-                    try { if (FileHas(f, needles, maxBytes)) Hits.Add(f); } catch (Exception) { Skipped++; SkippedNames.Add(f); }
+                    try { if (FileHas(f, needles)) Hits.Add(f); } catch (Exception e) { Skip(f, Why("open or read", e)); }
                 }
                 foreach (string sub in Directory.EnumerateDirectories(d)) {
                     FileAttributes a = File.GetAttributes(sub);
                     if ((a & FileAttributes.ReparsePoint) != 0) continue;
                     dirs.Push(sub);
                 }
-            } catch (Exception) { Skipped++; SkippedNames.Add(d); }
+            } catch (Exception e) { Skip(d, Why("list folder", e)); }
+        }
+    }
+    // One more read of every unread file (not folders), for a file that was in use while a CLI ran; what reads now leaves the list.
+    public static void Retry(string token) {
+        byte[][] needles = new byte[][] { Encoding.UTF8.GetBytes(token), Encoding.Unicode.GetBytes(token) };
+        List<string> paths = new List<string>(SkippedPaths); List<string> reasons = new List<string>(SkippedReasons);
+        SkippedPaths.Clear(); SkippedReasons.Clear();
+        for (int i = 0; i < paths.Count; i++) {
+            if (!reasons[i].StartsWith("open or read") || !File.Exists(paths[i])) { Skip(paths[i], reasons[i]); continue; }
+            try { if (FileHas(paths[i], needles)) Hits.Add(paths[i]); } catch (Exception e) { Skip(paths[i], Why("open or read, again", e)); }
         }
     }
 }
 '@
 }
 
-function Get-ScanRoots {
-    $roots = @($SbdRoot, $KitDir, 'C:\Users\Public\sbdkf', $env:TEMP, $WorkDir,
-        (Join-Path $env:APPDATA 'GitHub CLI'), (Join-Path $env:APPDATA 'glab-cli'), (Join-Path $env:USERPROFILE '.config'))
+# The folders the spec names (section 8: no file under the app's data folder; the kit and its working places): an unread file in one of them fails the
+# search. The rest are extra places the search also reads, where an unread file only warns.
+function Get-StrictRoots {
+    $roots = @($SbdRoot, $KitDir, 'C:\Users\Public\sbdkf', $WorkDir)
+    return @($roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+}
+function Get-ExtraRoots {
+    $roots = @($env:TEMP, (Join-Path $env:APPDATA 'GitHub CLI'), (Join-Path $env:APPDATA 'glab-cli'), (Join-Path $env:USERPROFILE '.config'))
     return @($roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
 }
 
@@ -235,29 +273,37 @@ function Invoke-TokenSearch {
         [IO.File]::WriteAllText((Join-Path $canaryDir 'utf16.txt'), "x $canary y", [Text.Encoding]::Unicode)
         [IO.File]::WriteAllText((Join-Path $canaryDir 'clean.txt'), 'nothing here', (Get-Utf8NoBom))
         [SbdTokenScan]::Reset()
-        [SbdTokenScan]::Scan([string[]]@($canaryDir), $canary, [string[]]@(), 200MB)
+        [SbdTokenScan]::Scan([string[]]@($canaryDir), $canary, [string[]]@())
         $found = @([SbdTokenScan]::Hits | ForEach-Object { Split-Path -Leaf $_ } | Sort-Object)
         Remove-Item -LiteralPath $canaryDir -Recurse -Force
         Add-Step 'token-search:self-test' (Test-Status ($found.Count -eq 2 -and $found[0] -eq 'utf16.txt' -and $found[1] -eq 'utf8.txt')) "planted string found in: $($found -join ', ')"
 
-        $roots = Get-ScanRoots
-        if ($SearchScope -eq 'rest') { $roots = @((Join-Path $Tools 'git'), (Join-Path $Tools 'node'), (Join-Path $Tools 'npm\node_modules'), (Join-Path $Tools 'npm-cache\_cacache') | Where-Object { Test-Path -LiteralPath $_ }) }
-        $skipDirs = @((Join-Path $Tools 'downloads'))
+        $strictRoots = @(Get-StrictRoots)
+        $roots = @($strictRoots + @(Get-ExtraRoots))
+        if ($SearchScope -eq 'rest') {
+            $strictRoots = @((Join-Path $Tools 'git'), (Join-Path $Tools 'node'), (Join-Path $Tools 'npm\node_modules'), (Join-Path $Tools 'npm-cache\_cacache') | Where-Object { Test-Path -LiteralPath $_ })
+            $roots = $strictRoots
+        }
+        $roots = [string[]](Remove-NestedRoots $roots)
+        $skipDirs = @()
         if ($SearchScope -eq 'core') { $skipDirs += @((Join-Path $Tools 'git'), (Join-Path $Tools 'node'), (Join-Path $Tools 'npm\node_modules'), (Join-Path $Tools 'npm-cache\_cacache')) }
         $skipDirs = [string[]]$skipDirs
         [SbdTokenScan]::Reset()
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        [SbdTokenScan]::Scan([string[]]$roots, $tok, $skipDirs, 200MB)
+        [SbdTokenScan]::Scan($roots, $tok, $skipDirs)
+        [SbdTokenScan]::Retry($tok)
         $hits = @([SbdTokenScan]::Hits)
-        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); roots: $($roots -join '; '); scope $SearchScope; skipped trees: $($skipDirs -join '; ') (downloads are compressed archives)") $false ([int]$sw.ElapsedMilliseconds)
-        # A file that was not read is not covered (spec section 8: the token is in no file under the app data folder). The paths are not secrets. Outside
-        # tools\downloads (archives made before any login) an unread file fails the search; inside, it only warns.
-        $split = Split-SkippedPaths ([string[]]@([SbdTokenScan]::SkippedNames)) (Join-Path $Tools 'downloads')
-        if ($split.Elsewhere.Count -gt 0) {
-            Add-Step 'token-search:unread' 'FAIL' "$($split.Elsewhere.Count) file(s) or folder(s) could not be read (locked, no access, or over 200 MB), so the search does not cover them: $(Hide-Secret ($split.Elsewhere -join '; '))"
+        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s, no size limit; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); roots: $($roots -join '; '); scope $SearchScope; skipped trees: $(if ($skipDirs.Count -gt 0) { $skipDirs -join '; ' } else { 'none' })") $false ([int]$sw.ElapsedMilliseconds)
+        # A file that was not read is not covered (spec section 8: the token is in no file under the app data folder). The paths and reasons are not secrets.
+        # Under the folders the spec names an unread file fails the search; in the extra places (%TEMP%, ~\.config, the CLIs' default folders) it only warns.
+        $unread = @()
+        for ($i = 0; $i -lt [SbdTokenScan]::SkippedPaths.Count; $i++) { $unread += [pscustomobject]@{ Path = [SbdTokenScan]::SkippedPaths[$i]; Reason = [SbdTokenScan]::SkippedReasons[$i] } }
+        $split = Split-UnreadFiles $unread $strictRoots
+        if ($split.Strict.Count -gt 0) {
+            Add-Step 'token-search:unread' 'FAIL' "$($split.Strict.Count) file(s) or folder(s) under the folders the spec names could not be read, so the search does not cover them: $(Hide-Secret (($split.Strict | ForEach-Object { $_.Path + ' [' + $_.Reason + ']' }) -join '; '))"
         }
-        if ($split.InDownloads.Count -gt 0) {
-            Add-Step 'token-search:unread-downloads' 'WARN' "$($split.InDownloads.Count) unread path(s) under tools\downloads (archives made before any login): $(Hide-Secret ($split.InDownloads -join '; '))"
+        if ($split.Extra.Count -gt 0) {
+            Add-Step 'token-search:unread-extra' 'WARN' "$($split.Extra.Count) file(s) or folder(s) in the extra places (%TEMP%, ~\.config, the CLIs' default folders) could not be read: $(Hide-Secret (($split.Extra | ForEach-Object { $_.Path + ' [' + $_.Reason + ']' }) -join '; '))"
         }
     } finally {
         $tok = $null
@@ -359,12 +405,13 @@ try {
         }
         $hostsYml = Join-Path $cfgDir 'hosts.yml'
         $configYml = Join-Path $cfgDir 'config.yml'
-        $tokLines = @(Get-PlainTokenLines $hostsYml 'oauth_token')
-        $cfgTokLines = @(Get-PlainTokenLines $configYml 'oauth_token') + @(Get-PlainTokenLines $configYml 'token')
-        $verdict = Get-GhTokenVerdict -Source $source -HostsTokens $tokLines.Count -ConfigTokens $cfgTokLines.Count
+        $hostsFind = Get-GhFindings 'hosts.yml'
+        $configFind = Get-GhFindings 'config.yml'
+        $verdict = Get-GhTokenVerdict -Source $source -HostsTokens $hostsFind.Own -ConfigTokens $configFind.Own
         # Only positive evidence (a file token, or a source that is a file) logs the CLI out; an unreadable status is a FAIL and nothing more.
         Add-Step 'token-source' (Test-Status $verdict.Verified) "gh auth status --json hosts exit $($s.ExitCode); tokenSource='$source'; login=$acct; state=$acctState; $($verdict.Reason)$(if ($null -eq $source) { ': ' + (Get-Line ($s.StdErr + ' ' + $s.StdOut)) })"
-        Add-Step 'config-file-token' (Test-Status ($tokLines.Count -eq 0 -and $cfgTokLines.Count -eq 0 -and (Test-Path -LiteralPath $hostsYml))) "$hostsYml exists: $(Test-Path -LiteralPath $hostsYml); keys: $((Get-YamlKeys $hostsYml) -join ', '); non-empty oauth_token lines: $($tokLines.Count); $configYml non-empty token lines: $($cfgTokLines.Count)"
+        Add-Step 'config-file-token' (Test-Status ($hostsFind.Own -eq 0 -and $configFind.Own -eq 0 -and (Test-Path -LiteralPath $hostsYml))) "$hostsYml exists: $(Test-Path -LiteralPath $hostsYml); keys: $((Get-YamlKeys $hostsYml) -join ', '); non-empty oauth_token lines of ${forgeHost}: $($hostsFind.Own); $configYml non-empty oauth_token lines of ${forgeHost} (legacy hosts: block): $($configFind.Own)"
+        Add-OtherHostStep (@($hostsFind.Other) + @($configFind.Other))
         if ($verdict.Plain) { $plain = $true }
         $defaultDir = Join-Path $env:APPDATA 'GitHub CLI'
         Add-Step 'isolation' (Test-Status (-not (Test-Path -LiteralPath (Join-Path $defaultDir 'hosts.yml')))) "gh's default folder $defaultDir holds no hosts.yml (GH_CONFIG_DIR $cfgDir was used)"
@@ -372,10 +419,11 @@ try {
         Add-Step 'credential-store' (Test-Status ($targets.Count -gt 0)) "Windows Credential Manager targets (names only): $($targets -join '; ')"
     } else {
         $cfg = Join-Path $cfgDir 'config.yml'
-        $tokLines = @(Get-PlainTokenLines $cfg 'token')
-        Add-Step 'config-file-token' (Test-Status ($tokLines.Count -eq 0 -and (Test-Path -LiteralPath $cfg))) "$cfg exists: $(Test-Path -LiteralPath $cfg); keys: $((Get-YamlKeys $cfg) -join ', '); non-empty token lines: $($tokLines.Count)"
+        $glabFind = Get-GlabFindings
+        Add-Step 'config-file-token' (Test-Status ($glabFind.Own -eq 0 -and (Test-Path -LiteralPath $cfg))) "$cfg exists: $(Test-Path -LiteralPath $cfg); keys: $((Get-YamlKeys $cfg) -join ', '); non-empty token lines of ${forgeHost}: $($glabFind.Own)"
+        Add-OtherHostStep $glabFind.Other
         $s = Invoke-Forge @('auth', 'status', '--hostname', $forgeHost)
-        $verdict = Get-GlabTokenVerdict -ConfigTokens $tokLines.Count -StatusExit $s.ExitCode
+        $verdict = Get-GlabTokenVerdict -ConfigTokens $glabFind.Own -StatusExit $s.ExitCode
         # Only config.yml decides plain text. A failed status (network, certificate, expired token) is a FAIL, not proof, and the login stays in the store.
         Add-Step 'auth-status' (Test-Status ($s.ExitCode -eq 0)) "glab auth status --hostname $forgeHost exit $($s.ExitCode); $($verdict.Reason)$(if ($s.ExitCode -ne 0) { ': ' + (Get-Line ($s.StdErr + ' ' + $s.StdOut)) })"
         if ($verdict.Plain) { $plain = $true }

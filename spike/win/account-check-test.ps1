@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Offline tests of the decisions account-check.ps1 makes (lib\account-verdict.ps1): when a login counts as a plain-text token and is logged out, when it is only
-  "could not verify", how the token search treats unread files, and how git config output is split. No CLI, no network, no login, no Credential Manager.
+  "could not verify", how the token search treats unread files and nested roots, which token lines count for the checked host, and how git config output is split. No CLI, no network, no login, no Credential Manager.
 .DESCRIPTION
   Runs on Windows PowerShell 5.1 and PowerShell 7. PASS/FAIL lines; exit 1 if any FAIL. The fixtures hold fake token text only.
 #>
@@ -24,24 +24,51 @@ try {
         return $p
     }
 
-    # ---- Get-PlainTokenLines ----
+    # ---- Get-HostTokenFindings: only the checked host's own block is evidence (R2-F001) ----
     $ghKeyring = New-Fixture 'gh-keyring.yml' "github.com:`n    git_protocol: https`n    users:`n        someone:`n    user: someone`n"
     $ghPlain = New-Fixture 'gh-plain.yml' "github.com:`n    oauth_token: fake_token_value_1`n    user: someone`n"
     $ghNested = New-Fixture 'gh-nested.yml' "github.com:`n    users:`n        someone:`n            oauth_token: `"fake_token_value_2`"`n"
     $ghEmpty = New-Fixture 'gh-empty.yml' "github.com:`n    oauth_token:`n"
+    $ghOther = New-Fixture 'gh-other-host.yml' "github.com:`n    git_protocol: https`n    users:`n        someone:`n    user: someone`nghe.example.org:`n    oauth_token: fake_token_value_4`n    user: other`n"
+    $ghBoth = New-Fixture 'gh-both-hosts.yml' "ghe.example.org:`n    oauth_token: fake_token_value_5`ngithub.com:`n    users:`n        someone:`n            oauth_token: fake_token_value_6`n"
+    $ghAlias = New-Fixture 'gh-alias-token.yml' "git_protocol: https`naliases:`n    token: auth token`n    oauth_token: auth token`nprompt: enabled`n"
+    $ghLegacy = New-Fixture 'gh-legacy-config.yml' "git_protocol: https`nhosts:`n    github.com:`n        oauth_token: fake_token_value_7`n    other.example.org:`n        oauth_token: fake_token_value_8`naliases:`n    token: auth token`n"
     $glabPlain = New-Fixture 'glab-plain.yml' "hosts:`n  gitlab.example.org:`n    token: fake_token_value_3 # note`n    api_host: gitlab.example.org`n"
     $glabNull = New-Fixture 'glab-null.yml' "hosts:`n  gitlab.example.org:`n    token: !!null`n"
     $glabNone = New-Fixture 'glab-none.yml' "hosts:`n  gitlab.example.org:`n    api_host: gitlab.example.org`n"
-    Assert-That 'tokens: gh keyring file has none' (@(Get-PlainTokenLines $ghKeyring 'oauth_token').Count -eq 0)
-    Assert-That 'tokens: gh plain text is found' (@(Get-PlainTokenLines $ghPlain 'oauth_token').Count -eq 1)
-    Assert-That 'tokens: gh nested and quoted is found' (@(Get-PlainTokenLines $ghNested 'oauth_token').Count -eq 1)
-    Assert-That 'tokens: gh empty value is not a token' (@(Get-PlainTokenLines $ghEmpty 'oauth_token').Count -eq 0)
-    Assert-That 'tokens: glab plain text with a comment is found' (@(Get-PlainTokenLines $glabPlain 'token').Count -eq 1)
-    Assert-That 'tokens: glab !!null is not a token' (@(Get-PlainTokenLines $glabNull 'token').Count -eq 0)
-    Assert-That 'tokens: glab without a token line has none' (@(Get-PlainTokenLines $glabNone 'token').Count -eq 0)
-    Assert-That 'tokens: a missing file has none' (@(Get-PlainTokenLines (Join-Path $dir 'nope.yml') 'token').Count -eq 0)
-    $leak = (Get-PlainTokenLines $ghPlain 'oauth_token') -join ' '
-    Assert-That 'tokens: only the key is reported, never the value' ($leak -notmatch 'fake_token_value')
+    $glabOther = New-Fixture 'glab-other-host.yml' "git_protocol: https`nhosts:`n  gitlab.example.org:`n    api_host: gitlab.example.org`n    user: me`n  gitlab.other.net:`n    token: fake_token_value_9`n"
+    $glabAlias = New-Fixture 'glab-alias-token.yml' "aliases:`n  token: auth status`nhosts:`n  gitlab.example.org:`n    api_host: gitlab.example.org`nlast: x`ntoken: fake_token_value_10`n"
+    $glabPort = New-Fixture 'glab-port-host.yml' "hosts:`n  `"gitlab.example.org:8443`":`n    token: fake_token_value_11`n  gitlab.example.org:`n    api_host: x`n"
+    $glabNested = New-Fixture 'glab-nested.yml' "hosts:`n  gitlab.example.org:`n    custom_headers:`n      token: fake_token_value_12`n"
+    function Find-Gh { param($File, $HostName = 'github.com', [string[]]$Prefix = @()) Get-HostTokenFindings -Path $File -HostName $HostName -Key 'oauth_token' -Prefix $Prefix }
+    function Find-Glab { param($File, $HostName = 'gitlab.example.org') Get-HostTokenFindings -Path $File -HostName $HostName -Key 'token' -Prefix @('hosts') -DirectOnly }
+    Assert-That 'tokens: gh keyring file has none' ((Find-Gh $ghKeyring).Own -eq 0 -and (Find-Gh $ghKeyring).Other.Count -eq 0)
+    Assert-That 'tokens: gh plain text is found for the host' ((Find-Gh $ghPlain).Own -eq 1 -and (Find-Gh $ghPlain).Other.Count -eq 0)
+    Assert-That 'tokens: gh nested under users and quoted is found for the host' ((Find-Gh $ghNested).Own -eq 1)
+    Assert-That 'tokens: gh empty value is not a token' ((Find-Gh $ghEmpty).Own -eq 0)
+    Assert-That 'tokens: gh another host carrying a token is Other, not Own (the checked host has none)' ((Find-Gh $ghOther).Own -eq 0 -and (Find-Gh $ghOther).Other.Count -eq 1 -and (Find-Gh $ghOther).Other[0] -eq 'ghe.example.org')
+    $f = Find-Gh $ghBoth
+    Assert-That 'tokens: gh both hosts carry one: the host has 1, the other host is named' ($f.Own -eq 1 -and $f.Other.Count -eq 1 -and $f.Other[0] -eq 'ghe.example.org')
+    $f = Find-Gh $ghOther -HostName 'ghe.example.org'
+    Assert-That 'tokens: gh asking for the other host finds its own token' ($f.Own -eq 1 -and $f.Other.Count -eq 0)
+    Assert-That 'tokens: gh host names compare without case' ((Find-Gh $ghPlain -HostName 'GitHub.COM').Own -eq 1)
+    $f = Find-Gh $ghAlias -Prefix @('hosts')
+    Assert-That 'tokens: gh config.yml with an alias named token (and oauth_token) is no evidence for anyone' ($f.Own -eq 0 -and $f.Other.Count -eq 0)
+    $f = Find-Gh $ghLegacy -Prefix @('hosts')
+    Assert-That 'tokens: gh legacy config.yml hosts: block counts for its host; the alias does not; the other host is named' ($f.Own -eq 1 -and $f.Other.Count -eq 1 -and $f.Other[0] -eq 'other.example.org')
+    Assert-That 'tokens: glab plain text with a comment is found for the host' ((Find-Glab $glabPlain).Own -eq 1)
+    Assert-That 'tokens: glab !!null is not a token' ((Find-Glab $glabNull).Own -eq 0)
+    Assert-That 'tokens: glab without a token line has none' ((Find-Glab $glabNone).Own -eq 0 -and (Find-Glab $glabNone).Other.Count -eq 0)
+    $f = Find-Glab $glabOther
+    Assert-That 'tokens: glab another host carrying a token is Other, not Own' ($f.Own -eq 0 -and $f.Other.Count -eq 1 -and $f.Other[0] -eq 'gitlab.other.net')
+    $f = Find-Glab $glabAlias
+    Assert-That 'tokens: glab an alias named token and a top-level token are no evidence for the host' ($f.Own -eq 0 -and $f.Other.Count -eq 0)
+    $f = Find-Glab $glabPort -HostName 'gitlab.example.org'
+    Assert-That 'tokens: glab a quoted host:port entry is another host' ($f.Own -eq 0 -and $f.Other.Count -eq 1 -and $f.Other[0] -eq 'gitlab.example.org:8443')
+    Assert-That 'tokens: glab a token below a deeper key is not the host token' ((Find-Glab $glabNested).Own -eq 0)
+    Assert-That 'tokens: a missing file has none' ((Find-Glab (Join-Path $dir 'nope.yml')).Own -eq 0)
+    $leak = ((Find-Gh $ghPlain) | Out-String) + ((Find-Gh $ghOther) | Out-String)
+    Assert-That 'tokens: never a value, only counts and host names' ($leak -notmatch 'fake_token_value')
 
     # ---- gh: R-F002. Logout only on positive evidence. ----
     $v = Get-GhTokenVerdict -Source 'keyring' -HostsTokens 0 -ConfigTokens 0
@@ -67,7 +94,7 @@ try {
         Assert-That "gh: tokenSource $envSource -> fails, no logout (gh would refuse it anyway)" (-not $v.Verified -and -not $v.Plain)
     }
     # The same through the real files: the file fixtures feed the counts the script feeds.
-    $v = Get-GhTokenVerdict -Source 'keyring' -HostsTokens @(Get-PlainTokenLines $ghPlain 'oauth_token').Count -ConfigTokens 0
+    $v = Get-GhTokenVerdict -Source 'keyring' -HostsTokens (Find-Gh $ghPlain).Own -ConfigTokens 0
     Assert-That 'gh: a token in a real fixture file decides it' ($v.Plain)
 
     # ---- glab: R-F001. Only config.yml decides plain text. ----
@@ -81,16 +108,23 @@ try {
     Assert-That 'glab: token in config.yml -> plain text, logout' ($v.Plain)
     $v = Get-GlabTokenVerdict -ConfigTokens 1 -StatusExit 1
     Assert-That 'glab: token in config.yml and status failed -> plain text, logout' ($v.Plain)
-    $v = Get-GlabTokenVerdict -ConfigTokens @(Get-PlainTokenLines $glabPlain 'token').Count -StatusExit 0
+    $v = Get-GlabTokenVerdict -ConfigTokens (Find-Glab $glabPlain).Own -StatusExit 0
     Assert-That 'glab: a token in a real fixture file decides it' ($v.Plain)
 
-    # ---- the token search's unread files: R-F005 ----
-    $dl = 'C:\Users\x\AppData\Local\straw-boss-desk\tools\downloads'
-    $sp = Split-SkippedPaths @("$dl\node.zip", 'C:\Users\x\AppData\Local\straw-boss-desk\logs\locked.log', "$dl", 'C:\Users\x\AppData\Local\straw-boss-desk\tools\downloads-old\a.bin', "$($dl.ToUpper())\B.ZIP") $dl
-    Assert-That 'unread: files under downloads only warn (case-insensitive)' ($sp.InDownloads.Count -eq 3) "got $($sp.InDownloads.Count)"
-    Assert-That 'unread: a file elsewhere, and a folder that only starts with the same text, are failures' ($sp.Elsewhere.Count -eq 2) "got $($sp.Elsewhere.Count)"
-    $sp = Split-SkippedPaths @() $dl
-    Assert-That 'unread: nothing unread is nothing to report' ($sp.InDownloads.Count -eq 0 -and $sp.Elsewhere.Count -eq 0)
+    # ---- the token search's unread files: R-F005, R2-F003 ----
+    $app = 'C:\Users\x\AppData\Local\straw-boss-desk'
+    $strictRoots = @($app, 'C:\Users\x\sbd-kit', 'C:\Users\Public\sbdkf')
+    function New-Unread { param($Path, $Reason = 'open or read: IOException 0x80070020 in use') [pscustomobject]@{ Path = $Path; Reason = $Reason } }
+    $un = @((New-Unread "$app\logs\locked.log"), (New-Unread "$app\tools\downloads\node.zip"), (New-Unread "$app"), (New-Unread 'C:\Users\x\sbd-kit-old\a.bin'),
+        (New-Unread 'C:\Users\x\AppData\Local\Temp\nsj788A.tmp\System.dll'), (New-Unread "$($app.ToUpper())\TOOLS\B.ZIP"), (New-Unread 'C:\Users\x\.config\z' 'list folder: UnauthorizedAccessException'))
+    $sp = Split-UnreadFiles $un $strictRoots
+    Assert-That 'unread: files under the spec folders (downloads included, any case, the root itself) fail the search' ($sp.Strict.Count -eq 4) "got $($sp.Strict.Count)"
+    Assert-That 'unread: files in the extra places, and a folder that only starts with the same text, only warn' ($sp.Extra.Count -eq 3) "got $($sp.Extra.Count)"
+    Assert-That 'unread: the reason travels with the path' ($sp.Extra[2].Reason -match 'UnauthorizedAccess' -and $sp.Strict[0].Reason -match 'in use')
+    $sp = Split-UnreadFiles @() $strictRoots
+    Assert-That 'unread: nothing unread is nothing to report' ($sp.Strict.Count -eq 0 -and $sp.Extra.Count -eq 0)
+    $nr = @(Remove-NestedRoots @('C:\a\b', 'C:\a', 'C:\a\b\c\', 'D:\x', 'c:\A\', 'C:\ab'))
+    Assert-That 'roots: a root inside another is dropped, a sibling that only shares the prefix is kept' ($nr.Count -eq 3 -and $nr -contains 'C:\a' -and $nr -contains 'D:\x' -and $nr -contains 'C:\ab') "got $($nr -join ' | ')"
 
     # ---- git config --get-all output: R-F006 ----
     Assert-That 'values: empty output is no value' ((ConvertTo-GitValueList '').Count -eq 0)

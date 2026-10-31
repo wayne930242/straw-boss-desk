@@ -110,8 +110,8 @@ describe("launcher text", () => {
       assert.ok(text.includes('for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"'));
     }
   });
-  it("the removed variables are the ones that replace the stored login or the host (R-F003)", () => {
-    for (const k of ["CI", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "GH_HOST", "GITLAB_HOST"]) {
+  it("the removed variables are the ones that replace the stored login, the host, or the keyring choice (R-F003, R2-F002)", () => {
+    for (const k of ["CI", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "GH_HOST", "GITLAB_HOST", "GL_HOST", "GITLAB_URI", "GITLAB_API_HOST", "GLAB_API_PROTOCOL", "API_PROTOCOL", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN", "GLAB_USE_KEYRING", "USE_KEYRING"]) {
       assert.ok(UNSET.includes(k), k);
     }
   });

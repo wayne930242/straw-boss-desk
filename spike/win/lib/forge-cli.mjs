@@ -29,8 +29,13 @@ export const FORGES = {
 
 /**
  * Removed from the environment of every launched CLI. CI and GITLAB_CI: glab writes its token to plain text when either is set (spec, Isolation), and gh
- * behaves differently on CI as well. The rest are the variables that take the place of the stored login or of the configured host: an environment token
- * wins over the keyring for every CLI call and for the Git credential helper, so the agent would push with the user's own token.
+ * behaves differently on CI as well. The rest are the variables that take the place of the stored login, of the configured host, or of the storage choice:
+ * an environment token wins over the keyring for every CLI call and for the Git credential helper, so the agent would push with the user's own token.
+ * The list was checked against the pinned gh 2.103.3 (`gh help environment`) and glab 1.124.0 (`glab config --help`, which names every environment variable
+ * of every setting, the unprefixed ones as well) and the strings of both binaries. gh: GH_HOST and the four token variables are all there is. glab: host
+ * (GITLAB_HOST, GITLAB_URI, GL_HOST), API host and protocol (GITLAB_API_HOST, GLAB_API_PROTOCOL, API_PROTOCOL: an http protocol would send the token in the
+ * clear), token (GITLAB_TOKEN, GITLAB_ACCESS_TOKEN, OAUTH_TOKEN), CI job token and its auto-login (CI_JOB_TOKEN, GLAB_ENABLE_CI_AUTOLOGIN), and the keyring switch
+ * (GLAB_USE_KEYRING, USE_KEYRING: false would store a login made in a pane as plain text).
  */
 export const UNSET = [
   "CI",
@@ -42,9 +47,17 @@ export const UNSET = [
   "GITLAB_TOKEN",
   "GITLAB_ACCESS_TOKEN",
   "OAUTH_TOKEN",
+  "CI_JOB_TOKEN",
+  "GLAB_ENABLE_CI_AUTOLOGIN",
   "GH_HOST",
   "GITLAB_HOST",
+  "GITLAB_URI",
+  "GITLAB_API_HOST",
   "GL_HOST",
+  "GLAB_API_PROTOCOL",
+  "API_PROTOCOL",
+  "GLAB_USE_KEYRING",
+  "USE_KEYRING",
 ];
 
 const BEGIN = "# >>> straw-boss forge credential helpers (written by the kit; edit by running it again)";
