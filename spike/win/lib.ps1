@@ -215,6 +215,11 @@ function Get-ToolPaths {
         Gcm       = Join-Path $git 'ucrt64\bin\git-credential-manager.exe'
         Herdr     = Join-Path $Tools 'herdr'
         HerdrExe  = Join-Path $Tools 'herdr\herdr.exe'
+        Bin       = Join-Path $Tools 'bin'
+        GhExe     = Join-Path $Tools 'gh\bin\gh.exe'
+        GlabExe   = Join-Path $Tools 'glab\bin\glab.exe'
+        GhCmd     = Join-Path $Tools 'bin\gh.cmd'
+        GlabCmd   = Join-Path $Tools 'bin\glab.cmd'
         Npm       = $NpmPrefix
         PiCmd     = Join-Path $NpmPrefix 'pi.cmd'
         TttCmd    = Join-Path $NpmPrefix 'ttt.cmd'
@@ -227,7 +232,8 @@ function Get-ToolPaths {
 # Puts the private tools first on PATH and points every tool's state at the private folders, for this process and its children only.
 function Set-SbdEnv {
     $t = Get-ToolPaths
-    $dirs = @($t.Node, $NpmPrefix, (Join-Path $t.Git 'cmd'), (Join-Path $t.Git 'bin'), $t.Herdr)
+    # tools\bin (the gh and glab launchers, team profile spec section 4) comes first, so no other gh or glab on this machine is run by mistake.
+    $dirs = @($t.Bin, $t.Node, $NpmPrefix, (Join-Path $t.Git 'cmd'), (Join-Path $t.Git 'bin'), $t.Herdr)
     $existing = @($dirs | Where-Object { Test-Path -LiteralPath $_ })
     $clean = @(($env:PATH -split ';') | Where-Object { $_ -and ($existing -notcontains $_) })
     $env:PATH = (($existing + $clean) -join ';')

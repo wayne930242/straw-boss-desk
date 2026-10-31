@@ -8,7 +8,8 @@
 .PARAMETER Arch
   x64 (default; PMs use x64 laptops, so this exercises Windows-on-ARM x64 emulation in the VM) or arm64 (Node and Git only; herdr has no arm64 build).
 .PARAMETER Only
-  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, team-profile, packages, and team-pkg:<package name> for each package a recipe lists.
+  Run only these stages: node, git, herdr, pi, ttt, playwriter, profile, team-profile, packages, team-pkg:<package name> for each package a recipe lists,
+  and forge-gh, forge-glab, forge-launchers, forge-path, forge-git for the code-host CLIs.
 .PARAMETER Force
   Ignore detect and reinstall.
 .PARAMETER TeamProfile
@@ -18,13 +19,19 @@
   `-Only team-profile` or `-Only team-pkg:<name>` switches it on as well.
 .PARAMETER Recipe
   The recipe file for -TeamProfile (default: test-recipe.strawboss.json in the kit). It is validated first; an invalid recipe stops the run before any install.
+.PARAMETER Forges
+  Opt in to the code-host CLI stages (docs/specs/2026-10-27-team-profile.md, section 4): forge-gh and forge-glab install the pinned gh and glab (SHA256 from
+  pins.json) under tools\, forge-launchers writes the launchers in tools\bin, forge-path puts tools\bin on the user PATH, and forge-git adds the credential
+  helpers to the private Git configuration. Each entry is kind:host, for example github:github.com gitlab:gitlab.moldplan.app (the shape of a recipe's forges).
+  `-Only forge-gh` and the like switch it on as well, with those two hosts. Logins are not done here (check: account-check.ps1).
 #>
 param(
     [ValidateSet('x64', 'arm64')][string]$Arch = 'x64',
     [string[]]$Only,
     [switch]$Force,
     [switch]$TeamProfile,
-    [string]$Recipe
+    [string]$Recipe,
+    [string[]]$Forges
 )
 
 # A relative -Recipe is taken against the PowerShell location, here and nowhere else; node and every later check get the absolute path.
@@ -40,6 +47,17 @@ $script:StateFile = Join-Path $StateDir 'bootstrap-state.json'
 $teamOn = [bool]$TeamProfile -or ($Only -contains 'team-profile') -or (@($Only | Where-Object { $_ -like 'team-pkg:*' }).Count -gt 0)
 if ($teamOn -and -not $Recipe) { $Recipe = Join-Path $KitDir 'test-recipe.strawboss.json' }
 $script:TeamRecipe = $null
+
+# The code-host CLIs are opt-in. Each -Forges entry is kind:host; a bare `-Only forge-*` takes the two hosts the account checks use.
+$forgeOn = (@($Forges).Count -gt 0) -or (@($Only | Where-Object { $_ -like 'forge-*' }).Count -gt 0)
+$script:ForgeList = @()
+if ($forgeOn) {
+    if (@($Forges).Count -eq 0) { $Forges = @('github:github.com', 'gitlab:gitlab.moldplan.app') }
+    foreach ($f in $Forges) {
+        if ($f -notmatch '^(github|gitlab):[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$') { Write-Host "bootstrap stopped: -Forges entry '$f' must look like github:github.com or gitlab:<host>"; exit 1 }
+        $script:ForgeList += [pscustomobject]@{ kind = $Matches[1]; host = ($f.Substring($Matches[1].Length + 1)).ToLowerInvariant() }
+    }
+}
 
 Write-Log 'bootstrap' 'begin' @{ arch = $Arch; os = (Get-OsInfo); force = [bool]$Force; only = $Only; teamProfile = $teamOn; recipe = $Recipe }
 
@@ -319,6 +337,124 @@ Invoke-Stage 'user-path' {
 } {
     $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     if (($cur -contains $NpmPrefix) -and ($cur -contains (Split-Path -Parent $t.HerdrExe)) -and ($cur -contains (Split-Path -Parent $t.GitExe))) { "user PATH has npm, herdr and git" }
+}
+
+# ---- code-host CLIs (opt-in, -Forges): pinned gh and glab, launchers, PATH, Git credential helpers ----
+# Runs forge-cli.mjs (lib\forge-cli.mjs, tested on the Mac) under the private Node and returns its JSON line.
+function Invoke-ForgeCli {
+    param([string]$Command, [string[]]$Extra = @())
+    $a = @((Join-Path $KitDir 'lib\forge-cli.mjs'), $Command, '--tools', $Tools)
+    foreach ($f in $script:ForgeList) { $a += @('--forge', "$($f.kind):$($f.host)") }
+    $r = Invoke-Native -File $t.NodeExe -ArgList ($a + $Extra) -TimeoutSec 120
+    $line = ($r.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+    $json = $null
+    if ($line) { try { $json = $line | ConvertFrom-Json } catch { } }
+    [pscustomobject]@{ ExitCode = $r.ExitCode; Json = $json; Raw = $r }
+}
+
+function Get-ForgeFailure {
+    param($R)
+    if ($R.Json) { return (@($R.Json.error) + @($R.Json.problems) | Where-Object { $_ }) -join '; ' }
+    return (Get-FirstLine ($R.Raw.StdErr + $R.Raw.StdOut))
+}
+
+# The archive is downloaded and its SHA256 compared with the pin before anything is extracted (Save-Download throws and keeps nothing on a mismatch).
+# The zip holds bin\<cli>.exe at its root or one folder down; whatever folder holds that bin\ becomes tools\<cli>.
+function Install-ForgeCli {
+    param([string]$Cli, $Pin)
+    $zip = Install-Archive $Pin
+    $dest = Join-Path $Tools $Cli
+    $tmp = Join-Path $Tools ($Cli + '-extract')
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+    [void](Expand-Zip $zip $tmp)
+    $exe = Get-ChildItem -LiteralPath $tmp -Recurse -File -Filter "$Cli.exe" | Where-Object { $_.Directory.Name -eq 'bin' } | Select-Object -First 1
+    if (-not $exe) { throw "the $Cli archive holds no bin\$Cli.exe" }
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    Move-Item -LiteralPath $exe.Directory.Parent.FullName -Destination $dest
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+}
+
+if ($forgeOn) {
+    foreach ($fg in $script:ForgeList) {
+        $cli = if ($fg.kind -eq 'github') { 'gh' } else { 'glab' }
+        $exe = Join-Path $Tools "$cli\bin\$cli.exe"
+        $ver = $pins.binaries.$cli.version
+        $pin = $pins.binaries.$cli.$Arch
+        $cliName = $cli
+        Invoke-Stage "forge-$cli" {
+            $v = Get-VersionLine $exe
+            if ($v -and $v -match [regex]::Escape($ver)) { return $v }
+        } {
+            Install-ForgeCli $cliName $pin
+        } {
+            $v = Get-VersionLine $exe
+            if (-not $v -or $v -notmatch [regex]::Escape($ver)) { throw "$cliName version '$v', expected $ver" }
+            "$v (sha256 $($pin.sha256))"
+        }
+    }
+
+    Invoke-Stage 'forge-launchers' {
+        $r = Invoke-ForgeCli 'verify-launchers'
+        if ($r.ExitCode -eq 0 -and $r.Json -and $r.Json.ok) { return "launchers in $($t.Bin) as the kit writes them" }
+    } {
+        $r = Invoke-ForgeCli 'launchers'
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "launchers not written: $(Get-ForgeFailure $r)" }
+    } {
+        $r = Invoke-ForgeCli 'verify-launchers'
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "launchers differ: $(Get-ForgeFailure $r)" }
+        # Each pinned binary is run through its own launcher, which is what the PM's shell will do.
+        $seen = @()
+        foreach ($fg in $script:ForgeList) {
+            $cli = if ($fg.kind -eq 'github') { 'gh' } else { 'glab' }
+            $v = Invoke-Native -File (Join-Path $t.Bin "$cli.cmd") -ArgList @('--version') -TimeoutSec 60
+            if ($v.ExitCode -ne 0 -or ($v.StdOut + $v.StdErr) -notmatch [regex]::Escape($pins.binaries.$cli.version)) { throw "$cli.cmd --version exit $($v.ExitCode): $(Get-FirstLine ($v.StdOut + ' ' + $v.StdErr))" }
+            $seen += "$cli.cmd -> $(Get-FirstLine $v.StdOut)"
+        }
+        $seen -join '; '
+    }
+
+    Invoke-Stage 'forge-path' {
+        $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+        if ($cur -contains $t.Bin) { return "user PATH has $($t.Bin)" }
+    } {
+        $cur = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not $cur) { $cur = '' }
+        if (($cur -split ';') -notcontains $t.Bin) { $cur = ($cur.TrimEnd(';') + ';' + $t.Bin).TrimStart(';') }
+        [Environment]::SetEnvironmentVariable('Path', $cur, 'User')
+        Set-SbdEnv
+    } {
+        if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $t.Bin) { "user PATH has $($t.Bin)" }
+    }
+
+    # The credential helpers go in the kit's private Git configuration (GIT_CONFIG_GLOBAL), after every general helper, so the empty entry per host clears
+    # Git Credential Manager for that host only. Verify asks Git itself, then runs the helper command the way Git does (through sh), so the quoting of a
+    # path with CJK characters is proved by running it.
+    Invoke-Stage 'forge-git' {
+        $r = Invoke-ForgeCli 'verify-git-config' @('--file', $env:GIT_CONFIG_GLOBAL)
+        if ($r.ExitCode -eq 0 -and $r.Json -and $r.Json.ok) { return "credential helpers for $(($script:ForgeList | ForEach-Object { $_.host }) -join ', ') in $($env:GIT_CONFIG_GLOBAL)" }
+    } {
+        $r = Invoke-ForgeCli 'git-config' @('--file', $env:GIT_CONFIG_GLOBAL)
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "credential helpers not written: $(Get-ForgeFailure $r)" }
+    } {
+        $r = Invoke-ForgeCli 'verify-git-config' @('--file', $env:GIT_CONFIG_GLOBAL)
+        if ($r.ExitCode -ne 0 -or -not $r.Json -or -not $r.Json.ok) { throw "credential helpers differ: $(Get-ForgeFailure $r)" }
+        $sh = Join-Path $t.Git 'usr\bin\sh.exe'
+        $seen = @()
+        foreach ($fg in $script:ForgeList) {
+            $cli = if ($fg.kind -eq 'github') { 'gh' } else { 'glab' }
+            $g = Invoke-Native -File $t.GitExe -ArgList @('config', '--get-all', "credential.https://$($fg.host).helper") -TimeoutSec 60
+            $vals = @($g.StdOut -split "`r?`n")
+            if ($vals.Count -gt 0 -and $vals[-1] -eq '') { $vals = @($vals[0..($vals.Count - 2)]) }
+            if ($vals.Count -ne 2 -or $vals[0] -ne '' -or -not $vals[1].StartsWith('!')) { throw "git reads $($fg.host) helpers as: $($vals -join ' | ')" }
+            $tail = ' auth git-credential'
+            if (-not $vals[1].EndsWith($tail)) { throw "unexpected helper command for $($fg.host)" }
+            $probe = $vals[1].Substring(1, $vals[1].Length - 1 - $tail.Length) + ' --version'
+            $p = Invoke-Native -File $sh -ArgList @('-c', $probe) -TimeoutSec 60
+            if ($p.ExitCode -ne 0 -or ($p.StdOut + $p.StdErr) -notmatch [regex]::Escape($pins.binaries.$cli.version)) { throw "the $($fg.host) helper command did not run through sh (exit $($p.ExitCode)): $(Get-FirstLine ($p.StdOut + ' ' + $p.StdErr))" }
+            $seen += "$($fg.host): helper '' then $($vals[1]) -> $(Get-FirstLine $p.StdOut)"
+        }
+        $seen -join '; '
+    }
 }
 
 # Herdr's pi integration is no longer a stage here: `cli.mjs up --dir` (start.ps1) installs it, and a pi that finds it missing warns after 20 s.
