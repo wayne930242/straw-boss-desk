@@ -69,6 +69,12 @@ function Hide-Secret {
     $Text = [regex]::Replace($Text, '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_\-]{10,}|gl[a-z]{2,4}-[A-Za-z0-9_\-]{20,})', '<token>')
     return $Text
 }
+# A file gh is still writing (Start-Process -RedirectStandardOutput keeps it open) can only be read with a shared mode.
+function Read-SharedText {
+    param([string]$Path)
+    $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8); try { return $sr.ReadToEnd() } finally { $sr.Dispose() } } finally { $fs.Dispose() }
+}
 function Get-Line {
     param([string]$Text)
     return (Hide-Secret (Get-FirstLine $Text))
@@ -270,12 +276,13 @@ try {
         Remove-Item -LiteralPath $outF, $errF -ErrorAction SilentlyContinue
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $p = Start-Process -FilePath $launcher -ArgumentList @('auth', 'login', '--hostname', $forgeHost, '--git-protocol', 'https', '--web') -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
+        $null = $p.Handle   # without this, ExitCode is empty after the process ends
         $code = $null
         while (-not $code -and $sw.Elapsed.TotalSeconds -lt 90 -and -not $p.HasExited) {
             Start-Sleep -Milliseconds 500
             foreach ($f in @($outF, $errF)) {
                 if ((Test-Path -LiteralPath $f) -and -not $code) {
-                    $txt = [IO.File]::ReadAllText($f)
+                    $txt = (Read-SharedText $f)
                     if ($txt -match '\b([A-Z0-9]{4}-[A-Z0-9]{4})\b') { $code = $Matches[1] }
                 }
             }
@@ -289,14 +296,14 @@ try {
             } else {
                 $p.WaitForExit()
                 $outTxt = ''
-                foreach ($f in @($outF, $errF)) { if (Test-Path -LiteralPath $f) { $outTxt += [IO.File]::ReadAllText($f) + "`n" } }
+                foreach ($f in @($outF, $errF)) { if (Test-Path -LiteralPath $f) { $outTxt += (Read-SharedText $f) + "`n" } }
                 $line = ($outTxt -split "`r?`n" | Where-Object { $_ -match 'Logged in|Authentication complete|error|failed' } | Select-Object -First 2) -join ' | '
                 Add-Step 'login' (Test-Status ($p.ExitCode -eq 0)) "gh auth login --hostname $forgeHost --git-protocol https --web exit $($p.ExitCode); $(Hide-Secret $line)" $true ([int]$sw.ElapsedMilliseconds)
             }
         } else {
             try { if (-not $p.HasExited) { $p.Kill() } } catch { }
             $txt = ''
-            foreach ($f in @($outF, $errF)) { if (Test-Path -LiteralPath $f) { $txt += [IO.File]::ReadAllText($f) + ' ' } }
+            foreach ($f in @($outF, $errF)) { if (Test-Path -LiteralPath $f) { $txt += (Read-SharedText $f) + ' ' } }
             Add-Step 'login:code-printed' 'FAIL' "gh printed no one-time code within 90 s: $(Get-Line $txt)"
         }
     } elseif ($Login -and $Cli -eq 'glab') {
@@ -326,19 +333,20 @@ try {
     $plain = $false
     if ($Cli -eq 'gh') {
         $s = Invoke-Forge @('auth', 'status', '--hostname', $forgeHost, '--json', 'hosts')
-        $source = $null; $login = $null; $state = $null
+        # not $login or $state: PowerShell names are case-insensitive, and $Login is this script's [switch] parameter
+        $source = $null; $acct = $null; $acctState = $null
         if ($s.ExitCode -eq 0) {
             try {
                 $j = $s.StdOut | ConvertFrom-Json
                 $entry = @($j.hosts.$forgeHost) | Select-Object -First 1
-                $source = [string]$entry.tokenSource; $login = [string]$entry.login; $state = [string]$entry.state
+                $source = [string]$entry.tokenSource; $acct = [string]$entry.login; $acctState = [string]$entry.state
             } catch { $source = $null }
         }
         if ($null -eq $source) {
+            # Unreadable is a FAIL, but it is not proof of a plain-text token (config-file-token below checks the file), so it does not log the CLI out.
             Add-Step 'token-source' 'FAIL' "gh auth status --json hosts exit $($s.ExitCode); no tokenSource read: $(Get-Line ($s.StdErr + ' ' + $s.StdOut))"
-            $plain = $true
         } else {
-            Add-Step 'token-source' (Test-Status ($source -eq 'keyring')) "tokenSource='$source' (the exact value gh 2.103.3 reports); login=$login; state=$state"
+            Add-Step 'token-source' (Test-Status ($source -eq 'keyring')) "tokenSource='$source' (the exact value gh 2.103.3 reports); login=$acct; state=$acctState"
             if ($source -ne 'keyring') { $plain = $true }
         }
         $hostsYml = Join-Path $cfgDir 'hosts.yml'
