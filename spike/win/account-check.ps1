@@ -23,6 +23,10 @@
   Only run the token search (the token is read from the CLI).
 .PARAMETER SkipPush
   Do the login and the storage checks, but not the push.
+.PARAMETER SearchScope
+  full (default): every file under the app data folder, except the downloaded archives. core: leaves out the big read-only tool installs (tools\git, tools\node,
+  tools\npm\node_modules, tools\npm-cache\_cacache), which hold ~60,000 files and make a full pass take over 40 minutes in the VM under load; run `full` as well
+  when there is time. rest: only those four trees, so core + rest together cover everything full does.
 .PARAMETER SkipSearch
   Leave out the final token search (it reads every file under the app data folder and takes minutes); run it alone later with -Search.
 #>
@@ -36,7 +40,8 @@ param(
     [switch]$Logout,
     [switch]$Search,
     [switch]$SkipPush,
-    [switch]$SkipSearch
+    [switch]$SkipSearch,
+    [ValidateSet('full', 'core', 'rest')][string]$SearchScope = 'full'
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
@@ -245,12 +250,15 @@ function Invoke-TokenSearch {
         Add-Step 'token-search:self-test' (Test-Status ($found.Count -eq 2 -and $found[0] -eq 'utf16.txt' -and $found[1] -eq 'utf8.txt')) "planted string found in: $($found -join ', ')"
 
         $roots = Get-ScanRoots
-        $skipDirs = [string[]]@((Join-Path $Tools 'downloads'))
+        if ($SearchScope -eq 'rest') { $roots = @((Join-Path $Tools 'git'), (Join-Path $Tools 'node'), (Join-Path $Tools 'npm\node_modules'), (Join-Path $Tools 'npm-cache\_cacache') | Where-Object { Test-Path -LiteralPath $_ }) }
+        $skipDirs = @((Join-Path $Tools 'downloads'))
+        if ($SearchScope -eq 'core') { $skipDirs += @((Join-Path $Tools 'git'), (Join-Path $Tools 'node'), (Join-Path $Tools 'npm\node_modules'), (Join-Path $Tools 'npm-cache\_cacache')) }
+        $skipDirs = [string[]]$skipDirs
         [SbdTokenScan]::Reset()
         $sw = [Diagnostics.Stopwatch]::StartNew()
         [SbdTokenScan]::Scan([string[]]$roots, $tok, $skipDirs, 200MB)
         $hits = @([SbdTokenScan]::Hits)
-        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); skipped (unreadable or over 200 MB): $([SbdTokenScan]::Skipped); roots: $($roots -join '; '); tools\downloads skipped (compressed archives)") $false ([int]$sw.ElapsedMilliseconds)
+        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); skipped (unreadable or over 200 MB): $([SbdTokenScan]::Skipped); roots: $($roots -join '; '); scope $SearchScope; skipped trees: $($skipDirs -join '; ') (downloads are compressed archives)") $false ([int]$sw.ElapsedMilliseconds)
     } finally {
         $tok = $null
     }
@@ -262,8 +270,9 @@ try {
     Add-Step 'launcher' (Test-Status ($v.ExitCode -eq 0 -and ($v.StdOut + $v.StdErr) -match [regex]::Escape($version))) "$launcher --version -> $(Get-Line $v.StdOut)"
     if (@($script:AcctSteps | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { Save-AccountResult }
 
-    if ($Logout) { Remove-Login 'requested'; Save-AccountResult }
-    if ($Search) { Invoke-TokenSearch; Save-AccountResult }
+    # -Logout and -Search each do only that one thing: Save-AccountResult exits only on a FAIL, so a passing run is ended here.
+    if ($Logout) { Remove-Login 'requested'; Save-AccountResult; exit 0 }
+    if ($Search) { Invoke-TokenSearch; Save-AccountResult; exit 0 }
 
     $vals = Get-HelperValues
     $helperOk = ($vals.Count -eq 2 -and $vals[0] -eq '' -and $vals[1].StartsWith('!') -and $vals[1].EndsWith("/bin/$Cli' auth git-credential"))
