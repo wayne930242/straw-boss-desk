@@ -68,4 +68,15 @@ if ((Test-Path -LiteralPath $test) -and (Test-Path -LiteralPath $t.NodeExe) -and
 } else {
     Add-Step 'node-tests' 'SKIP' "needs $test, the kit's Node, and Git's sh.exe"
 }
+# ---- the account check's decisions (when a login counts as plain text, what an unread file means), offline ----
+$verdictTest = Join-Path $KitDir 'account-check-test.ps1'
+if (Test-Path -LiteralPath $verdictTest) {
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $r = Invoke-Native -File $psExe -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $verdictTest) -TimeoutSec 300
+    $lines = @(($r.StdOut -split "`r?`n") | Where-Object { $_ -match '^(PASS|FAIL) ' })
+    $nFail = @($lines | Where-Object { $_ -like 'FAIL *' }).Count
+    Add-Step 'verdict-tests' $(if ($r.ExitCode -eq 0 -and $nFail -eq 0 -and $lines.Count -gt 0) { 'PASS' } else { 'FAIL' }) "account-check-test.ps1: $($lines.Count - $nFail) PASS, $nFail FAIL (exit $($r.ExitCode))$(if ($nFail -gt 0) { '; ' + (($lines | Where-Object { $_ -like 'FAIL *' }) -join ' | ') })"
+} else {
+    Add-Step 'verdict-tests' 'SKIP' "needs $verdictTest"
+}
 Save-AccountResult

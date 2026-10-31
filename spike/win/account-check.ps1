@@ -44,7 +44,12 @@ param(
     [ValidateSet('full', 'core', 'rest')][string]$SearchScope = 'full'
 )
 
+# A relative path is taken against the PowerShell location, here and nowhere else: .NET file calls would use the process's directory instead.
+if ($TokenFile) { $TokenFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TokenFile) }
+if ($CodeFile) { $CodeFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CodeFile) }
+
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib\account-verdict.ps1')
 Start-AccountCheck "account-check-$Cli"
 $t = Get-ToolPaths
 $pins = Get-Pins
@@ -98,9 +103,7 @@ function Get-GitMessage {
 }
 function Get-HelperValues {
     $g = Invoke-Native -File $t.GitExe -ArgList @('config', '--get-all', "credential.https://$forgeHost.helper")
-    $vals = @($g.StdOut -split "`r?`n")
-    if ($vals.Count -gt 0 -and $vals[-1] -eq '') { $vals = @($vals[0..($vals.Count - 2)]) }
-    return ,$vals
+    return (ConvertTo-GitValueList $g.StdOut)
 }
 
 function Invoke-Forge {
@@ -122,19 +125,7 @@ function Get-CredentialTargets {
     return $names
 }
 
-# gh and glab keep a token in plain text when the credential store fails. What counts as a non-empty token value in a YAML line:
-function Get-PlainTokenLines {
-    param([string]$Path, [string]$Key)
-    $hits = @()
-    if (-not (Test-Path -LiteralPath $Path)) { return $hits }
-    foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
-        if ($line -match "^\s*$Key\s*:\s*(.*?)\s*(#.*)?$") {
-            $v = $Matches[1].Trim().Trim('"').Trim("'")
-            if ($v -and $v -notin @('!!null', 'null', '~')) { $hits += $line.Trim().Split(':')[0] }
-        }
-    }
-    return $hits
-}
+# gh and glab keep a token in plain text when the credential store fails (Get-PlainTokenLines, in lib\account-verdict.ps1, finds it).
 function Get-YamlKeys {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
@@ -146,7 +137,7 @@ function Remove-Login {
     $args2 = @('auth', 'logout', '--hostname', $forgeHost)
     $r = Invoke-Forge $args2
     $left = @()
-    if ($Cli -eq 'gh') { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'hosts.yml') 'oauth_token') } else { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'config.yml') 'token') }
+    if ($Cli -eq 'gh') { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'hosts.yml') 'oauth_token') + @(Get-PlainTokenLines (Join-Path $cfgDir 'config.yml') 'oauth_token') } else { $left = @(Get-PlainTokenLines (Join-Path $cfgDir 'config.yml') 'token') }
     Add-Step "logout:$Why" (Test-Status ($r.ExitCode -eq 0 -and $left.Count -eq 0)) "$Cli auth logout exit $($r.ExitCode); plain-text token lines left in the configuration folder: $($left.Count); $(Get-Line ($r.StdOut + ' ' + $r.StdErr))"
 }
 
@@ -258,7 +249,16 @@ function Invoke-TokenSearch {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         [SbdTokenScan]::Scan([string[]]$roots, $tok, $skipDirs, 200MB)
         $hits = @([SbdTokenScan]::Hits)
-        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); skipped (unreadable or over 200 MB): $([SbdTokenScan]::Skipped); roots: $($roots -join '; '); scope $SearchScope; skipped trees: $($skipDirs -join '; ') (downloads are compressed archives)") $false ([int]$sw.ElapsedMilliseconds)
+        Add-Step 'token-search' (Test-Status ($hits.Count -eq 0)) ("token ($($tok.Length) chars, UTF-8 and UTF-16LE) searched in $([SbdTokenScan]::Files) files, $([math]::Round([SbdTokenScan]::Bytes / 1MB)) MB, $([int]($sw.ElapsedMilliseconds / 1000)) s; hits: $($hits.Count)$(if ($hits.Count -gt 0) { ' in ' + ($hits -join '; ') }); roots: $($roots -join '; '); scope $SearchScope; skipped trees: $($skipDirs -join '; ') (downloads are compressed archives)") $false ([int]$sw.ElapsedMilliseconds)
+        # A file that was not read is not covered (spec section 8: the token is in no file under the app data folder). The paths are not secrets. Outside
+        # tools\downloads (archives made before any login) an unread file fails the search; inside, it only warns.
+        $split = Split-SkippedPaths ([string[]]@([SbdTokenScan]::SkippedNames)) (Join-Path $Tools 'downloads')
+        if ($split.Elsewhere.Count -gt 0) {
+            Add-Step 'token-search:unread' 'FAIL' "$($split.Elsewhere.Count) file(s) or folder(s) could not be read (locked, no access, or over 200 MB), so the search does not cover them: $(Hide-Secret ($split.Elsewhere -join '; '))"
+        }
+        if ($split.InDownloads.Count -gt 0) {
+            Add-Step 'token-search:unread-downloads' 'WARN' "$($split.InDownloads.Count) unread path(s) under tools\downloads (archives made before any login): $(Hide-Secret ($split.InDownloads -join '; '))"
+        }
     } finally {
         $tok = $null
     }
@@ -286,6 +286,10 @@ try {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $p = Start-Process -FilePath $launcher -ArgumentList @('auth', 'login', '--hostname', $forgeHost, '--git-protocol', 'https', '--web') -RedirectStandardOutput $outF -RedirectStandardError $errF -NoNewWindow -PassThru
         $null = $p.Handle   # without this, ExitCode is empty after the process ends
+        # Taken now, while the process is alive: Stop-ProcessTree kills nothing without it (a reused pid must not be hit).
+        $pStart = $null; try { $pStart = $p.StartTime } catch { }
+        # The launcher is a .cmd, so $p is cmd.exe and gh.exe is its child. Killing only cmd.exe would leave gh polling the device code and able to finish the login.
+        function Stop-LoginProcess { param($Proc) if (-not $Proc.HasExited) { [void](Stop-ProcessTree -ProcessId $Proc.Id -StartTime $pStart) } }
         $code = $null
         while (-not $code -and $sw.Elapsed.TotalSeconds -lt 90 -and -not $p.HasExited) {
             Start-Sleep -Milliseconds 500
@@ -300,7 +304,7 @@ try {
             if ($CodeFile) { Write-AllTextUtf8 $CodeFile $code }
             Add-Step 'login:code-printed' 'PASS' "gh printed a one-time code (length $($code.Length)); written to $CodeFile; waiting for the person to approve at https://github.com/login/device" $true ([int]$sw.ElapsedMilliseconds)
             if (-not $p.WaitForExit($LoginWaitMin * 60 * 1000)) {
-                try { $p.Kill() } catch { }
+                Stop-LoginProcess $p
                 Add-Step 'login' 'FAIL' "not approved within $LoginWaitMin minutes; gh login stopped" $true ([int]$sw.ElapsedMilliseconds)
             } else {
                 $p.WaitForExit()
@@ -310,7 +314,7 @@ try {
                 Add-Step 'login' (Test-Status ($p.ExitCode -eq 0)) "gh auth login --hostname $forgeHost --git-protocol https --web exit $($p.ExitCode); $(Hide-Secret $line)" $true ([int]$sw.ElapsedMilliseconds)
             }
         } else {
-            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            Stop-LoginProcess $p
             $txt = ''
             foreach ($f in @($outF, $errF)) { if (Test-Path -LiteralPath $f) { $txt += (Read-SharedText $f) + ' ' } }
             Add-Step 'login:code-printed' 'FAIL' "gh printed no one-time code within 90 s: $(Get-Line $txt)"
@@ -348,20 +352,20 @@ try {
             try {
                 $j = $s.StdOut | ConvertFrom-Json
                 $entry = @($j.hosts.$forgeHost) | Select-Object -First 1
-                $source = [string]$entry.tokenSource; $acct = [string]$entry.login; $acctState = [string]$entry.state
+                # A missing field stays $null: [string]$null is '' and would pass for a value.
+                if ($entry -and $entry.PSObject.Properties['tokenSource'] -and $null -ne $entry.tokenSource) { $source = [string]$entry.tokenSource }
+                $acct = [string]$entry.login; $acctState = [string]$entry.state
             } catch { $source = $null }
         }
-        if ($null -eq $source) {
-            # Unreadable is a FAIL, but it is not proof of a plain-text token (config-file-token below checks the file), so it does not log the CLI out.
-            Add-Step 'token-source' 'FAIL' "gh auth status --json hosts exit $($s.ExitCode); no tokenSource read: $(Get-Line ($s.StdErr + ' ' + $s.StdOut))"
-        } else {
-            Add-Step 'token-source' (Test-Status ($source -eq 'keyring')) "tokenSource='$source' (the exact value gh 2.103.3 reports); login=$acct; state=$acctState"
-            if ($source -ne 'keyring') { $plain = $true }
-        }
         $hostsYml = Join-Path $cfgDir 'hosts.yml'
+        $configYml = Join-Path $cfgDir 'config.yml'
         $tokLines = @(Get-PlainTokenLines $hostsYml 'oauth_token')
-        Add-Step 'config-file-token' (Test-Status ($tokLines.Count -eq 0 -and (Test-Path -LiteralPath $hostsYml))) "$hostsYml exists: $(Test-Path -LiteralPath $hostsYml); keys: $((Get-YamlKeys $hostsYml) -join ', '); non-empty oauth_token lines: $($tokLines.Count)"
-        if ($tokLines.Count -gt 0) { $plain = $true }
+        $cfgTokLines = @(Get-PlainTokenLines $configYml 'oauth_token') + @(Get-PlainTokenLines $configYml 'token')
+        $verdict = Get-GhTokenVerdict -Source $source -HostsTokens $tokLines.Count -ConfigTokens $cfgTokLines.Count
+        # Only positive evidence (a file token, or a source that is a file) logs the CLI out; an unreadable status is a FAIL and nothing more.
+        Add-Step 'token-source' (Test-Status $verdict.Verified) "gh auth status --json hosts exit $($s.ExitCode); tokenSource='$source'; login=$acct; state=$acctState; $($verdict.Reason)$(if ($null -eq $source) { ': ' + (Get-Line ($s.StdErr + ' ' + $s.StdOut)) })"
+        Add-Step 'config-file-token' (Test-Status ($tokLines.Count -eq 0 -and $cfgTokLines.Count -eq 0 -and (Test-Path -LiteralPath $hostsYml))) "$hostsYml exists: $(Test-Path -LiteralPath $hostsYml); keys: $((Get-YamlKeys $hostsYml) -join ', '); non-empty oauth_token lines: $($tokLines.Count); $configYml non-empty token lines: $($cfgTokLines.Count)"
+        if ($verdict.Plain) { $plain = $true }
         $defaultDir = Join-Path $env:APPDATA 'GitHub CLI'
         Add-Step 'isolation' (Test-Status (-not (Test-Path -LiteralPath (Join-Path $defaultDir 'hosts.yml')))) "gh's default folder $defaultDir holds no hosts.yml (GH_CONFIG_DIR $cfgDir was used)"
         $targets = @(Get-CredentialTargets '(?i)gh:github\.com')
@@ -370,10 +374,11 @@ try {
         $cfg = Join-Path $cfgDir 'config.yml'
         $tokLines = @(Get-PlainTokenLines $cfg 'token')
         Add-Step 'config-file-token' (Test-Status ($tokLines.Count -eq 0 -and (Test-Path -LiteralPath $cfg))) "$cfg exists: $(Test-Path -LiteralPath $cfg); keys: $((Get-YamlKeys $cfg) -join ', '); non-empty token lines: $($tokLines.Count)"
-        if ($tokLines.Count -gt 0) { $plain = $true }
         $s = Invoke-Forge @('auth', 'status', '--hostname', $forgeHost)
-        Add-Step 'auth-status' (Test-Status ($s.ExitCode -eq 0)) "glab auth status --hostname $forgeHost exit $($s.ExitCode)"
-        if ($s.ExitCode -ne 0) { $plain = $true }
+        $verdict = Get-GlabTokenVerdict -ConfigTokens $tokLines.Count -StatusExit $s.ExitCode
+        # Only config.yml decides plain text. A failed status (network, certificate, expired token) is a FAIL, not proof, and the login stays in the store.
+        Add-Step 'auth-status' (Test-Status ($s.ExitCode -eq 0)) "glab auth status --hostname $forgeHost exit $($s.ExitCode); $($verdict.Reason)$(if ($s.ExitCode -ne 0) { ': ' + (Get-Line ($s.StdErr + ' ' + $s.StdOut)) })"
+        if ($verdict.Plain) { $plain = $true }
         $defaults = @((Join-Path $env:APPDATA 'glab-cli\config.yml'), (Join-Path $env:USERPROFILE '.config\glab-cli\config.yml'))
         $present = @($defaults | Where-Object { Test-Path -LiteralPath $_ })
         Add-Step 'isolation' (Test-Status ($present.Count -eq 0)) "glab's default folders hold no config.yml (GLAB_CONFIG_DIR $cfgDir was used); found: $($present.Count)"

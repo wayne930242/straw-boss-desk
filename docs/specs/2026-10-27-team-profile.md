@@ -399,7 +399,9 @@ The wizard installs only the CLIs the recipe's `forges` name. Without a recipe, 
 
 ### Isolation
 
-The app must not touch a gh or glab the user already has. Each runs with its own configuration folder under app data, `GH_CONFIG_DIR` and `GLAB_CONFIG_DIR`. On Windows, herdr's panes rebuild their environment from the registry (spike finding), so an environment variable set by the app does not reach the agent's shell. So `tools/bin/` holds small launchers for each CLI: a POSIX script for bash and a `.cmd` for Windows. Each sets the configuration folder plus `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `GLAB_NO_PROMPT=1`, and `GLAB_CHECK_UPDATE=false`, then runs the pinned binary. `tools/bin/` goes on the PATH the way the spike adds `tools\npm`. The launchers also unset `CI` and `GITLAB_CI`, because glab writes its token to plain text when either is set.
+The app must not touch a gh or glab the user already has. Each runs with its own configuration folder under app data, `GH_CONFIG_DIR` and `GLAB_CONFIG_DIR`. On Windows, herdr's panes rebuild their environment from the registry (spike finding), so an environment variable set by the app does not reach the agent's shell. So `tools/bin/` holds small launchers for each CLI: a POSIX script for bash and a `.cmd` for Windows. Each sets the configuration folder plus `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `GLAB_NO_PROMPT=1`, and `GLAB_CHECK_UPDATE=false`, then runs the pinned binary. `tools/bin/` goes on the PATH the way the spike adds `tools\npm`. The launchers also unset `CI` and `GITLAB_CI`, because glab writes its token to plain text when either is set. They unset the variables that take the place of the stored login or of the configured host as well: `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, `GITLAB_ACCESS_TOKEN`, `OAUTH_TOKEN`, `GH_HOST`, `GITLAB_HOST` and `GL_HOST`. An environment token wins over the keyring for every CLI call and for `auth git-credential`, so without this the agent would push with the user's own token, and the account check for glab could pass without ever proving keyring storage.
+
+`tools/bin/` goes first on the user PATH, ahead of any gh or glab earlier in it (a scoop shim, say). A gh or glab on the machine PATH (the MSI and winget install to `C:\Program Files`) still comes before the whole user PATH and cannot be beaten without admin rights, so in a pane such a `gh` would be the user's own. Kit processes are not affected (they put `tools/bin` first themselves), and neither is the Git helper (it uses an absolute path).
 
 ### Login
 
@@ -419,7 +421,7 @@ On disk, in the app's configuration folders:
 - gh: `hosts.yml` with the host, the account name, and `git_protocol`; `config.yml` with defaults; `state.yml` with the update-check time. No token.
 - glab: `config.yml` with the host, `api_host`, `api_protocol`, `git_protocol`, and the user. No token.
 
-Both CLIs fall back to a plain-text token when the credential store fails (gh into `hosts.yml`, glab into `config.yml`). A plain-text token is not acceptable, so the wizard checks after every login. For gh, `gh auth status --hostname github.com --json hosts` must report the token source as the keyring. For glab, `config.yml` must hold no non-empty `token` for the host. If a check fails, the wizard logs the CLI out, which also removes the file entry, and stops with a plain explanation. It never passes `--insecure-storage`. The exact `tokenSource` value gh reports is checked in phase 2.
+Both CLIs fall back to a plain-text token when the credential store fails (gh into `hosts.yml`, glab into `config.yml`). A plain-text token is not acceptable, so the wizard checks after every login. For gh, `gh auth status --hostname github.com --json hosts` must report the token source as the keyring. For glab, `config.yml` must hold no non-empty `token` for the host. The CLI is logged out only on positive evidence of a plain-text token: for gh, a non-empty token in `hosts.yml` or `config.yml`, or a token source of `oauth_token` or a file; for glab, a non-empty `token` in `config.yml`. A status that fails (no network, a certificate error, an expired token) or a token source that is missing or empty is "could not verify": the check fails and says so, and the login in the credential store stays, because the token file was wiped at login and a new token would be needed. If the evidence shows a plain-text token, the wizard logs the CLI out, which also removes the file entry, and stops with a plain explanation. It never passes `--insecure-storage`. The exact `tokenSource` value gh reports is checked in phase 2.
 
 ### Git uses the same login
 
@@ -443,7 +445,7 @@ The helper paths point at the launchers, so Git gets the same configuration fold
 
 ### What phase 2 must also settle
 
-pi sessions in herdr panes must see the app's Git configuration (`GIT_CONFIG_GLOBAL`), not the user's `~/.gitconfig`. On Windows that has the same registry problem as the CLIs. The fix is a launcher like the ones above, or herdr keeping the server's environment, which was reported upstream after the spike. Without it, the credential helpers above are invisible to the agent's `git push`.
+pi sessions in herdr panes must see the app's Git configuration (`GIT_CONFIG_GLOBAL`), not the user's `~/.gitconfig`. On Windows that has the same registry problem as the CLIs. The fix is a launcher like the ones above, or herdr keeping the server's environment, which was reported upstream after the spike. Without it, the credential helpers above are invisible to the agent's `git push`. The same fix must put `tools/bin` first for the pane's PATH, since the machine PATH comes before the user PATH (see Isolation).
 
 ## 5. The recipe (配方)
 
@@ -669,7 +671,7 @@ The phase 3 anchor in the design is the author reading and approving. This spec 
 - Both guard rules' `blocks` and `allows` fixtures, run through pi-anchorloop's own rule parser.
 - Recipe validation: the schema's valid and invalid examples; every secret pattern with a positive and a near-miss fixture; URLs with user info, query, `http`, and a host outside `forges`; reserved and duplicate folder names; an update with a lower version or another `id`.
 - Installer cases: fresh install; update over an unchanged file; update over an edited file (kept, pending copy written, notice raised); update over a file with no record; a dropped file, unchanged and edited; a merged key, unchanged and changed by the user; a recipe update that changes only `instructions`.
-- CLI install: each pinned archive verified by SHA256 and run with `--version` through its launcher; with a temporary configuration folder, the launchers set the folder and unset `CI`.
+- CLI install: each pinned archive verified by SHA256 and run with `--version` through its launcher; with a temporary configuration folder, the launchers set the folder and unset `CI` and the token and host variables (each set to a dummy value in the test).
 
 ### Account checks, with the author present (phase 2's kit)
 

@@ -27,8 +27,25 @@ export const FORGES = {
   },
 };
 
-/** glab writes its token to plain text when either is set (spec, Isolation), and gh behaves differently on CI as well. */
-export const UNSET = ["CI", "GITLAB_CI"];
+/**
+ * Removed from the environment of every launched CLI. CI and GITLAB_CI: glab writes its token to plain text when either is set (spec, Isolation), and gh
+ * behaves differently on CI as well. The rest are the variables that take the place of the stored login or of the configured host: an environment token
+ * wins over the keyring for every CLI call and for the Git credential helper, so the agent would push with the user's own token.
+ */
+export const UNSET = [
+  "CI",
+  "GITLAB_CI",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GITLAB_TOKEN",
+  "GITLAB_ACCESS_TOKEN",
+  "OAUTH_TOKEN",
+  "GH_HOST",
+  "GITLAB_HOST",
+  "GL_HOST",
+];
 
 const BEGIN = "# >>> straw-boss forge credential helpers (written by the kit; edit by running it again)";
 const END = "# <<< straw-boss forge credential helpers";
@@ -56,13 +73,13 @@ const exeName = (cli, platform) => (platform === "win32" ? `${cli}.exe` : cli);
 
 /**
  * The batch launcher. The config folder is found from the launcher's own place (<root>\tools\bin), so no path with the user's name is baked into a file that
- * cmd reads in the OEM code page. CI and GITLAB_CI are removed for this process only.
+ * cmd reads in the OEM code page. The variables in UNSET are removed for this process only.
  */
 export function cmdLauncher(kind) {
   const f = FORGES[kind];
   const lines = [
     "@echo off",
-    `rem straw-boss-desk launcher for ${f.cli}: private configuration folder, no prompts, no update checks, CI variables removed.`,
+    `rem straw-boss-desk launcher for ${f.cli}: private configuration folder, no prompts, no update checks, CI and token variables removed.`,
     "setlocal",
     'for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"',
     `set "${f.configEnv}=%SBD_APP_ROOT%\\config\\${f.configDir}"`,
@@ -83,10 +100,10 @@ export function shLauncher(kind, platform = "win32") {
   const f = FORGES[kind];
   const lines = [
     "#!/bin/sh",
-    `# straw-boss-desk launcher for ${f.cli}: private configuration folder, no prompts, no update checks, CI variables removed.`,
+    `# straw-boss-desk launcher for ${f.cli}: private configuration folder, no prompts, no update checks, CI and token variables removed.`,
     'case $0 in */*) d=${0%/*} ;; *) d=. ;; esac',
-    'd=$(cd "$d" && { pwd -W 2>/dev/null || pwd; }) || exit 1',
-    'root=$(cd "$d/../.." && { pwd -W 2>/dev/null || pwd; }) || exit 1',
+    'd=$(CDPATH= cd -- "$d" && { pwd -W 2>/dev/null || pwd; }) || exit 1',
+    'root=$(CDPATH= cd -- "$d/../.." && { pwd -W 2>/dev/null || pwd; }) || exit 1',
     `${f.configEnv}="$root/config/${f.configDir}"`,
     ...f.env.map(([k, v]) => `${k}=${v}`),
     `export ${[f.configEnv, ...f.env.map(([k]) => k)].join(" ")}`,

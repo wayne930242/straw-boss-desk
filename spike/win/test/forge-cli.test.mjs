@@ -1,7 +1,7 @@
 // node --test spike/win/test/forge-cli.test.mjs   (also runs in the Windows VM, where the POSIX launcher goes through Git's own sh)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -28,6 +28,8 @@ const GL = parseForge("gitlab:gitlab.moldplan.app");
 const both = [GH, GL];
 const isWindows = process.platform === "win32";
 const sh = isWindows ? process.env.SBD_SH : "/bin/sh";
+/** Every variable the launchers must remove, set to a dummy value; KEEP passes through. Never a real token. */
+const DUMMY_ENV = { ...Object.fromEntries(UNSET.map((k) => [k, "dummy-" + k.toLowerCase()])), KEEP: "yes" };
 
 let tmp;
 beforeEach(() => {
@@ -108,6 +110,11 @@ describe("launcher text", () => {
       assert.ok(text.includes('for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"'));
     }
   });
+  it("the removed variables are the ones that replace the stored login or the host (R-F003)", () => {
+    for (const k of ["CI", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "GH_HOST", "GITLAB_HOST"]) {
+      assert.ok(UNSET.includes(k), k);
+    }
+  });
   it("cmd: the exact variables the spec names", () => {
     const gh = cmdLauncher("github");
     const glab = cmdLauncher("gitlab");
@@ -118,7 +125,9 @@ describe("launcher text", () => {
     const text = shLauncher("github", "win32");
     assert.ok(text.startsWith("#!/bin/sh\n") && !text.includes("\r"));
     assert.ok(text.includes("export GH_CONFIG_DIR GH_PROMPT_DISABLED GH_NO_UPDATE_NOTIFIER"));
-    assert.ok(text.includes("unset CI GITLAB_CI"));
+    assert.ok(text.includes(`unset ${UNSET.join(" ")}`));
+    assert.ok(text.includes('CDPATH= cd -- "$d"') && text.includes('CDPATH= cd -- "$d/../.."'), "cd ignores CDPATH");
+    assert.ok(!/\bcd "/.test(text), "no bare cd");
     assert.ok(text.includes('exec "$d/../gh/bin/gh.exe" "$@"'));
     assert.ok(shLauncher("gitlab", "darwin").includes('exec "$d/../glab/bin/glab" "$@"'));
   });
@@ -138,20 +147,19 @@ describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD
   const envOf = (out) => Object.fromEntries(out.split("\n").filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 
   for (const [kind, cli] of [["github", "gh"], ["gitlab", "glab"]]) {
-    it(`${cli}: sets the config folder under the app root and the no-prompt variables, removes CI and GITLAB_CI, keeps the arguments and standard input`, () => {
+    it(`${cli}: sets the config folder under the app root and the no-prompt variables, removes CI, GITLAB_CI and the token and host variables, keeps the arguments and standard input`, () => {
       const { root, tools } = appRoot();
       const forges = [parseForge(kind === "github" ? "github:github.com" : "gitlab:gitlab.moldplan.app")];
       writeLaunchers({ tools, forges, platform: isWindows ? "win32" : "darwin" });
       fakeBinary({ tools, cli });
       const args = isWindows ? [join(tools, cli, "bin", "dump.js"), "x y"] : ["auth", "login", "--hostname", "x y", "--stdin"];
-      const r = run(join(tools, "bin", cli), args, { CI: "true", GITLAB_CI: "true", KEEP: "yes" }, "secret-on-stdin\n");
+      const r = run(join(tools, "bin", cli), args, DUMMY_ENV, "secret-on-stdin\n");
       assert.equal(r.status, 0, r.stderr);
       const env = envOf(r.stdout);
       const f = FORGES[kind];
       assert.equal(env[f.configEnv].replace(/\\/g, "/"), `${root.split("\\").join("/")}/config/${f.configDir}`);
       for (const [k, v] of f.env) assert.equal(env[k], v, k);
-      assert.equal(env.CI, undefined, "CI is removed");
-      assert.equal(env.GITLAB_CI, undefined, "GITLAB_CI is removed");
+      for (const k of UNSET) assert.equal(env[k], undefined, `${k} is removed`);
       assert.equal(env.KEEP, "yes", "other variables pass through");
       if (!isWindows) {
         assert.ok(r.stdout.includes("ARGS:[auth][login][--hostname][x y][--stdin]"));
@@ -166,14 +174,13 @@ describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD
       writeLaunchers({ tools, forges: [parseForge(kind === "github" ? "github:github.com" : "gitlab:gitlab.moldplan.app")], platform: "win32" });
       fakeBinary({ tools, cli });
       const line = `""${join(tools, "bin", `${cli}.cmd`)}" "${join(tools, cli, "bin", "dump.js")}" "x y""`;
-      const r = spawnSync(process.env.ComSpec, ["/d", "/s", "/c", line], { encoding: "utf8", windowsVerbatimArguments: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, CI: "true", GITLAB_CI: "true", KEEP: "yes" } });
+      const r = spawnSync(process.env.ComSpec, ["/d", "/s", "/c", line], { encoding: "utf8", windowsVerbatimArguments: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...DUMMY_ENV } });
       assert.equal(r.status, 0, r.stderr + r.stdout);
       const env = envOf(r.stdout.replace(/\r/g, ""));
       const f = FORGES[kind];
       assert.equal(env[f.configEnv], `${root}\\config\\${f.configDir}`);
       for (const [k, v] of f.env) assert.equal(env[k], v, k);
-      assert.equal(env.CI, undefined);
-      assert.equal(env.GITLAB_CI, undefined);
+      for (const k of UNSET) assert.equal(env[k], undefined, `${k} is removed`);
       assert.equal(env.KEEP, "yes");
       assert.match(r.stdout, /ARGC:3\r?$/m, `the binary got its two arguments, "x y" as one (node's argv is [exe, script, "x y"]): ${r.stdout.split("\n").filter((l) => l.startsWith("ARGC")).join(" ")}`);
     });
@@ -186,6 +193,18 @@ describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD
     const r = spawnSync("gh", ["--version"], { encoding: "utf8", cwd: tmp, env: { PATH: `${join(tools, "bin")}:${process.env.PATH}`, CI: "1" } });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(envOf(r.stdout).CI, undefined);
+  });
+
+  it("a relative start with CDPATH set still finds its own folder (R-F010)", { skip: isWindows }, () => {
+    const { root, tools } = appRoot();
+    writeLaunchers({ tools, forges: [GH], platform: "darwin" });
+    fakeBinary({ tools, cli: "gh" });
+    // CDPATH names a folder that has its own "bin": without CDPATH= the launcher's `cd bin` would go there and print its path into $d.
+    const decoy = join(tmp, "decoy");
+    mkdirSync(join(decoy, "bin"), { recursive: true });
+    const r = spawnSync(sh, ["bin/gh", "--version"], { encoding: "utf8", cwd: tools, env: { PATH: process.env.PATH, CDPATH: decoy } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(envOf(r.stdout).GH_CONFIG_DIR, `${realpathSync(root)}/config/gh`);
   });
 
   it("passes the exit status of the binary on", () => {

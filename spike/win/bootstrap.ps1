@@ -38,6 +38,7 @@ param(
 if ($Recipe) { $Recipe = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Recipe) }
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib\account-verdict.ps1')
 $script:LogFile = Join-Path $LogDir 'bootstrap.jsonl'
 $pins = Get-Pins
 $t = Get-ToolPaths
@@ -416,16 +417,17 @@ if ($forgeOn) {
     }
 
     Invoke-Stage 'forge-path' {
-        $cur = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
-        if ($cur -contains $t.Bin) { return "user PATH has $($t.Bin)" }
+        $cur = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ })
+        if ($cur.Count -gt 0 -and $cur[0].TrimEnd('\') -ieq $t.Bin.TrimEnd('\')) { return "user PATH starts with $($t.Bin)" }
     } {
-        $cur = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if (-not $cur) { $cur = '' }
-        if (($cur -split ';') -notcontains $t.Bin) { $cur = ($cur.TrimEnd(';') + ';' + $t.Bin).TrimStart(';') }
-        [Environment]::SetEnvironmentVariable('Path', $cur, 'User')
+        # First, not last: a gh or glab earlier in the user PATH (a scoop shim) would win otherwise. One on the machine PATH still comes before the whole
+        # user PATH and cannot be beaten without admin rights (spec section 4, "What phase 2 must also settle").
+        $cur = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $t.Bin.TrimEnd('\')) })
+        [Environment]::SetEnvironmentVariable('Path', ((@($t.Bin) + $cur) -join ';'), 'User')
         Set-SbdEnv
     } {
-        if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $t.Bin) { "user PATH has $($t.Bin)" }
+        $cur = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ })
+        if ($cur.Count -gt 0 -and $cur[0].TrimEnd('\') -ieq $t.Bin.TrimEnd('\')) { "user PATH starts with $($t.Bin)" }
     }
 
     # The credential helpers go in the kit's private Git configuration (GIT_CONFIG_GLOBAL), after every general helper, so the empty entry per host clears
@@ -445,8 +447,7 @@ if ($forgeOn) {
         foreach ($fg in $script:ForgeList) {
             $cli = if ($fg.kind -eq 'github') { 'gh' } else { 'glab' }
             $g = Invoke-Native -File $t.GitExe -ArgList @('config', '--get-all', "credential.https://$($fg.host).helper") -TimeoutSec 60
-            $vals = @($g.StdOut -split "`r?`n")
-            if ($vals.Count -gt 0 -and $vals[-1] -eq '') { $vals = @($vals[0..($vals.Count - 2)]) }
+            $vals = ConvertTo-GitValueList $g.StdOut
             if ($vals.Count -ne 2 -or $vals[0] -ne '' -or -not $vals[1].StartsWith('!')) { throw "git reads $($fg.host) helpers as: $($vals -join ' | ')" }
             $tail = ' auth git-credential'
             if (-not $vals[1].EndsWith($tail)) { throw "unexpected helper command for $($fg.host)" }
