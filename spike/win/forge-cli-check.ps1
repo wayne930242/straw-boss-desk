@@ -63,7 +63,7 @@ if ((Test-Path -LiteralPath $test) -and (Test-Path -LiteralPath $t.NodeExe) -and
     $pass = if ($all -match '(?m)^# pass (\d+)') { $Matches[1] } elseif ($all -match 'pass (\d+)') { $Matches[1] } else { '?' }
     $fail = if ($all -match '(?m)^# fail (\d+)') { $Matches[1] } elseif ($all -match 'fail (\d+)') { $Matches[1] } else { '?' }
     $skip = if ($all -match '(?m)^# skipped (\d+)') { $Matches[1] } elseif ($all -match 'skipped (\d+)') { $Matches[1] } else { '?' }
-    Add-Step 'node-tests' $(if ($r.ExitCode -eq 0 -and $fail -eq '0') { 'PASS' } else { 'FAIL' }) "node --test forge-cli.test.mjs with cmd.exe and $sh: pass $pass, fail $fail, skipped $skip (exit $($r.ExitCode))"
+    Add-Step 'node-tests' $(if ($r.ExitCode -eq 0 -and $fail -eq '0') { 'PASS' } else { 'FAIL' }) "node --test forge-cli.test.mjs with cmd.exe and ${sh}: pass $pass, fail $fail, skipped $skip (exit $($r.ExitCode))"
     if ($r.ExitCode -ne 0) { Set-Content -LiteralPath (Join-Path $LogDir 'forge-cli-test.txt') -Value $all -Encoding UTF8; Write-Host "node test output -> $(Join-Path $LogDir 'forge-cli-test.txt')" }
 } else {
     Add-Step 'node-tests' 'SKIP' "needs $test, the kit's Node, and Git's sh.exe"

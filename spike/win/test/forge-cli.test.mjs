@@ -33,7 +33,8 @@ let tmp;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "forge-cli-"));
 });
-afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+// Windows keeps a copy of node.exe (the stand-in gh.exe) locked for a moment after it ran, so removal is retried.
+afterEach(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
 /** An app root with a space and CJK characters in it, like C:\Users\測試PM\AppData\Local\straw-boss-desk. */
 function appRoot(name = "測試PM app") {
@@ -131,8 +132,9 @@ describe("launcher text", () => {
 });
 
 describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD_SH ? "needs SBD_SH (Git's sh.exe) on Windows" : false }, () => {
+  // Git starts a helper command through sh with a forward-slash path (posixPath in helperCommand), so the test does too.
   const run = (launcher, args, env, input) =>
-    spawnSync(sh, [launcher, ...args], { encoding: "utf8", input, env: { PATH: process.env.PATH, HOME: tmp, ...env } });
+    spawnSync(sh, [launcher.split("\\").join("/"), ...args], { encoding: "utf8", input, env: { PATH: process.env.PATH, HOME: tmp, ...env } });
   const envOf = (out) => Object.fromEntries(out.split("\n").filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 
   for (const [kind, cli] of [["github", "gh"], ["gitlab", "glab"]]) {
@@ -173,7 +175,7 @@ describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD
       assert.equal(env.CI, undefined);
       assert.equal(env.GITLAB_CI, undefined);
       assert.equal(env.KEEP, "yes");
-      assert.ok(r.stdout.includes("ARGC:4"), "the binary got its two arguments");
+      assert.match(r.stdout, /ARGC:3\r?$/m, `the binary got its two arguments, "x y" as one (node's argv is [exe, script, "x y"]): ${r.stdout.split("\n").filter((l) => l.startsWith("ARGC")).join(" ")}`);
     });
   }
 
@@ -200,7 +202,9 @@ describe("the POSIX launcher at run time", { skip: isWindows && !process.env.SBD
 });
 
 describe("credential helpers in the private Git configuration", () => {
-  const tools = "/Users/x/Library/Application Support/straw-boss-desk/tools";
+  // Absolute on the machine that runs the test, so Windows resolves "/Users/..." to a drive path and expects it.
+  const tools = isWindows ? "C:\\Users\\x\\AppData\\Local\\straw-boss-desk\\tools" : "/Users/x/Library/Application Support/straw-boss-desk/tools";
+  const posixTools = isWindows ? "C:/Users/x/AppData/Local/straw-boss-desk/tools" : tools;
 
   it("writes the empty helper first, then the launcher, for each host (exact text)", () => {
     assert.equal(
@@ -209,10 +213,10 @@ describe("credential helpers in the private Git configuration", () => {
         "# >>> straw-boss forge credential helpers (written by the kit; edit by running it again)",
         '[credential "https://github.com"]',
         "\thelper =",
-        `\thelper = !'${tools}/bin/gh' auth git-credential`,
+        `\thelper = !'${posixTools}/bin/gh' auth git-credential`,
         '[credential "https://gitlab.moldplan.app"]',
         "\thelper =",
-        `\thelper = !'${tools}/bin/glab' auth git-credential`,
+        `\thelper = !'${posixTools}/bin/glab' auth git-credential`,
         "# <<< straw-boss forge credential helpers",
         "",
       ].join("\n"),
