@@ -49,11 +49,13 @@ if ($teamOn -and -not $Recipe) { $Recipe = Join-Path $KitDir 'test-recipe.strawb
 $script:TeamRecipe = $null
 
 # The code-host CLIs are opt-in. Each -Forges entry is kind:host; a bare `-Only forge-*` takes the two hosts the account checks use.
-$forgeOn = (@($Forges).Count -gt 0) -or (@($Only | Where-Object { $_ -like 'forge-*' }).Count -gt 0)
+# @($null).Count is 1 in PowerShell, so an unset -Forges is filtered through the pipeline to count only real entries.
+$forgeArgs = @($Forges | Where-Object { $_ })
+$forgeOn = ($forgeArgs.Count -gt 0) -or (@($Only | Where-Object { $_ -like 'forge-*' }).Count -gt 0)
 $script:ForgeList = @()
 if ($forgeOn) {
-    if (@($Forges).Count -eq 0) { $Forges = @('github:github.com', 'gitlab:gitlab.moldplan.app') }
-    foreach ($f in $Forges) {
+    if ($forgeArgs.Count -eq 0) { $forgeArgs = @('github:github.com', 'gitlab:gitlab.moldplan.app') }
+    foreach ($f in $forgeArgs) {
         if ($f -notmatch '^(github|gitlab):[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$') { Write-Host "bootstrap stopped: -Forges entry '$f' must look like github:github.com or gitlab:<host>"; exit 1 }
         $script:ForgeList += [pscustomobject]@{ kind = $Matches[1]; host = ($f.Substring($Matches[1].Length + 1)).ToLowerInvariant() }
     }
