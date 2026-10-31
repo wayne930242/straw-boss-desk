@@ -28,6 +28,7 @@ describe("package", () => {
     const [info] = JSON.parse(run.stdout);
     assert.deepEqual(info.files.map((f) => f.path.replaceAll("\\", "/")).sort(), [
       "AGENTS.md",
+      "LICENSE",
       "config/herdr-agents.json",
       "config/settings.json",
       "package.json",

@@ -2,6 +2,7 @@
   "name": "straw-boss-desk-profile",
   "version": "0.1.0",
   "description": "Team profile for straw-boss-desk: the AGENTS.md, guard rules, PM workflow skill, and model and settings configs a PM's pi sessions run with.",
+  "license": "MIT",
   "keywords": ["pi-package"],
   "repository": {
     "type": "git",
