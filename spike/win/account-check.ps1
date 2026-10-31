@@ -23,6 +23,8 @@
   Only run the token search (the token is read from the CLI).
 .PARAMETER SkipPush
   Do the login and the storage checks, but not the push.
+.PARAMETER SkipSearch
+  Leave out the final token search (it reads every file under the app data folder and takes minutes); run it alone later with -Search.
 #>
 param(
     [Parameter(Mandatory = $true)][ValidateSet('gh', 'glab')][string]$Cli,
@@ -33,7 +35,8 @@ param(
     [int]$LoginWaitMin = 14,
     [switch]$Logout,
     [switch]$Search,
-    [switch]$SkipPush
+    [switch]$SkipPush,
+    [switch]$SkipSearch
 )
 
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lib.ps1')
@@ -94,12 +97,16 @@ function Invoke-Forge {
     return (Invoke-Native -File $launcher -ArgList $ArgList -StdIn $StdIn -TimeoutSec $TimeoutSec)
 }
 
-# Credential Manager entries by name only (cmdkey /list prints target names, never secrets).
+# Credential Manager entries by name only (cmdkey /list prints target names, never secrets). The line label is translated ("Target:", "目標:"), but the
+# target itself is always written `target=<name>` after the type, so that is what is matched.
 function Get-CredentialTargets {
     param([string]$Pattern)
     $names = @()
     foreach ($line in @(& cmdkey.exe /list 2>$null)) {
-        if ($line -match 'Target:\s*(.+)$' -and $Matches[1] -match $Pattern) { $names += $Matches[1].Trim() }
+        if ($line -match 'target=(.+)$') {
+            $name = $Matches[1].Trim()   # the next -match replaces $Matches
+            if ($name -match $Pattern) { $names += $name }
+        }
     }
     return $names
 }
@@ -402,7 +409,7 @@ try {
     }
 
     # ---- 4: the token must be in no file the kit wrote ----
-    Invoke-TokenSearch
+    if (-not $SkipSearch) { Invoke-TokenSearch }
 } catch {
     Add-Step 'unexpected-error' 'FAIL' (Hide-Secret $_.Exception.Message)
 }
