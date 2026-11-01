@@ -4,13 +4,17 @@
 // runs the pinned program with the app's tool folders first on the `PATH`, or passes through to the next program of that name on the `PATH`, so a
 // user's own terminal is unchanged.
 //
-// The batch files follow the T5-F007 pattern (`setlocal DisableDelayedExpansion`, `pushd` to the paths file's folder, `call ".\paths.cmd"`, R5-F007)
-// and run their program inside that `setlocal`, never after an `endlocal`: delayed expansion is applied to each command when it runs, so after an
-// `endlocal` a cmd started with `/v:on` (the per-user DelayedExpansion setting) would strip the `!` of a root or an argument from the commands that follow
-// on the same line. Without a `call` the program gets the caller's arguments exactly once expanded (`call` would double carets and expand `%` a second
-// time); a batch program takes over from the shim and the `PATH` set in the shim's scope reaches it (found on `windows-2025`), and a program that is not a
-// batch file returns, so the line after it leaves with its exit code instead of running into the pass-through. The scope ends with the shim: a terminal
-// that typed `pi` keeps its own `PATH` and variables.
+// The batch files follow the T5-F007 pattern (`setlocal DisableDelayedExpansion`, `pushd` to the paths file's folder, `call ".\paths.cmd"`, R5-F007).
+// How each hands over to its program was settled on `windows-2025` (the experiments are in the Build notes):
+// - `bash.cmd`, `bun.cmd`, and a pass-through run the program inside the `setlocal`, then `exit /b %ERRORLEVEL%`. Delayed expansion is applied to each
+//   command when it runs, so a command after an `endlocal` of a cmd started with `/v:on` (the per-user DelayedExpansion setting) loses the `!` of a root
+//   or an argument; inside the `setlocal` it does not. Without a `call` the program gets the caller's arguments exactly once expanded (`call` doubles
+//   carets and expands `%` a second time). A program that is not a batch file returns, so the `exit` line stops the shim from running into the next label.
+// - `pi.cmd` ends with `endlocal & set "PATH=..." & "<pinned pi.cmd>" %*`. npm's wrapper ends with `endLocal & goto #_undefined_# 2>NUL || ...`, and that
+//   `goto` aborts the batch context, which ends every `setlocal` still pending, so a `PATH` set inside the shim's `setlocal` is gone before the wrapper's
+//   `"node"` runs. Set after the `endlocal`, the `PATH` is part of the environment the wrapper starts with. The price is npm's own: a cmd with delayed
+//   expansion on strips a `!` from this line, as it does from the wrapper's. (In an interactive cmd the `PATH` then keeps the app's folders; a pane is
+//   PowerShell, which runs a batch file in a child cmd.)
 
 /** The shim files a Windows install writes, by name. `bun.cmd` and `bunx.cmd` only for a recipe that names bun. */
 export interface ShimSpec {
@@ -51,8 +55,9 @@ export function cmdShim(spec: ShimSpec): string {
 					'call ".\\paths.cmd"',
 					"popd",
 					...(spec.desk === "bash" ? ['if not exist "%SBD_GIT_BASH%" goto :missing_desk'] : []),
-					'set "PATH=%SBD_PATH%;%PATH%"',
-					spec.desk === "pi" ? '"%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*' : '"%SBD_GIT_BASH%" %*',
+					...(spec.desk === "pi"
+						? ['endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*']
+						: ['set "PATH=%SBD_PATH%;%PATH%"', '"%SBD_GIT_BASH%" %*']),
 					"exit /b %ERRORLEVEL%",
 				];
 	return crlf([

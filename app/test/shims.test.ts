@@ -48,15 +48,16 @@ describe("what the shim files say", () => {
 		}
 	});
 
-	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and the program run inside the setlocal (no endlocal)", () => {
+	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and the program run inside the setlocal (pi.cmd leaves it for its PATH)", () => {
 		for (const name of ["pi.cmd", "bash.cmd"]) {
 			const text = files[name] as string;
 			assert.match(text, /setlocal DisableDelayedExpansion\r\n/);
 			assert.match(text, /pushd "%~dp0\.\.\\bin"\r\ncall "\.\\paths\.cmd"\r\npopd\r\n/, name);
 			assert.ok(!/call "?%/.test(text), `${name} calls a path built from variables`);
 			assert.ok(!/^\s*call (?!"\.\\paths\.cmd")/m.test(text), `${name} uses call for anything but the paths file`);
-			assert.match(text, /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%[A-Z_]+%(?:\\[^"]*)?" %\*\r\nexit \/b %ERRORLEVEL%\r$/m, `${name}'s exec lines`);
-			assert.ok(!/endlocal/.test(text), `${name} leaves its setlocal before the program runs: cmd /v:on would then strip a "!" from the line`);
+			assert.match(text, name === "pi.cmd" ? /^endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi\.cmd" %\*\r\nexit \/b %ERRORLEVEL%\r$/m : /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%SBD_GIT_BASH%" %\*\r\nexit \/b %ERRORLEVEL%\r$/m, `${name}'s exec lines`);
+			// Only pi.cmd leaves its setlocal before the program runs (npm's wrapper aborts its batch context, which would undo a PATH set inside it).
+			assert.equal(/endlocal/.test(text), name === "pi.cmd", `${name}: endlocal`);
 		}
 		assert.match(files["bun.cmd"] as string, /^"%SBD_APP_ROOT%\\tools\\bin\\bun\.cmd" %\*\r\nexit \/b %ERRORLEVEL%\r$/m);
 		assert.match(files["bunx.cmd"] as string, /bunx\.cmd" %\*/);
@@ -239,7 +240,8 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 	for (const delayed of [false, true]) {
 		const suffix = delayed ? " with delayed expansion switched on (cmd /v:on)" : "";
 		it(`runs the pinned pi in a desk pane, with the app's folders first, the arguments once expanded, and the exit code${suffix}`, async () => {
-			for (const { layout, other } of roots) {
+			// With delayed expansion on, the line after pi.cmd's endlocal loses a "!" (as npm's own wrapper's does), so the roots with one are left out there.
+			for (const { layout, other } of roots.filter((r) => !(delayed && r.name.includes("!")))) {
 				const r = await ask(layout, other, "pi", ["--session", "x y", "50%"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
 				assert.equal(r.code, 7, `${layout.root}: ${r.stdout}${r.stderr}`);
 				// node quotes the argument with a space; the `%` reaches the program once, not expanded twice.
@@ -355,17 +357,26 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		assert.match(desk.stderr, /not set up in this Straw Boss Desk/);
 	});
 
-	it("leaves the caller's variables and PATH alone after a pass-through and after a desk run (a wrapper batch checks both)", async () => {
+	it("leaves the caller's variables alone after a pass-through and after a desk run; only pi.cmd changes the PATH there (a wrapper batch checks)", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\nexit /b 0\r\n");
 		const wrapper = join(base, "wrapper.cmd");
-		writeFileSync(wrapper, '@echo off\r\nset "BEFORE=%PATH%"\r\ncall pi.cmd --x >nul\r\nif "%PATH%"=="%BEFORE%" (echo PATH_SAME) else echo PATH_CHANGED\r\nset SBD_ 2>nul\r\necho DONE\r\n');
-		const env = { ...systemEnv("win32", process.env), PATH: `${layout.tools.shims};${other}` };
-		const passed = await run(comspec, ["/d", "/c", wrapper], { env, cwd: base });
-		assert.equal(passed.stdout.replace(/\r/g, "").trim(), "PATH_SAME\nDONE", passed.stdout + passed.stderr);
-		const desk = await run(comspec, ["/d", "/c", wrapper], { env: { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, cwd: base });
-		assert.equal(desk.stdout.replace(/\r/g, "").trim(), "PATH_SAME\nDONE", desk.stdout + desk.stderr);
-		writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
+		writeFileSync(wrapper, '@echo off\r\nset "BEFORE=%PATH%"\r\ncall %1.cmd --x >nul\r\nif "%PATH%"=="%BEFORE%" (echo PATH_SAME) else echo PATH_CHANGED\r\nset SBD_ 2>nul\r\necho DONE\r\n');
+		try {
+			const env = { ...systemEnv("win32", process.env), PATH: `${layout.tools.shims};${other}` };
+			const desk = { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root };
+			const out = async (command: string, e: Record<string, string>): Promise<string> => {
+				const r = await run(comspec, ["/d", "/c", wrapper, command], { env: e, cwd: base });
+				return r.stdout.replace(/\r/g, "").trim() + r.stderr.trim();
+			};
+			assert.equal(await out("pi", env), "PATH_SAME\nDONE", "pi.cmd passing through");
+			assert.equal(await out("bash", env), "PATH_SAME\nDONE", "bash.cmd passing through");
+			assert.equal(await out("bash", desk), "PATH_SAME\nDONE", "bash.cmd in a desk pane");
+			assert.equal(await out("pi", desk), "PATH_CHANGED\nDONE", "pi.cmd in a desk pane (the PATH is set after its endlocal, no SBD_ variable is left)");
+		} finally {
+			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
+		}
 	});
+
 });
 
