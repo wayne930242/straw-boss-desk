@@ -1,4 +1,4 @@
-// macOS account checks, option 1b of the design: every check process runs with HOME=$SPIKE/home (or $SPIKE/home-nokc), so /usr/bin/security, which
+// macOS account checks, option 1b of the design: every check process runs with HOME=$SPIKE/home (or $SPIKE/home-ro, whose keychain cannot be written), so /usr/bin/security, which
 // gh and glab call through go-keyring, uses a scratch login keychain and never opens the user's own. Run it through account-check.sh.
 //
 //   probe                                  P1: the scratch keychain exists, is the only one in the search list, and a throwaway item stays in it
@@ -11,7 +11,7 @@
 // Prints PASS/FAIL/WARN lines and writes the steps to $SPIKE/results/<name>.json (no secrets). Exit 1 on any FAIL.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, realpathSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,9 @@ if (SPIKE !== "/tmp/sbd-macacct") {
   process.exit(1);
 }
 const HOME_KC = join(SPIKE, "home");
-const HOME_NOKC = join(SPIKE, "home-nokc");
+const HOME_RO = join(SPIKE, "home-ro");
+const HOME_EMPTY = join(SPIKE, "home-empty");
+const RO_KC = join(HOME_RO, "Library/Keychains/login.keychain-db");
 const TOOLS = join(SPIKE, "tools");
 const TMP = join(SPIKE, "tmp");
 const RESULTS = join(SPIKE, "results");
@@ -59,7 +61,7 @@ function save() {
 }
 
 // ---- environment, guard, load gate ----
-const homeOf = (mode) => (mode === "nokc" ? HOME_NOKC : HOME_KC);
+const homeOf = (mode) => (mode === "ro" ? HOME_RO : mode === "empty" ? HOME_EMPTY : HOME_KC);
 function envFor(mode, extra = {}) {
   return {
     HOME: homeOf(mode),
@@ -83,19 +85,31 @@ function run(file, args, { mode = "kc", input, env = {}, timeout = 120_000 } = {
 const sec = (args, mode = "kc", input) => run(SECURITY, args, { mode, input, timeout: 20_000 });
 const firstLine = (t) => hideSecrets(String(t).split(/\r?\n/).find((l) => l.trim()) ?? "", secrets).trim();
 
+const SPIKE_REAL = realpathSync(SPIKE);
+const inSpike = (p) => p.startsWith(SPIKE + "/") || p.startsWith(SPIKE_REAL + "/");
+const sameFile = (a, b) => a === b || a.replace(SPIKE_REAL, SPIKE) === b.replace(SPIKE_REAL, SPIKE);
 const keychainPaths = (text) => [...String(text).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 /** The guard: before every gh, glab or git call. The default keychain and the user search list must be under $SPIKE, or (no-keychain mode) absent. */
-function assertScratch(mode) {
+function assertScratch(mode, skipWritable = false) {
   const home = homeOf(mode);
   if (!home.startsWith(SPIKE + "/") || envFor(mode).HOME !== home) throw new Error(`guard: HOME is not under ${SPIKE}`);
   const def = sec(["default-keychain", "-d", "user"], mode);
   const list = sec(["list-keychains", "-d", "user"], mode);
   const defPaths = def.code === 0 ? keychainPaths(def.out) : [];
   const listPaths = list.code === 0 ? keychainPaths(list.out) : [];
-  const outside = [...defPaths, ...listPaths].filter((p) => !p.startsWith(SPIKE + "/"));
+  const outside = [...defPaths, ...listPaths].filter((p) => !inSpike(p));
   if (outside.length > 0) throw new Error(`guard: keychain outside ${SPIKE}: ${outside.join(", ")}`);
-  if (mode === "kc" && (defPaths.length !== 1 || defPaths[0] !== KC_PATH)) throw new Error(`guard: the default keychain is ${JSON.stringify(defPaths)}, not ${KC_PATH}`);
-  if (mode === "nokc" && defPaths.length > 0) throw new Error("guard: a default keychain exists in the no-keychain home");
+  if (mode === "kc" && (defPaths.length !== 1 || !sameFile(defPaths[0], KC_PATH))) throw new Error(`guard: the default keychain is ${JSON.stringify(defPaths)}, not ${KC_PATH}`);
+  if (mode === "ro") {
+    if (defPaths.length !== 1 || !sameFile(defPaths[0], RO_KC)) throw new Error(`guard: the default keychain is ${JSON.stringify(defPaths)}, not ${RO_KC}`);
+    if (skipWritable) return;
+    try {
+      accessSync(RO_KC, constants.W_OK);
+      throw new Error("guard: the store-unavailable keychain is writable");
+    } catch (e) {
+      if (e.code !== "EACCES") throw e;
+    }
+  }
 }
 
 function load1() {
@@ -142,21 +156,31 @@ function setupKeychain() {
     `default-keychain -d user -s ${KC_PATH}`,
     `list-keychains -d user -s ${KC_PATH}`,
     `set-keychain-settings ${KC_PATH}`,
-    `unlock-keychain -p ${pw} ${KC_PATH}`,
   ].join("\n") + "\n";
   const r = sec(["-i"], "kc", script);
+  return r;
+}
+
+function setupReadOnly() {
+  mkdirSync(join(HOME_RO, "Library/Keychains"), { recursive: true, mode: 0o700 });
+  const pw = randomBytes(18).toString("hex");
+  secrets.push(pw);
+  const script = [`create-keychain -p ${pw} ${RO_KC}`, `default-keychain -d user -s ${RO_KC}`, `list-keychains -d user -s ${RO_KC}`, `lock-keychain ${RO_KC}`].join("\n") + "\n";
+  const r = sec(["-i"], "ro", script);
+  chmodSync(RO_KC, 0o444);
+  chmodSync(dirname(RO_KC), 0o555);
   return r;
 }
 
 // ---- P1 ----
 async function probe() {
   resultName = "p1";
-  for (const d of [SPIKE, HOME_KC, HOME_NOKC, TMP, join(SPIKE, "secret"), join(SPIKE, "work")]) mkdirSync(d, { recursive: true, mode: 0o700 });
+  for (const d of [SPIKE, HOME_KC, HOME_EMPTY, TMP, join(SPIKE, "secret"), join(SPIKE, "work")]) mkdirSync(d, { recursive: true, mode: 0o700 });
   // Read-only first: with HOME=<scratch> and no plist, the default keychain must not be the user's. If it is, HOME is not honored: stop before anything is created.
-  const def0 = sec(["default-keychain", "-d", "user"], "nokc");
-  const list0 = sec(["list-keychains", "-d", "user"], "nokc");
+  const def0 = sec(["default-keychain", "-d", "user"], "empty");
+  const list0 = sec(["list-keychains", "-d", "user"], "empty");
   const seen = [...keychainPaths(def0.out), ...keychainPaths(list0.out)];
-  const leak = seen.filter((p) => !p.startsWith(SPIKE + "/"));
+  const leak = seen.filter((p) => !inSpike(p));
   add("P1:home-honored", ok(leak.length === 0), `empty scratch HOME: default-keychain exit ${def0.code} ${firstLine(def0.out + def0.err)}; list-keychains exit ${list0.code}; paths outside ${SPIKE}: ${leak.length}${leak.length ? " -> HOME IS NOT HONORED, nothing was created" : ""}`);
   if (leak.length > 0) return save();
   const r = setupKeychain();
@@ -173,25 +197,32 @@ async function probe() {
   const a = sec(["add-generic-password", "-s", nonce, "-a", "probe", "-w", "probe-value"], "kc");
   const f = sec(["find-generic-password", "-s", nonce, "-a", "probe", KC_PATH], "kc");
   const inScratch = dumpItems("kc").items.some((i) => i.svce === nonce);
+  const info = sec(["show-keychain-info", KC_PATH], "kc");
   // The user's own keychain: an attribute lookup of the nonce name only, no -w and no -g.
   const real = run(SECURITY, ["find-generic-password", "-s", nonce, realKc], { mode: "kc", env: { HOME: REAL_HOME }, timeout: 20_000 });
   const d = sec(["delete-generic-password", "-s", nonce, "-a", "probe"], "kc");
-  const gone = !dumpItems("kc").items.some((i) => i.svce === nonce);
+  let gone = false;
+  for (let i = 0; i < 10 && !gone; i++) {
+    gone = !dumpItems("kc").items.some((x) => x.svce === nonce);
+    if (!gone) await new Promise((r) => setTimeout(r, 500));
+  }
   add("P1:item", ok(a.code === 0 && f.code === 0 && inScratch && real.code !== 0 && d.code === 0 && gone),
-    `add exit ${a.code} (no keychain argument, so it went to the default); find in scratch exit ${f.code}; listed in scratch dump: ${inScratch}; found in the user's login keychain: ${real.code === 0} (exit ${real.code}); delete exit ${d.code}; gone afterwards: ${gone}`);
-  // No-keychain mode: adding must fail and land nowhere.
-  const nk = run(SECURITY, ["add-generic-password", "-s", nonce, "-a", "probe", "-w", "probe-value"], { mode: "nokc", input: "", timeout: 30_000 });
+    `add exit ${a.code} (no keychain argument, so it went to the default); find in scratch exit ${f.code}; listed in scratch dump: ${inScratch}; found in the user's login keychain: ${real.code === 0} (exit ${real.code}); delete exit ${d.code}; gone afterwards: ${gone}; ${firstLine(info.err + info.out)}`);
+  // Store unavailable. The design's first idea, a HOME with no keychain at all, made `security add-generic-password` wait for a SecurityAgent dialog on the
+  // screen (30 s timeout in the first P1 run), so the check uses a scratch keychain that exists but is locked and read-only: the write fails at once.
+  const roSetup = setupReadOnly();
+  const nk = run(SECURITY, ["add-generic-password", "-s", nonce, "-a", "probe", "-w", "probe-value"], { mode: "ro", input: "", timeout: 30_000 });
   const nkRealHit = run(SECURITY, ["find-generic-password", "-s", nonce, realKc], { mode: "kc", env: { HOME: REAL_HOME }, timeout: 20_000 });
   const nkScratchHit = dumpItems("kc").items.some((i) => i.svce === nonce);
-  const nkFiles = existsSync(join(HOME_NOKC, "Library/Keychains")) ? readdirSync(join(HOME_NOKC, "Library/Keychains")) : [];
-  add("P1:no-keychain", ok(nk.code !== 0 && nkRealHit.code !== 0 && !nkScratchHit),
-    `add in the no-keychain home: exit ${nk.code} ${firstLine(nk.err + nk.out)}; found in the user's keychain: ${nkRealHit.code === 0}; found in the scratch keychain: ${nkScratchHit}; files created in the no-keychain home's Library/Keychains: ${nkFiles.join(', ') || 'none'}`);
+  add("P1:store-unavailable", ok(roSetup.code === 0 && nk.code !== 0 && nk.code !== -1 && nkRealHit.code !== 0 && !nkScratchHit),
+    `locked read-only scratch keychain: setup exit ${roSetup.code}; add exit ${nk.code} in ${nk.ms} ms (no dialog wait) ${firstLine(nk.err + nk.out)}; found in the user's keychain: ${nkRealHit.code === 0}; found in the scratch keychain: ${nkScratchHit}`);
   try {
-    assertScratch("nokc");
-    add("P1:guard-nokc", "PASS", "no default keychain, and nothing outside $SPIKE in the user search list");
+    assertScratch("ro");
+    add("P1:guard-ro", "PASS", "the default keychain and search list of the store-unavailable home are only its own read-only keychain");
   } catch (e) {
-    add("P1:guard-nokc", "FAIL", e.message);
+    add("P1:guard-ro", "FAIL", e.message);
   }
+  add("P1:finding", "WARN", "a HOME with no keychain at all is not usable for U1/U2: security add-generic-password waited for a SecurityAgent dialog until its 30 s timeout (first P1 run, 2026-11-01)");
   return save();
 }
 
@@ -383,8 +414,10 @@ function readSharedText(p) {
   return existsSync(p) ? readFileSync(p, "utf8") : "";
 }
 
+const roSnapshot = () => createHash("sha256").update(readFileSync(RO_KC)).digest("hex");
+
 async function ghLogin(opts) {
-  const mode = opts.noKeychain ? "nokc" : "kc";
+  const mode = opts.noKeychain ? "ro" : "kc";
   resultName = opts.noKeychain ? "u1" : "g2-g8";
   const f = FORGE.gh;
   assertScratch(mode);
@@ -392,6 +425,7 @@ async function ghLogin(opts) {
   const v = forge("gh", ["--version"], { mode });
   add("launcher", ok(v.code === 0 && (v.out + v.err).includes(f.version)), `${launcher("gh")} --version -> ${firstLine(v.out)}`);
   pushHelperBefore.gh = helperValues(f.host);
+  const roBefore = opts.noKeychain ? roSnapshot() : null;
   const outF = join(SPIKE, "logs", `gh-login-${mode}.out.txt`);
   const errF = join(SPIKE, "logs", `gh-login-${mode}.err.txt`);
   rmSync(outF, { force: true });
@@ -441,8 +475,7 @@ async function ghLogin(opts) {
       console.log(`REFUSED: the credential store is unavailable, so the ${f.host} login is not kept in plain text (no --insecure-storage, ever).`);
       logout("gh", "plain-text", mode);
     }
-    const nk = readdirSync(join(HOME_NOKC, "Library"), { recursive: true }).filter((p) => /Keychains/.test(p));
-    add("U1:no-keychain-created", ok(!existsSync(join(HOME_NOKC, "Library/Keychains/login.keychain-db"))), `the no-keychain home still has no login keychain; Library entries: ${nk.join(", ") || "none"}`);
+    add("U1:store-unchanged", ok(roSnapshot() === roBefore), "the read-only keychain file is byte-for-byte what it was before the login");
   } else if (sc.plain) {
     add("plain-text-token", "FAIL", "the token is not in the credential store; logging the CLI out (no --insecure-storage, ever)");
     logout("gh", "plain-text", mode);
@@ -476,7 +509,7 @@ async function glabLogin(mode, tok, label) {
   const r = forge("glab", ["auth", "login", "--hostname", f.host, "--git-protocol", "https", "--api-protocol", "https", "--stdin"], { mode, input: tok + "\n" });
   const text = r.out + " " + r.err;
   const warned = /keyring is unavailable|plaintext|plain text/i.test(text);
-  add(`${label}:login`, ok(r.code === 0 && (mode === "nokc" || !warned)), `glab auth login --hostname ${f.host} --git-protocol https --api-protocol https --stdin exit ${r.code}; keyring warning printed: ${warned}; ${firstLine(text)}`, Date.now() - t0);
+  add(`${label}:login`, ok(r.code === 0 && (mode === "ro" || !warned)), `glab auth login --hostname ${f.host} --git-protocol https --api-protocol https --stdin exit ${r.code}; keyring warning printed: ${warned}; ${firstLine(text)}`, Date.now() - t0);
   return { warned, text };
 }
 
@@ -509,16 +542,17 @@ async function glabAll(opts) {
     add("C1:glab-keychain-item-gone", ok(left.length === 0), `glab items for ${f.host} left in the scratch keychain after logout: ${left.length}`);
     rmSync(f.cfg, { recursive: true, force: true });
     // U2: the same token with no keychain at all.
-    assertScratch("nokc");
-    const u2 = await glabLogin("nokc", tok, "U2");
+    assertScratch("ro");
+    const roBefore = roSnapshot();
+    const u2 = await glabLogin("ro", tok, "U2");
     const fi = findings("glab");
     const verdict = glabTokenVerdict({ configTokens: fi.own, statusExit: 0 });
     add("U2:plain-text-reported", ok(u2.warned && verdict.plain), `glab printed the keyring warning: ${u2.warned}; token lines in config.yml (non-empty token under hosts: ${f.host}:): ${fi.own}; verdict plain: ${verdict.plain}`);
     if (verdict.plain) {
       console.log(`REFUSED: the credential store is unavailable, so the ${f.host} login is not kept in plain text.`);
-      logout("glab", "plain-text", "nokc");
+      logout("glab", "plain-text", "ro");
     }
-    add("U2:no-keychain-created", ok(!existsSync(join(HOME_NOKC, "Library/Keychains/login.keychain-db"))), "the no-keychain home still has no login keychain");
+    add("U2:store-unchanged", ok(roSnapshot() === roBefore), "the read-only keychain file is byte-for-byte what it was before the login");
     tokenSearch("glab-U2-token", tok);
     rmSync(f.cfg, { recursive: true, force: true });
   } finally {
@@ -543,7 +577,7 @@ function x1Snapshot() {
   // The user's own items: attributes only (no -w, no -g), files by SHA256. The real HOME is used here and only here, on purpose.
   const env = { HOME: REAL_HOME, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
   const items = {};
-  for (const [svc, acct] of [["gh:github.com", "wayne930242"], ["gh:github.com", ""], ["glab:gitlab.moldplan.app:token", ""], ["gh:_refreshable:github.com", ""]]) {
+  for (const [svc, acct] of [["gh:github.com", "wayne930242"], ["gh:github.com", ""], ["glab:gitlab.moldplan.app:token", ""], ["glab:gitlab.moldplan.app", ""], ["gh:_refreshable:github.com", ""]]) {
     const r = spawnSync(SECURITY, ["find-generic-password", "-s", svc, "-a", acct], { env, encoding: "utf8", timeout: 20_000 });
     const pick = (k) => new RegExp(`"${k}"<[a-z]+>=(?:"([^"]*)"|(\\S+))`).exec(r.stdout);
     const g = (k) => { const m = pick(k); return m ? (m[1] ?? m[2]) : null; };
@@ -582,8 +616,14 @@ function cleanup() {
     const d = sec(["delete-keychain", KC_PATH], "kc");
     add("C1:delete-keychain", ok(d.code === 0), `security delete-keychain exit ${d.code}`);
   }
-  const fails = save();
-  return fails;
+  if (existsSync(RO_KC)) {
+    chmodSync(dirname(RO_KC), 0o700);
+    chmodSync(RO_KC, 0o600);
+    assertScratch("ro", true);
+    const d = sec(["delete-keychain", RO_KC], "ro");
+    add("C1:delete-keychain-ro", ok(d.code === 0), `security delete-keychain (store-unavailable keychain) exit ${d.code}`);
+  }
+  return save();
 }
 
 // ---- main ----
