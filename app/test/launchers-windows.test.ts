@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -76,6 +76,19 @@ describe("the .cmd launchers under a root with cmd's special characters (T5-F007
 			}
 		});
 	}
+
+	it("finds paths.cmd as .\\paths.cmd while NoDefaultCurrentDirectoryInExePath is set, from any working folder (R5-F007)", async () => {
+		const { layout } = roots.find((r) => r.name === "plain 測試") as { layout: Layout };
+		const elsewhere = join(base, "elsewhere 測試 2");
+		mkdirSync(elsewhere, { recursive: true });
+		const env = { ...systemEnv("win32", process.env), NoDefaultCurrentDirectoryInExePath: "1" };
+		for (const cwd of [layout.tools.bin, elsewhere]) {
+			const result = await run(comspec, ["/d", "/c", join(layout.tools.bin, "gh.cmd"), "-p", "process.env.GH_TELEMETRY"], { env, cwd });
+			assert.equal(result.code, 0, `${cwd}: ${result.stderr || result.stdout}`);
+			assert.equal(result.stdout.trim(), "disabled");
+		}
+		assert.match(readFileSync(join(layout.tools.bin, "gh.cmd"), "utf8"), /call "\.\\paths\.cmd"/);
+	});
 
 	it("leaves the caller's working folder alone: the launcher does not stay in tools\\bin", async () => {
 		// An absolute launcher path on the command line is quoted by Node for spaces only, so this root has none of cmd's special characters.

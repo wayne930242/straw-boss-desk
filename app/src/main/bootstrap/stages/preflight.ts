@@ -9,6 +9,7 @@ import { assetFor, type PlatformKey, type Stack } from "../stack.ts";
 import type { EngineRecipe } from "../recipe-config.ts";
 import type { StageWarning } from "../state.ts";
 import type { Evidence, Stage, StageContext } from "../stage.ts";
+import { checkPaneLookups, MACHINE_PI_SENTENCE, WSL_SENTENCE, type PaneFindings } from "../../pane-path.ts";
 
 // The preflight stage (spec: Stages, `preflight`; Network): what must hold before anything is downloaded. It checks the machine (the Windows build that
 // ships `tar.exe`, free space, the layout's decisions, Smart App Control), then that every host a download needs answers. A host the recipe names as a code
@@ -34,6 +35,8 @@ export interface PreflightOptions {
 	release?: () => string;
 	/** One host's limit (default 8 s); the hosts are checked at once, so the whole check takes about this long when one is blackholed. */
 	reachTimeoutMs?: number;
+	/** Windows: what a pane's lookup of `bash` and `pi` finds (default: the registry's `Path` values, read with `reg.exe`). A test passes its own. */
+	panePath?: (ctx: StageContext) => Promise<PaneFindings>;
 }
 
 const flatten = (error: unknown): string => {
@@ -92,6 +95,10 @@ async function smartAppControl(ctx: StageContext): Promise<string> {
 	}
 }
 
+/** The default pane lookup: both `Path` values from `reg.exe`, walked as a pane does (a read of HKLM and HKCU, never a write). */
+const registryPanePath = (ctx: StageContext): Promise<PaneFindings> =>
+	checkPaneLookups({ run: (file, args, runOptions) => ctx.exec(file, args, runOptions), locate: ctx.platform.locate, exists: existsSync, env: ctx.appEnv });
+
 const nearestExisting = (path: string): string => {
 	let current = path;
 	while (!existsSync(current) && dirname(current) !== current) current = dirname(current);
@@ -137,6 +144,17 @@ export function preflightStage(options: PreflightOptions): Stage {
 		const warnings: StageWarning[] = [];
 		// The Smart App Control query (reg.exe, up to 15 s) runs while the hosts are asked, so it never adds to the 10 s an unreachable host's sentence needs (T5-F011 c).
 		const sacPending = options.platform === "win32" ? smartAppControl(ctx) : null;
+		// The same for the pane lookup: two `reg.exe` reads. A failure to read is logged and skipped; the check is a warning, never a failure.
+		const panePending =
+			options.platform === "win32"
+				? (options.panePath ?? registryPanePath)(ctx).then(
+						(found) => found,
+						(error: unknown) => {
+							ctx.log.event({ event: "pane-path-unreadable", detail: (error as Error).message });
+							return null;
+						},
+					)
+				: null;
 
 		const hosts = downloadHosts(ctx.stack, ctx.key, ctx.recipe);
 		const forgeHosts = [...new Set(ctx.recipe.forges.map((f) => f.host))].filter((h) => !hosts.includes(h));
@@ -155,6 +173,14 @@ export function preflightStage(options: PreflightOptions): Stage {
 			facts.push(`Smart App Control ${sac}`);
 			if (sac === "on" || sac === "evaluation") {
 				warnings.push({ kind: "smart-app-control", sentence: sac === "on" ? "Smart App Control is on, which blocks unsigned programs such as Straw Boss." : "Smart App Control is in evaluation mode; Windows may turn it on later and then block Straw Boss." });
+			}
+		}
+		if (panePending !== null) {
+			const pane = await panePending;
+			if (pane !== null) {
+				facts.push(`a pane runs bash from ${pane.firstBash ?? "nowhere"}`);
+				if (pane.wslBash && pane.firstBash !== null) warnings.push({ kind: "wsl-bash", path: pane.firstBash, sentence: WSL_SENTENCE });
+				if (pane.machinePi !== null) warnings.push({ kind: "machine-pi", path: pane.machinePi, sentence: MACHINE_PI_SENTENCE });
 			}
 		}
 		for (const r of results) {

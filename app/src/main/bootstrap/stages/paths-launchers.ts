@@ -14,7 +14,8 @@ import { expectVersion, runLine } from "./support.ts";
 // `git-helpers` (the forge credential helpers in the private gitconfig). Spec: Stages, Tool paths.
 
 // Format 2 (task 5b): the Windows `.exe` shims moved from `tools/bin` to `tools/bin-exe`, and the `.cmd` launchers call the paths file by its bare name.
-export const LAUNCHER_FORMAT = 2;
+// Format 3 (task 6, R5-F007): they call it as `.\paths.cmd`, which does not depend on how cmd searches the current folder.
+export const LAUNCHER_FORMAT = 3;
 
 /** The enabled set as a stage's evidence names it: adding or removing a name in the recipe changes it, which fails `detect`. */
 const setTag = (enabled: EnabledTools): string => [...enabled.clis, ...enabled.optional].join(",") || "none";

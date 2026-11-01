@@ -362,10 +362,30 @@ describe("T5-F011 b: the CI cache of downloads holds only what the e2e uses", ()
 	});
 });
 
+describe("R5-F004: the helper-output guard catches every assert form", () => {
+	const output = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\b/;
+	const asked = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\.includes\(/;
+	const flags = (line: string): boolean => /\bassert\.\w+\(/.test(line) && output.test(line.replace(asked, ""));
+	it("flags the first-argument match that was the original bug, the last-argument forms, and a message that echoes the output", () => {
+		assert.equal(flags("assert.match(filled.stdout, /password=ghp_x/);"), true);
+		assert.equal(flags("assert.equal(filled.stdout.trim(), 'x');"), true);
+		assert.equal(flags("assert.ok(ok, filled.stderr);"), true);
+		assert.equal(flags("assert.equal(credentialRun.stdout, '');"), true);
+	});
+	it("lets a question through: .includes hands assert a boolean", () => {
+		assert.equal(flags('assert.ok(filled.stdout.includes("password=x"), "the helper answered");'), false);
+		assert.equal(flags("assert.equal(filled.code, 0);"), false);
+	});
+});
+
 describe("T5-F008: the credential-helper cases never print what a helper answered", () => {
 	it("no assertion of e2e-light.test.ts takes a helper's stdout or stderr as its message", () => {
 		const source = readFileSync(new URL("./e2e-light.test.ts", import.meta.url), "utf8");
-		const echoing = source.split("\n").map((text, i) => ({ text, line: i + 1 })).filter(({ text }) => /assert\.\w+\(.*\b(filled|credential)\w*\.(stdout|stderr)\s*\)\s*;?\s*$/.test(text));
+		// R5-F004: node's assert prints `actual` when it fails, so a helper's output must never be an argument of any assert call, first or last, unless
+		// it is only asked a question (`.includes(...)`), which hands assert a boolean.
+		const asked = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\.includes\(/;
+		const output = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\b/;
+		const echoing = source.split("\n").map((text, i) => ({ text, line: i + 1 })).filter(({ text }) => /\bassert\.\w+\(/.test(text) && output.test(text.replace(asked, "")));
 		assert.deepEqual(echoing, []);
 		assert.ok(source.includes("hosted(\"credential helper\")"), "the case is gated by hostedCase");
 		assert.ok(!/GITHUB_ACTIONS === "true"/.test(source), "one signal alone is not a gate");

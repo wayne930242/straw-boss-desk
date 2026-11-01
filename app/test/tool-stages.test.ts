@@ -118,7 +118,7 @@ describe("the recipe's tools reach the engine (FE2R-F003)", () => {
 
 	it("the stage list follows the recipe: no recipe, no gh, glab, or opt stage; a named tool has one", () => {
 		const names = (recipe: Parameters<typeof toolStages>[1]): string[] => toolStages(stack, recipe, "darwin").map((s) => s.name);
-		const core = ["preflight", "node", "git", "herdr", "fd-rg", "tool-paths", "launchers", "git-helpers"];
+		const core = ["preflight", "node", "git", "herdr", "fd-rg", "tool-paths", "launchers", "git-helpers", "pi"];
 		assert.deepEqual(names(NO_RECIPE).sort(), [...core].sort());
 		const full = names({ forges: [{ kind: "github", host: "github.com" }, { kind: "gitlab", host: "g.example" }], tools: ["bun"] });
 		assert.deepEqual([...full].sort(), [...core, "gh", "glab", "opt:bun"].sort());
@@ -134,6 +134,10 @@ describe("the recipe's tools reach the engine (FE2R-F003)", () => {
 		for (const stage of stages) for (const need of stage.needs) assert.ok(byName.has(need), `${stage.name} needs ${need}`);
 		assert.deepEqual(byName.get("preflight")?.needs, []);
 		assert.deepEqual([...(byName.get("git-helpers")?.needs ?? [])].sort(), ["git", "launchers"]);
+		// Task 6: `pi` runs npm under the constructed environment, which names node, git, and herdr; `pi-shim` is Windows only and waits for the launchers of an optional tool.
+		assert.deepEqual([...(byName.get("pi")?.needs ?? [])].sort(), ["git", "herdr", "node"]);
+		assert.deepEqual([...(byName.get("pi-shim")?.needs ?? [])].sort(), ["launchers", "pi", "tool-paths"]);
+		assert.equal(toolStages(stack, { forges: [], tools: [] }, "darwin").some((s) => s.name === "pi-shim"), false, "no user PATH entry on macOS");
 		assert.deepEqual(enabledTools({ forges: [{ kind: "gitlab", host: "g.example" }, { kind: "github", host: "github.com" }], tools: ["bun"] }), { clis: ["gh", "glab"], optional: ["bun"] });
 	});
 });

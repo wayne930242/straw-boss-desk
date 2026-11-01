@@ -123,12 +123,14 @@ export function cmdLauncher(spec: LauncherSpec): string {
 	const lines = [
 		"@echo off",
 		`rem straw-boss-desk launcher for ${spec.name}: reads paths.cmd, sets its environment${spec.unset.length > 0 ? ", removes CI and token variables" : ""}.`,
-		// DisableDelayedExpansion: the per-user `DelayedExpansion=1` setting would strip a `!` from the root. The paths file is called by its bare name from
-		// its own folder, never by a path: CALL doubles the carets of its line and expands `%` in it a second time, so a root with `^` or `%` broke it (T5-F007).
+		// DisableDelayedExpansion: the per-user `DelayedExpansion=1` setting would strip a `!` from the root. The paths file is called by a name relative to
+		// its own folder, never by a path with the root in it: CALL doubles the carets of its line and expands `%` in it a second time, so a root with `^`
+		// or `%` broke it (T5-F007). `.\` makes the name explicit: a bare name is searched in the current folder only while
+		// `NoDefaultCurrentDirectoryInExePath` is unset, and otherwise along the PATH (R5-F007).
 		"setlocal DisableDelayedExpansion",
 		'for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"',
 		'pushd "%~dp0"',
-		"call paths.cmd",
+		'call ".\\paths.cmd"',
 		"popd",
 		...(spec.config ? [`set "${spec.config.variable}=%SBD_APP_ROOT%\\config\\${spec.config.folder}"`] : []),
 		...spec.rootFolders.flatMap(([k, folder]) => {

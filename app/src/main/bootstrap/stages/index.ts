@@ -1,15 +1,20 @@
 import type { AppPlatform } from "../../paths.ts";
 import type { EngineRecipe } from "../recipe-config.ts";
+import type { NpmRun } from "../npm.ts";
 import { StackError, optionalToolNames, type Stack } from "../stack.ts";
 import type { Stage } from "../stage.ts";
 import { launchersStage, gitHelpersStage, toolPathsStage } from "./paths-launchers.ts";
 import type { EnabledTools } from "./path-files.ts";
+import { piShimStage } from "./pi-shim.ts";
+import { piStage } from "./pi.ts";
 import { preflightStage, type PreflightOptions } from "./preflight.ts";
 import { fdRgStage, ghStage, gitStage, glabStage, herdrStage, nodeStage, optionalToolStage } from "./tools.ts";
 
 export interface StageOptions {
 	/** Test hooks of the preflight (free space, OS release, the reachability limit). */
 	preflight?: Omit<PreflightOptions, "platform">;
+	/** Extra environment for the `pi` stage's npm (tests point it at a local registry). The product passes none. */
+	npm?: NpmRun;
 }
 
 /** The CLIs and optional tools the recipe turns on: `gh` for a github forge, `glab` for a gitlab one, and the optional tools it names. */
@@ -23,7 +28,8 @@ export function enabledTools(recipe: EngineRecipe): EnabledTools {
 /**
  * The tool stages of the install, in no particular order (the graph orders them by `needs`): `preflight`, `node`, `git`, `herdr`, `fd-rg`, `gh` and
  * `glab` for the forges the recipe names, `opt:<tool>` for each optional tool it names, then `tool-paths`, `launchers`, and `git-helpers`. A tool the recipe
- * does not name has no stage at all (spec: Stages). Task 6 adds the pi stages; task 7 the profile and the packages.
+ * does not name has no stage at all (spec: Stages). Task 6 adds `pi` and, on Windows, `pi-shim`; `pi-settings` and `claude` exist (`pi-settings.ts`,
+ * `claude.ts`) but wait for task 7, whose `profile` and `pkg:*` stages they need; task 7 adds them to this list.
  */
 export function toolStages(stack: Stack, recipe: EngineRecipe, platform: AppPlatform, options: StageOptions = {}): Stage[] {
 	for (const name of recipe.tools) if (!optionalToolNames(stack).includes(name)) throw new StackError(`the recipe names the tool ${name}, which the stack does not list`);
@@ -39,6 +45,8 @@ export function toolStages(stack: Stack, recipe: EngineRecipe, platform: AppPlat
 		toolPathsStage(platform, enabled),
 		launchersStage(platform, enabled, optionalToolNames(stack)),
 		gitHelpersStage(platform, recipe.forges),
+		piStage(platform, options.npm),
+		...(platform === "win32" ? [piShimStage(enabled, optionalToolNames(stack))] : []),
 	];
 }
 
