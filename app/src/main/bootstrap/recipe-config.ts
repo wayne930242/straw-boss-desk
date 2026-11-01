@@ -1,4 +1,5 @@
-import { StackError, optionalToolNames, type Stack } from "./stack.ts";
+import type { TeamRecipe } from "../profile/team-profile.ts";
+import { StackError, optionalToolNames, type NpmPin, type Stack } from "./stack.ts";
 
 // What the engine takes from the active recipe (spec: Stages, `gh`, `glab`, `opt:<tool>`; FE2 asks): the forges, which decide the code-host CLIs,
 // and the names of the optional tools it turns on. Main validates the recipe file with `validateRecipe(text, recipeValidationOptions(stack))`
@@ -13,10 +14,20 @@ export interface Forge {
 	host: string;
 }
 
+/** What the profile stages read of a validated recipe (spec: Stages `profile`, `team-pkg:<name>`): the installer's input, the extra packages, and a profile pin. */
+export interface EngineTeam extends TeamRecipe {
+	/** Extra pi packages the team adds, installed skills-only. */
+	packages: NpmPin[];
+	/** Pins the official profile package to another version than `stack.json`'s (the package name stays the stack's). */
+	profile?: { version: string; integrity: string };
+}
+
 export interface EngineRecipe {
 	forges: Forge[];
 	/** Names under the stack's `optionalTools`, each once, in the order the recipe wrote them. */
 	tools: string[];
+	/** Absent before a recipe is chosen, and for a caller that only needs the forges and tools. */
+	team?: EngineTeam;
 }
 
 /** The engine's recipe before any recipe is chosen (the welcome screen's preflight; "I have no recipe"): no forges and no optional tools. */
@@ -55,5 +66,38 @@ export function engineRecipeOf(recipe: unknown, stack: Stack): EngineRecipe {
 		if (tools.includes(name)) throw new StackError(`the recipe's tools[${i}] (${name}) is listed twice`);
 		tools.push(name);
 	}
-	return { forges, tools };
+	const team = teamOf(recipe);
+	return team === undefined ? { forges, tools } : { forges, tools, team };
+}
+
+const EXACT = /^\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?$/;
+const SRI = /^sha512-[A-Za-z0-9+/]{86}==$/;
+const str = (value: unknown): value is string => typeof value === "string" && value !== "";
+
+/** The team part of a validated recipe, or undefined when it has no `id` (a caller that passes forges and tools only). Throws `StackError` for a field of the wrong shape. */
+function teamOf(recipe: Record<string, unknown>): EngineTeam | undefined {
+	if (recipe.id === undefined) return undefined;
+	if (!str(recipe.id) || !str(recipe.name) || !str(recipe.version)) throw new StackError("the recipe needs an id, a name, and a version");
+	const team: EngineTeam = { id: recipe.id, name: recipe.name, version: recipe.version, packages: [] };
+	if (recipe.instructions !== undefined) {
+		if (typeof recipe.instructions !== "string") throw new StackError("the recipe's instructions must be text");
+		if (recipe.instructions !== "") team.instructions = recipe.instructions;
+	}
+	if (recipe.straw !== undefined) {
+		if (!isObject(recipe.straw) || (recipe.straw.relay !== undefined && !str(recipe.straw.relay))) throw new StackError("the recipe's straw.relay must be a URL");
+		if (recipe.straw.relay !== undefined) team.straw = { relay: recipe.straw.relay as string };
+	}
+	if (recipe.profile !== undefined) {
+		const p = recipe.profile;
+		if (!isObject(p) || !str(p.version) || !EXACT.test(p.version) || !str(p.integrity) || !SRI.test(p.integrity)) throw new StackError("the recipe's profile needs an exact version and a sha512 integrity");
+		team.profile = { version: p.version, integrity: p.integrity };
+	}
+	for (const [i, pkg] of (Array.isArray(recipe.packages) ? recipe.packages : []).entries()) {
+		if (!isObject(pkg) || !str(pkg.name) || !str(pkg.version) || !EXACT.test(pkg.version) || !str(pkg.integrity) || !SRI.test(pkg.integrity)) {
+			throw new StackError(`the recipe's packages[${i}] needs a name, an exact version, and a sha512 integrity`);
+		}
+		if (team.packages.some((p) => p.name === pkg.name)) throw new StackError(`the recipe's packages[${i}] (${pkg.name}) is listed twice`);
+		team.packages.push({ name: pkg.name, version: pkg.version, integrity: pkg.integrity });
+	}
+	return team;
 }

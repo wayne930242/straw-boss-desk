@@ -8,6 +8,7 @@ import type { EnabledTools } from "./path-files.ts";
 import { piShimStage } from "./pi-shim.ts";
 import { piStage } from "./pi.ts";
 import { preflightStage, type PreflightOptions } from "./preflight.ts";
+import { profileStages } from "./profile.ts";
 import { fdRgStage, ghStage, gitStage, glabStage, herdrStage, nodeStage, optionalToolStage } from "./tools.ts";
 
 export interface StageOptions {
@@ -28,8 +29,8 @@ export function enabledTools(recipe: EngineRecipe): EnabledTools {
 /**
  * The tool stages of the install, in no particular order (the graph orders them by `needs`): `preflight`, `node`, `git`, `herdr`, `fd-rg`, `gh` and
  * `glab` for the forges the recipe names, `opt:<tool>` for each optional tool it names, then `tool-paths`, `launchers`, and `git-helpers`. A tool the recipe
- * does not name has no stage at all (spec: Stages). Task 6 adds `pi` and, on Windows, `pi-shim`; `pi-settings` and `claude` exist (`pi-settings.ts`,
- * `claude.ts`) but wait for task 7, whose `profile` and `pkg:*` stages they need; task 7 adds them to this list.
+ * does not name has no stage at all (spec: Stages). Task 6 adds `pi` and, on Windows, `pi-shim`. The profile and package stages that follow `pi`
+ * (`profile`, `pi-settings`, `pkg:*`, `team-pkg:*`, `claude`) are `profileStages` (`profile.ts`), and `allStages` joins the two.
  */
 export function toolStages(stack: Stack, recipe: EngineRecipe, platform: AppPlatform, options: StageOptions = {}): Stage[] {
 	for (const name of recipe.tools) if (!optionalToolNames(stack).includes(name)) throw new StackError(`the recipe names the tool ${name}, which the stack does not list`);
@@ -50,5 +51,7 @@ export function toolStages(stack: Stack, recipe: EngineRecipe, platform: AppPlat
 	];
 }
 
-/** Every stage this version of the engine runs. */
-export const allStages = (stack: Stack, recipe: EngineRecipe, platform: AppPlatform): Stage[] => toolStages(stack, recipe, platform);
+/** Every stage this version of the engine runs: the tool stages, then the profile and the packages. */
+export const allStages = (stack: Stack, recipe: EngineRecipe, platform: AppPlatform): Stage[] => [...toolStages(stack, recipe, platform), ...profileStages(stack, recipe, platform)];
+
+export { profileStages, type ProfileStageOptions } from "./profile.ts";
