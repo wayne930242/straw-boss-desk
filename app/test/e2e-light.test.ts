@@ -338,6 +338,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			const env = childEnvOf(world, ["bun"]);
 			const project = join(world.base, "bare project 測試");
 			mkdirSync(project, { recursive: true });
+			writeFileSync(join(project, "package.json"), '{"name":"bare","version":"1.0.0"}\n'); // bun asks for one even to print its cache folder
 			const system32 = join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
 			const expected = join(world.layout.tools.root, "bun-home", "install", "cache");
 			assert.equal(existsSync(join(world.layout.tools.bin, "bun.exe")), false, "no .exe beside the launcher");
