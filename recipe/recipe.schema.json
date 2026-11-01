@@ -70,8 +70,9 @@
     "tools": {
       "type": "array",
       "maxItems": 8,
-      "description": "Optional tools to turn on, by the names stack.json lists under optionalTools. validate.mjs adds the checks JSON Schema cannot express: each name once, and, when the caller passes the stack's names as knownTools, each name known.",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" }
+      "uniqueItems": true,
+      "description": "Optional tools to turn on, by the names stack.json lists under optionalTools. validate.mjs adds the check JSON Schema cannot express: when the caller passes the stack's names as knownTools, each name known.",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9]{0,31}$" }
     },
     "packages": {
       "type": "array",

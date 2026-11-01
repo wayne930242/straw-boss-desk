@@ -551,14 +551,14 @@ describe("tools", () => {
   });
 
   it("accepts names of the right shape, keeps their order, and accepts an empty list", () => {
-    const result = validateRecipe(withField({ tools: ["bun", "a", "tool-2", "a".repeat(32)] }));
+    const result = validateRecipe(withField({ tools: ["bun", "a", "tool2", "a".repeat(32)] }));
     assert.ok(result.ok, JSON.stringify(result.errors));
-    assert.deepEqual(result.recipe.tools, ["bun", "a", "tool-2", "a".repeat(32)]);
+    assert.deepEqual(result.recipe.tools, ["bun", "a", "tool2", "a".repeat(32)]);
     assert.deepEqual(validateRecipe(withField({ tools: [] })).recipe.tools, []);
   });
 
   it("refuses a name of the wrong shape", () => {
-    for (const name of ["", "Bun", "1bun", "-bun", "bun_x", "bu n", "bun.exe", "a".repeat(33), "bün", "bun/"]) {
+    for (const name of ["", "Bun", "1bun", "-bun", "bun-x", "bun_x", "bu n", "bun.exe", "a".repeat(33), "bün", "bun/"]) {
       assert.ok(refusedAt(validateRecipe(withField({ tools: [name] })), "tools[0]", "bad-format"), JSON.stringify(name));
     }
     for (const value of [1, null, {}, ["bun"], true]) {
@@ -579,7 +579,7 @@ describe("tools", () => {
   });
 
   it("accepts eight tools and refuses nine", () => {
-    const names = (n) => Array.from({ length: n }, (_, i) => `tool-${i}`);
+    const names = (n) => Array.from({ length: n }, (_, i) => `tool${i}`);
     assert.ok(validateRecipe(withField({ tools: names(8) })).ok);
     assert.ok(refusedAt(validateRecipe(withField({ tools: names(9) })), "tools", "too-many"));
   });
@@ -623,9 +623,10 @@ describe("tools", () => {
     const node = readJson("recipe.schema.json").properties.tools;
     assert.equal(node.type, "array");
     assert.equal(node.maxItems, 8);
+    assert.equal(node.uniqueItems, true);
     const pattern = new RegExp(node.items.pattern);
-    for (const ok of ["bun", "a", "tool-2", "a".repeat(32)]) assert.equal(pattern.test(ok), true, ok);
-    for (const bad of ["", "Bun", "1bun", "-bun", "bun_x", "a".repeat(33)]) assert.equal(pattern.test(bad), false, bad);
+    for (const ok of ["bun", "a", "tool2", "a".repeat(32)]) assert.equal(pattern.test(ok), true, ok);
+    for (const bad of ["", "Bun", "1bun", "-bun", "bun-x", "bun_x", "a".repeat(33)]) assert.equal(pattern.test(bad), false, bad);
   });
 });
 

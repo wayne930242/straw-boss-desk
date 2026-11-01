@@ -10,7 +10,9 @@ export function readJson(path) {
 }
 
 /** The tool names a recipe's `tools` list may hold: the same rule as recipe/recipe.schema.json. */
-export const OPTIONAL_TOOL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+export const OPTIONAL_TOOL_NAME = /^[a-z][a-z0-9]{0,31}$/;
+/** Folders under tools/ that are not tools: an optional tool of that name would share their folder (FE2R-F008). */
+export const RESERVED_TOOL_FOLDERS = ["bin", "shims", "downloads", "bun-home", "staging"];
 
 /** The names of the optional tools, which the shell hands to validateRecipe as `knownTools`. */
 export function optionalToolNames(stack) {
@@ -58,6 +60,7 @@ export function checkStack(stack, schema) {
   for (const name of optionalToolNames(stack)) {
     if (!OPTIONAL_TOOL_NAME.test(name)) errors.push(`$.optionalTools: tool name ${JSON.stringify(name)} does not match ${OPTIONAL_TOOL_NAME}`);
     if (name in stack.tools) errors.push(`$.optionalTools.${name}: ${name} is also a required tool`);
+    if (RESERVED_TOOL_FOLDERS.includes(name)) errors.push(`$.optionalTools.${name}: ${name} is a folder under tools/ that is not a tool`);
     if (typeof stack.optionalTools[name].note !== "string" || stack.optionalTools[name].note.trim() === "") errors.push(`$.optionalTools.${name}: note must say why this build was chosen`);
   }
 

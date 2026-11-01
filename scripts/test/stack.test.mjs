@@ -109,6 +109,18 @@ test("an optional tool cannot reuse the name of a required tool", () => {
   assert.ok(errors.some((e) => /node is also a required tool/.test(e)), errors.join(" | "));
 });
 
+test("an optional tool cannot take a folder name under tools/ or a hyphenated name", () => {
+  // Same reason as above: the schema is closed, so a schema copy that adds the name tests the check itself.
+  for (const [name, message] of [["bin", /bin is a folder under tools\//], ["bun-home", /does not match/], ["bun-x", /does not match/]]) {
+    const stack = fresh();
+    const widened = structuredClone(schema);
+    widened.properties.optionalTools.properties[name] = { $ref: "#/$defs/optionalTool" };
+    stack.optionalTools[name] = structuredClone(stack.optionalTools.bun);
+    const errors = checkStack(stack, widened);
+    assert.ok(errors.some((e) => message.test(e)), `${name}: ${errors.join(" | ")}`);
+  }
+});
+
 test("a missing SHA256 is refused", () => {
   assertRefused((s) => delete s.tools.node.assets["darwin-arm64"].sha256, /missing sha256/);
 });

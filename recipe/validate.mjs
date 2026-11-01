@@ -24,7 +24,8 @@ const FIELDS = {
   package: ["name", "version", "integrity"],
 };
 
-const TOOL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+// No hyphen: the name becomes an SBD_<TOOL> variable in tools/bin/paths.sh and paths.cmd (FE2R-F008).
+const TOOL_NAME = /^[a-z][a-z0-9]{0,31}$/;
 const MAX_TOOLS = 8;
 const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -400,7 +401,7 @@ function validateTools(value, errors, known) {
     if (typeof name !== "string") {
       errors.add(at, "wrong-type", "must be a string");
     } else if (!TOOL_NAME.test(name)) {
-      errors.add(at, "bad-format", "must be a tool name: lowercase letters, digits, and hyphens, starting with a letter, at most 32 characters");
+      errors.add(at, "bad-format", "must be a tool name: lowercase letters and digits, starting with a letter, at most 32 characters");
     } else if (names.has(name)) {
       errors.add(at, "duplicate", "is listed twice");
     } else if (known !== undefined && !known.has(name)) {
