@@ -221,9 +221,11 @@ describe("launchers (port of forge-cli.mjs)", () => {
 		const [bun, bunx] = optionalLaunchers("bun");
 		assert.ok(bun && bunx);
 		assert.ok(shLauncher(bun).includes('BUN_INSTALL="$SBD_APP_ROOT/tools/bun-home"'));
+		assert.ok(shLauncher(bun).includes('BUN_INSTALL_CACHE_DIR="$SBD_APP_ROOT/tools/bun-home/install/cache"'));
 		assert.ok(shLauncher(bun).includes('exec "$SBD_BUN" "$@"'));
 		assert.ok(shLauncher(bunx).includes('exec "$SBD_BUN" x "$@"'));
 		assert.ok(cmdLauncher(bun).includes('set "BUN_INSTALL=%SBD_APP_ROOT%\\tools\\bun-home"'));
+		assert.ok(cmdLauncher(bun).includes('set "BUN_INSTALL_CACHE_DIR=%SBD_APP_ROOT%\\tools\\bun-home\\install\\cache"'));
 		assert.ok(cmdLauncher(bunx).includes('"%SBD_BUN%" x %*'));
 		assert.ok(!shLauncher(bun).includes("unset"), "CI and token variables are the forge CLIs' concern, not bun's");
 		assert.deepEqual(optionalLaunchers("nothere"), []);

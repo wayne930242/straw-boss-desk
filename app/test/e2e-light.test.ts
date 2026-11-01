@@ -235,11 +235,16 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			}
 		});
 
-		it("prints bun's pin in a pane, and command -v bun resolves to the launcher under tools/bin", async () => {
-			const text = await (herdr as WorldHerdr).inPane("bun", (out) => paneScript(out, ["bun"], ["bun --version"]), world.home);
+		// Herdr rebuilds a Windows pane's PATH from the registry (spec: Panes on Windows), so before task 6's `tools\\shims` entry a Windows pane does not
+		// find the launcher by name; the other variables reach the pane, so the launcher runs by its path from STRAW_BOSS_DESK_ROOT there.
+		it("prints bun's pin through the launcher in a pane; on macOS command -v bun resolves to tools/bin", async () => {
+			const extra = isWindows ? ["pushd %STRAW_BOSS_DESK_ROOT%\\tools\\bin", "bun.cmd --version", "popd"] : ["bun --version"];
+			const text = await (herdr as WorldHerdr).inPane("bun", (out) => paneScript(out, ["bun"], extra), world.home);
 			assert.match(text, new RegExp(BUN_VERSION.replace(/\./g, "\\.")), text);
-			const path = resolved(text, "bun");
-			assert.ok(path !== null && under(world.layout.tools.bin, path), `bun resolves to ${path}`);
+			if (!isWindows) {
+				const path = resolved(text, "bun");
+				assert.ok(path !== null && under(world.layout.tools.bin, path), `bun resolves to ${path}`);
+			}
 		});
 	});
 

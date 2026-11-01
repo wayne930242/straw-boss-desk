@@ -61,10 +61,13 @@ export function systemEnv(platform: "win32" | "darwin", appEnv: EnvLike): EnvMap
 }
 
 /** The variables a launched optional tool needs beyond the PATH: where bun keeps its cache and global packages (spec: Tool paths). */
-export const optionalToolEnv = (layout: Layout, tool: string): EnvMap => (tool === "bun" ? { BUN_INSTALL: bunHome(layout) } : {});
+export const optionalToolEnv = (layout: Layout, tool: string): EnvMap => (tool === "bun" ? { BUN_INSTALL: bunHome(layout), BUN_INSTALL_CACHE_DIR: bunCacheDir(layout) } : {});
 
 /** `<root>/tools/bun-home`: bun's `BUN_INSTALL`, so its cache and global packages stay under the app's `tools/` and not in the PM's `~/.bun`. */
 export const bunHome = (layout: Layout): string => (layout.platform === "win32" ? win32 : posix).join(layout.tools.root, "bun-home");
+
+/** bun's package cache, named outright: on `windows-2025` bun 1.2.23 with only `BUN_INSTALL` set put it in `<project>/node_modules/.cache`, not under `BUN_INSTALL` (task 5 e2e). */
+export const bunCacheDir = (layout: Layout): string => (layout.platform === "win32" ? win32 : posix).join(bunHome(layout), "install", "cache");
 
 export interface BuildEnvInput {
 	layout: Layout;

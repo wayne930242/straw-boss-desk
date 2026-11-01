@@ -86,7 +86,7 @@ export const FORGE_LAUNCHERS: Readonly<Record<"gh" | "glab", LauncherSpec>> = {
 /** Launchers of the optional tools: `bun` also gets `bunx`, and bun's cache and global packages stay under `tools/bun-home`. */
 export function optionalLaunchers(tool: string): LauncherSpec[] {
 	if (tool !== "bun") return [];
-	const base = { rootFolders: [["BUN_INSTALL", "tools/bun-home"]] as readonly Pair[], env: [NO_TRACK] as readonly Pair[], unset: [] as readonly string[], pathVar: "SBD_BUN" };
+	const base = { rootFolders: [["BUN_INSTALL", "tools/bun-home"], ["BUN_INSTALL_CACHE_DIR", "tools/bun-home/install/cache"]] as readonly Pair[], env: [NO_TRACK] as readonly Pair[], unset: [] as readonly string[], pathVar: "SBD_BUN" };
 	return [
 		{ name: "bun", prefixArgs: [], ...base },
 		{ name: "bunx", prefixArgs: ["x"], ...base },

@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { bunHome } from "../../env.ts";
+import { bunCacheDir, bunHome } from "../../env.ts";
 import { toolExecutable, type AppPlatform } from "../../paths.ts";
 import { archiveStage } from "../archive-stage.ts";
 import { StageError } from "../errors.ts";
@@ -250,7 +250,7 @@ interface OptionalToolSpec {
 export const OPTIONAL_TOOLS: Readonly<Record<string, OptionalToolSpec>> = {
 	bun: {
 		executables: (platform) => [`bun${exe(platform)}`],
-		env: (ctx) => ({ BUN_INSTALL: bunHome(ctx.layout), DO_NOT_TRACK: "1" }),
+		env: (ctx) => ({ BUN_INSTALL: bunHome(ctx.layout), BUN_INSTALL_CACHE_DIR: bunCacheDir(ctx.layout), DO_NOT_TRACK: "1" }),
 	},
 };
 
