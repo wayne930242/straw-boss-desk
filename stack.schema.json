@@ -24,6 +24,14 @@
         "rg": { "$ref": "#/$defs/tool" }
       }
     },
+    "optionalTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Tools installed only when the active recipe names them in its tools list (recipe spec, section 5). The set is closed like tools: a new optional tool is a schema change. The names are what a recipe may list.",
+      "properties": {
+        "bun": { "$ref": "#/$defs/optionalTool" }
+      }
+    },
     "npmGlobal": {
       "type": "array",
       "minItems": 1,
@@ -73,16 +81,27 @@
       "required": ["assets"],
       "properties": {
         "note": { "type": "string" },
-        "assets": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["win32-x64", "darwin-arm64", "darwin-x64"],
-          "properties": {
-            "win32-x64": { "$ref": "#/$defs/asset" },
-            "darwin-arm64": { "$ref": "#/$defs/asset" },
-            "darwin-x64": { "$ref": "#/$defs/asset" }
-          }
-        }
+        "assets": { "$ref": "#/$defs/toolAssets" }
+      }
+    },
+    "optionalTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["note", "assets"],
+      "description": "A tool entry that a recipe can turn on. The note is required: it says why this build was chosen, because a variant that differs by platform (a baseline build, an emulation caveat) is a decision a later pin update must keep.",
+      "properties": {
+        "note": { "type": "string", "minLength": 1 },
+        "assets": { "$ref": "#/$defs/toolAssets" }
+      }
+    },
+    "toolAssets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["win32-x64", "darwin-arm64", "darwin-x64"],
+      "properties": {
+        "win32-x64": { "$ref": "#/$defs/asset" },
+        "darwin-arm64": { "$ref": "#/$defs/asset" },
+        "darwin-x64": { "$ref": "#/$defs/asset" }
       }
     },
     "npmPackage": {

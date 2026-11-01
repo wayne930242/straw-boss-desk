@@ -63,7 +63,7 @@ const packages = packagesOf(stack);
 console.log(`checking ${assets.length} downloads and ${packages.length} packages, ${concurrency} at a time`);
 
 const jobs = [
-  ...assets.map((a) => ({ label: `${a.tool} ${a.version} ${a.platform}`, run: () => verifyAsset(a) })),
+  ...assets.map((a) => ({ label: `${a.tool}${a.optional ? " (optional)" : ""} ${a.version} ${a.platform}`, run: () => verifyAsset(a) })),
   ...packages.map((p) => ({ label: `${p.name}@${p.version}`, run: () => verifyPackage(p, { registry: args.registry }) })),
 ];
 await mapLimit(jobs, concurrency, async (job) => {

@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 1,
+  "generation": 2,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -57,6 +57,16 @@
         "win32-x64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip", "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5", "file": "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip" },
         "darwin-arm64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz", "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4", "file": "ripgrep-15.2.0-aarch64-apple-darwin.tar.gz" },
         "darwin-x64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz", "sha256": "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1", "file": "ripgrep-15.2.0-x86_64-apple-darwin.tar.gz" }
+      }
+    }
+  },
+  "optionalTools": {
+    "bun": {
+      "note": "Turned on by a recipe's tools list, not in the first install. The zips hold bun-<platform>/bun(.exe). x64 uses the -baseline builds, which need no AVX2, so a CPU or an emulator without AVX2 works (a VM, or x64 emulation on Windows ARM). Apple Silicon uses the regular aarch64 build. SHA256 from the release's SHASUMS256.txt (tag bun-v1.2.23).",
+      "assets": {
+        "win32-x64": { "version": "1.2.23", "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.2.23/bun-windows-x64-baseline.zip", "sha256": "bf8b6fd980fc09ffeba4b68bcfeab3babc2c10596dd916eb9163b503b6406866", "file": "bun-windows-x64-baseline.zip" },
+        "darwin-arm64": { "version": "1.2.23", "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.2.23/bun-darwin-aarch64.zip", "sha256": "22f5fa3fff72b0d3b8e7e0f8051ecadf2e41920d474ac62db5279144809c9005", "file": "bun-darwin-aarch64.zip" },
+        "darwin-x64": { "version": "1.2.23", "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.2.23/bun-darwin-x64-baseline.zip", "sha256": "fcc6723c8aba646a58443586d1786b909e64061e584b4214a0b67e0451252845", "file": "bun-darwin-x64-baseline.zip" }
       }
     }
   },

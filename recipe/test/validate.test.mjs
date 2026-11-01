@@ -27,6 +27,22 @@ describe("examples", () => {
     });
   }
 
+  it("keeps a repository's defaultBranch: the team example's web repository is develop, and the other has none", () => {
+    const result = validateRecipe(readText("examples", "team.strawboss.json"));
+    assert.deepEqual(result.recipe.repos.map((r) => [r.folder, r.defaultBranch]), [["web", "develop"], ["handbook", undefined]]);
+    assert.equal("defaultBranch" in result.recipe.repos[1], false, "an unset branch stays absent, so the wizard runs no set-head");
+  });
+
+  it("validates every example against the tool names stack.json lists", () => {
+    const stack = JSON.parse(readFileSync(join(recipeDir, "..", "stack.json"), "utf8"));
+    const knownTools = Object.keys(stack.optionalTools);
+    for (const file of readdirSync(join(recipeDir, "examples")).filter((f) => f.endsWith(".strawboss.json"))) {
+      const result = validateWith(readText("examples", file), { reservedPackages: [], knownTools });
+      assert.ok(result.ok, `${file}: ${JSON.stringify(result.errors)}`);
+    }
+    assert.deepEqual(validateRecipe(readText("examples", "team.strawboss.json")).recipe.tools, ["bun"]);
+  });
+
   it("fills the login and label defaults", () => {
     const result = validateRecipe(readText("examples", "team.strawboss.json"));
     assert.deepEqual(result.recipe.forges.map((f) => f.login), ["device", "token"]);
@@ -103,6 +119,16 @@ describe("URLs", () => {
       assert.ok(result.errors?.some((e) => e.rule === "url-host-not-allowed"), host);
     }
     assert.ok(validateRecipe(withField({ updateUrl: "https://raw.githubusercontent.com/o/r/main/r.json" })).ok);
+  });
+
+  it("a forge host may be private: only updateUrl must be public", () => {
+    const recipe = withField({
+      forges: [{ kind: "gitlab", host: "gitlab.moldplan.app" }, { kind: "gitlab", host: "intranet" }, { kind: "gitlab", host: "git.corp.internal" }],
+      repos: [{ url: "https://gitlab.moldplan.app/moldplan/fe2.git", folder: "fe2", defaultBranch: "develop" }],
+    });
+    const result = validateRecipe(recipe);
+    assert.ok(result.ok, JSON.stringify(result.errors));
+    assert.equal(result.recipe.repos[0].defaultBranch, "develop");
   });
 
   it("a repository URL must be on a forge host", () => {
@@ -511,6 +537,95 @@ describe("github login", () => {
   it("the schema agrees", () => {
     const github = readJson("recipe.schema.json").properties.forges.items.then.properties;
     assert.deepEqual(github.login, { const: "device" });
+  });
+});
+
+describe("tools", () => {
+  const known = { reservedPackages: [], knownTools: ["bun"] };
+  const refusedAt = (result, field, rule) => result.errors?.some((e) => e.field === field && e.rule === rule);
+
+  it("is optional, and a recipe without it has no tools field", () => {
+    const result = validateRecipe(base());
+    assert.ok(result.ok);
+    assert.equal("tools" in result.recipe, false);
+  });
+
+  it("accepts names of the right shape, keeps their order, and accepts an empty list", () => {
+    const result = validateRecipe(withField({ tools: ["bun", "a", "tool-2", "a".repeat(32)] }));
+    assert.ok(result.ok, JSON.stringify(result.errors));
+    assert.deepEqual(result.recipe.tools, ["bun", "a", "tool-2", "a".repeat(32)]);
+    assert.deepEqual(validateRecipe(withField({ tools: [] })).recipe.tools, []);
+  });
+
+  it("refuses a name of the wrong shape", () => {
+    for (const name of ["", "Bun", "1bun", "-bun", "bun_x", "bu n", "bun.exe", "a".repeat(33), "bün", "bun/"]) {
+      assert.ok(refusedAt(validateRecipe(withField({ tools: [name] })), "tools[0]", "bad-format"), JSON.stringify(name));
+    }
+    for (const value of [1, null, {}, ["bun"], true]) {
+      assert.ok(refusedAt(validateRecipe(withField({ tools: [value] })), "tools[0]", "wrong-type"), JSON.stringify(value));
+    }
+  });
+
+  it("refuses a field that is not an array", () => {
+    for (const value of ["bun", { bun: true }, 1, null]) {
+      assert.ok(refusedAt(validateRecipe(withField({ tools: value })), "tools", "wrong-type"), JSON.stringify(value));
+    }
+  });
+
+  it("refuses a name listed twice, naming the second place", () => {
+    const result = validateRecipe(withField({ tools: ["bun", "x", "bun"] }));
+    assert.ok(refusedAt(result, "tools[2]", "duplicate"), ruleOf(result).join());
+    assert.equal(result.errors.length, 1);
+  });
+
+  it("accepts eight tools and refuses nine", () => {
+    const names = (n) => Array.from({ length: n }, (_, i) => `tool-${i}`);
+    assert.ok(validateRecipe(withField({ tools: names(8) })).ok);
+    assert.ok(refusedAt(validateRecipe(withField({ tools: names(9) })), "tools", "too-many"));
+  });
+
+  it("without knownTools checks only the shape; with it, refuses a name the stack does not list, naming no value", () => {
+    assert.ok(validateRecipe(withField({ tools: ["deno"] })).ok);
+    const result = validateRecipe(withField({ tools: ["bun", "deno"] }), known);
+    assert.equal(result.ok, false);
+    assert.deepEqual(ruleOf(result), ["tools[1]:unknown-tool"]);
+    assert.ok(!JSON.stringify(result.errors).includes("deno"));
+    assert.ok(validateRecipe(withField({ tools: ["bun"] }), known).ok);
+  });
+
+  it("an empty knownTools list knows no tool, and null or undefined means the shape check only", () => {
+    assert.ok(refusedAt(validateRecipe(withField({ tools: ["bun"] }), { reservedPackages: [], knownTools: [] }), "tools[0]", "unknown-tool"));
+    for (const knownTools of [undefined, null]) assert.ok(validateRecipe(withField({ tools: ["deno"] }), { reservedPackages: [], knownTools }).ok);
+    assert.ok(validateRecipe(withField({ tools: ["bun"] }), { reservedPackages: [], knownTools: new Set(["bun"]) }).ok);
+  });
+
+  it("throws a TypeError when knownTools is a string, not iterable, or holds a non-string", () => {
+    const recipe = withField({ tools: ["bun"] });
+    for (const knownTools of ["bun", 5, {}, [1]]) {
+      assert.throws(() => validateWith(recipe, { reservedPackages: [], knownTools }), TypeError, JSON.stringify(knownTools));
+    }
+  });
+
+  it("is found in a recipe given as text, and a duplicate key is still caught", () => {
+    const text = JSON.stringify({ ...base(), tools: ["bun"] });
+    assert.deepEqual(validateRecipe(text, known).recipe.tools, ["bun"]);
+    const twice = text.replace('"tools":["bun"]', '"tools":["bun"],"tools":["bun"]');
+    assert.ok(validateRecipe(twice, known).errors.some((e) => e.rule === "duplicate-key" && e.field === "(recipe).tools"));
+  });
+
+  it("a credential-shaped name is refused as a credential, before anything else", () => {
+    const secret = join0(fixtures["github-classic-token"].positive[0]);
+    const result = validateRecipe(withField({ tools: [secret] }), known);
+    assert.ok(result.errors.every((e) => e.rule === "secret-pattern" && !e.message.includes(secret)));
+  });
+
+  it("the schema and the validator agree on the shape and the limit", () => {
+    const node = readJson("recipe.schema.json").properties.tools;
+    assert.equal(node.type, "array");
+    assert.equal(node.maxItems, 8);
+    const pattern = new RegExp(node.items.pattern);
+    for (const ok of ["bun", "a", "tool-2", "a".repeat(32)]) assert.equal(pattern.test(ok), true, ok);
+    for (const bad of ["", "Bun", "1bun", "-bun", "bun_x", "a".repeat(33)]) assert.equal(pattern.test(bad), false, bad);
   });
 });
 

@@ -14,7 +14,7 @@ export const PROFILE_PACKAGE = "straw-boss-desk-profile";
 const MAX_DEPTH = 8;
 const SECRETS = secretPatterns.patterns.map((p) => ({ id: p.id, regex: new RegExp(p.regex, p.flags ?? "") }));
 
-const TOP_FIELDS = ["recipe", "id", "name", "version", "updateUrl", "profile", "forges", "repos", "straw", "linear", "instructions", "packages"];
+const TOP_FIELDS = ["recipe", "id", "name", "version", "updateUrl", "profile", "forges", "repos", "straw", "linear", "instructions", "tools", "packages"];
 const FIELDS = {
   profile: ["version", "integrity"],
   forge: ["kind", "host", "login"],
@@ -24,6 +24,8 @@ const FIELDS = {
   package: ["name", "version", "integrity"],
 };
 
+const TOOL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const MAX_TOOLS = 8;
 const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/;
@@ -383,7 +385,35 @@ function validatePackages(value, errors, reserved) {
   });
 }
 
-function validateStructure(data, errors, reserved) {
+/** `known` is the stack's optional tool names, or undefined when the caller gave none: then only the shape is checked. */
+function validateTools(value, errors, known) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    errors.add("tools", "wrong-type", "must be an array");
+    return undefined;
+  }
+  if (value.length > MAX_TOOLS) errors.add("tools", "too-many", `must list at most ${MAX_TOOLS} tools`);
+  const names = new Set();
+  const out = [];
+  value.forEach((name, i) => {
+    const at = `tools[${i}]`;
+    if (typeof name !== "string") {
+      errors.add(at, "wrong-type", "must be a string");
+    } else if (!TOOL_NAME.test(name)) {
+      errors.add(at, "bad-format", "must be a tool name: lowercase letters, digits, and hyphens, starting with a letter, at most 32 characters");
+    } else if (names.has(name)) {
+      errors.add(at, "duplicate", "is listed twice");
+    } else if (known !== undefined && !known.has(name)) {
+      errors.add(at, "unknown-tool", "is not a tool this version of the app can turn on");
+    } else {
+      names.add(name);
+      out.push(name);
+    }
+  });
+  return out;
+}
+
+function validateStructure(data, errors, reserved, knownTools) {
   if (!checkObject(data, "(recipe)", TOP_FIELDS, errors)) return undefined;
   if (data.recipe === undefined) {
     errors.add("recipe", "missing-field", "is required");
@@ -435,6 +465,8 @@ function validateStructure(data, errors, reserved) {
     else if (/\r(?!\n)/.test(instructions)) errors.add("instructions", "bad-format", "must not contain a carriage return outside a CRLF line break");
     out.instructions = instructions;
   }
+  const tools = validateTools(data.tools, errors, knownTools);
+  if (tools) out.tools = tools;
   const packages = validatePackages(data.packages, errors, reserved);
   if (packages) out.packages = packages;
   return out;
@@ -442,9 +474,11 @@ function validateStructure(data, errors, reserved) {
 
 /**
  * @param {unknown} input the recipe file's text, or its parsed JSON
- * @param {{ reservedPackages: Iterable<string> }} options `reservedPackages` is required: the package names in
+ * @param {{ reservedPackages: Iterable<string>, knownTools?: Iterable<string> }} options `reservedPackages` is required: the package names in
  *   stack.json, which the shell passes in so a recipe cannot replace or switch off one of them. Pass `[]` for none.
- *   A missing option or a string throws a TypeError.
+ *   A missing option or a string throws a TypeError. `knownTools` is optional: the names under stack.json's `optionalTools`.
+ *   When given, a `tools` entry outside it is refused (`unknown-tool`); without it only the entry's shape is checked.
+ *   A string or a non-iterable throws a TypeError.
  * @returns {{ ok: true, recipe: object } | { ok: false, errors: { field: string, rule: string, message: string }[] }}
  */
 export function validateRecipe(input, options) {
@@ -453,6 +487,12 @@ export function validateRecipe(input, options) {
   if (typeof reservedPackages === "string" || typeof reservedPackages[Symbol.iterator] !== "function") throw new TypeError("validateRecipe: options.reservedPackages must be an iterable of package names, not a string");
   const reserved = new Set(reservedPackages);
   for (const name of reserved) if (typeof name !== "string") throw new TypeError("validateRecipe: options.reservedPackages must contain only strings");
+  let knownTools;
+  if (options.knownTools !== undefined && options.knownTools !== null) {
+    if (typeof options.knownTools === "string" || typeof options.knownTools[Symbol.iterator] !== "function") throw new TypeError("validateRecipe: options.knownTools must be an iterable of tool names, not a string");
+    knownTools = new Set(options.knownTools);
+    for (const name of knownTools) if (typeof name !== "string") throw new TypeError("validateRecipe: options.knownTools must contain only strings");
+  }
   const errors = new Errors();
   let data = input;
   if (typeof input === "string") {
@@ -480,7 +520,7 @@ export function validateRecipe(input, options) {
   }
   scanForSecrets(data, "(recipe)", errors);
   if (errors.list.length > 0) return { ok: false, errors: errors.list };
-  const recipe = validateStructure(data, errors, reserved);
+  const recipe = validateStructure(data, errors, reserved, knownTools);
   if (errors.list.length > 0 || recipe === undefined) return { ok: false, errors: errors.list };
   return { ok: true, recipe };
 }

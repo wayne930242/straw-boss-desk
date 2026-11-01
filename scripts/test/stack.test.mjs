@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SCHEMA_PATH, STACK_PATH, assetsOf, checkBytes, checkStack, packagesOf, readJson } from "../lib/stack.mjs";
+import { SCHEMA_PATH, STACK_PATH, assetsOf, checkBytes, checkStack, optionalToolNames, packagesOf, readJson } from "../lib/stack.mjs";
 import { validate } from "../lib/schema.mjs";
 import { readFileSync } from "node:fs";
 
@@ -45,7 +45,68 @@ test("the real stack.json holds what task 2 lists", () => {
   const ttt = stack.npmGlobal.find((p) => p.bin === "ttt");
   assert.equal(ttt?.optional, true);
   assert.equal(stack.npmGlobal.find((p) => p.bin === "pi")?.optional, undefined);
-  assert.equal(assetsOf(stack).length, 7 * 3);
+  assert.equal(assetsOf(stack).length, (7 + 1) * 3);
+});
+
+test("the real stack.json holds bun as an optional tool, pinned to the release's published checksums", () => {
+  const stack = fresh();
+  assert.deepEqual(optionalToolNames(stack), ["bun"]);
+  assert.ok(!("bun" in stack.tools), "bun is not a required tool");
+  const bun = stack.optionalTools.bun;
+  assert.deepEqual(Object.keys(bun.assets).sort(), ["darwin-arm64", "darwin-x64", "win32-x64"]);
+  for (const asset of Object.values(bun.assets)) {
+    assert.equal(asset.version, "1.2.23");
+    assert.match(asset.url, /^https:\/\/github\.com\/oven-sh\/bun\/releases\/download\/bun-v1\.2\.23\//);
+  }
+  // x64 uses the baseline builds, so a CPU or an emulator without AVX2 works; Apple Silicon has no baseline build.
+  assert.match(bun.assets["win32-x64"].file, /^bun-windows-x64-baseline\.zip$/);
+  assert.match(bun.assets["darwin-x64"].file, /^bun-darwin-x64-baseline\.zip$/);
+  assert.match(bun.assets["darwin-arm64"].file, /^bun-darwin-aarch64\.zip$/);
+  assert.match(bun.note, /baseline/);
+  assert.match(bun.note, /AVX2/);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(bun.assets).map(([platform, a]) => [platform, a.sha256])),
+    {
+      "win32-x64": "bf8b6fd980fc09ffeba4b68bcfeab3babc2c10596dd916eb9163b503b6406866",
+      "darwin-arm64": "22f5fa3fff72b0d3b8e7e0f8051ecadf2e41920d474ac62db5279144809c9005",
+      "darwin-x64": "fcc6723c8aba646a58443586d1786b909e64061e584b4214a0b67e0451252845",
+    },
+  );
+  assert.ok(assetsOf(stack).filter((a) => a.tool === "bun").every((a) => a.optional === true));
+});
+
+test("a stack without optionalTools is still valid", () => {
+  assert.deepEqual(problems((s) => delete s.optionalTools), []);
+  assert.deepEqual(optionalToolNames({ tools: {} }), []);
+});
+
+test("an optional tool with a wrong shape is refused", () => {
+  assertRefused((s) => delete s.optionalTools.bun.assets["darwin-x64"], /missing darwin-x64/);
+  assertRefused((s) => (s.optionalTools.bun.assets["win32-x64"].sha256 = "abc"), /sha256/);
+  assertRefused((s) => delete s.optionalTools.bun.assets["win32-x64"].sha256, /missing sha256/);
+  assertRefused((s) => (s.optionalTools.bun.assets["win32-x64"].version = "^1.2.23"), /version/);
+  assertRefused((s) => (s.optionalTools.bun.assets["win32-x64"].file = "other.zip"), /optionalTools\.bun\.assets\.win32-x64: file other\.zip is not the last segment/);
+  assertRefused((s) => (s.optionalTools.bun.assets["linux-x64"] = structuredClone(s.optionalTools.bun.assets["win32-x64"])), /unknown key linux-x64/);
+  assertRefused((s) => delete s.optionalTools.bun.assets, /missing assets/);
+  assertRefused((s) => delete s.optionalTools.bun.note, /missing note/);
+  assertRefused((s) => (s.optionalTools.bun.note = "  "), /note must say why/);
+  assertRefused((s) => (s.optionalTools.bun.optional = true), /unknown key optional/);
+});
+
+test("the optional tools are a closed set", () => {
+  assertRefused((s) => (s.optionalTools.deno = structuredClone(s.optionalTools.bun)), /unknown key deno/);
+  assertRefused((s) => (s.optionalTools.Bun = structuredClone(s.optionalTools.bun)), /unknown key Bun/);
+  assertRefused((s) => (s.optionalTools = []), /expected object/);
+});
+
+test("an optional tool cannot reuse the name of a required tool", () => {
+  // The schema is closed, so this guards the check itself, which stays right when a schema change adds a name.
+  const stack = fresh();
+  const schemaWithNode = structuredClone(schema);
+  schemaWithNode.properties.optionalTools.properties.node = { $ref: "#/$defs/optionalTool" };
+  stack.optionalTools.node = structuredClone(stack.optionalTools.bun);
+  const errors = checkStack(stack, schemaWithNode);
+  assert.ok(errors.some((e) => /node is also a required tool/.test(e)), errors.join(" | "));
 });
 
 test("a missing SHA256 is refused", () => {

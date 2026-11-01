@@ -18,6 +18,8 @@ export interface Recipe {
   straw?: { relay?: string };
   linear?: { enabled: boolean };
   instructions?: string;
+  /** Optional tools the recipe turns on, each once, in the order written. */
+  tools?: string[];
   packages?: { name: string; version: string; integrity: string }[];
 }
 
@@ -30,5 +32,7 @@ export const KNOWN_FIELDS: Record<string, string[]>;
 export interface ValidateOptions {
   /** Package names the app installs itself (the names in stack.json); a recipe may not list them. Required: pass `[]` for none. A string or a missing option throws a TypeError. */
   reservedPackages: Iterable<string>;
+  /** The names under `stack.json`'s `optionalTools`. When given, a `tools` entry outside it is refused with the rule `unknown-tool`; when omitted, only the shape of each entry is checked. A string or a non-iterable throws a `TypeError`. */
+  knownTools?: Iterable<string>;
 }
 export function validateRecipe(input: unknown, options: ValidateOptions): RecipeResult;

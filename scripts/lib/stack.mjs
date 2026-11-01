@@ -9,10 +9,22 @@ export function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-/** Every download of the stack as { tool, platform, version, url, sha256, file }. */
+/** The tool names a recipe's `tools` list may hold: the same rule as recipe/recipe.schema.json. */
+export const OPTIONAL_TOOL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** The names of the optional tools, which the shell hands to validateRecipe as `knownTools`. */
+export function optionalToolNames(stack) {
+  return Object.keys(stack.optionalTools ?? {});
+}
+
+/** Every download of the stack as { tool, optional, platform, version, url, sha256, file }, required tools first. */
 export function assetsOf(stack) {
-  return Object.entries(stack.tools).flatMap(([tool, entry]) =>
-    Object.entries(entry.assets).map(([platform, asset]) => ({ tool, platform, ...asset })),
+  const entries = [
+    ...Object.entries(stack.tools).map(([tool, entry]) => [tool, false, entry]),
+    ...Object.entries(stack.optionalTools ?? {}).map(([tool, entry]) => [tool, true, entry]),
+  ];
+  return entries.flatMap(([tool, optional, entry]) =>
+    Object.entries(entry.assets).map(([platform, asset]) => ({ tool, optional, platform, ...asset })),
   );
 }
 
@@ -42,8 +54,15 @@ export function checkStack(stack, schema) {
   const errors = validate(schema, stack);
   if (errors.length > 0) return errors;
 
+  // An optional tool is a tool a recipe can name, so its name must be one a recipe can write, and it must not hide a required tool.
+  for (const name of optionalToolNames(stack)) {
+    if (!OPTIONAL_TOOL_NAME.test(name)) errors.push(`$.optionalTools: tool name ${JSON.stringify(name)} does not match ${OPTIONAL_TOOL_NAME}`);
+    if (name in stack.tools) errors.push(`$.optionalTools.${name}: ${name} is also a required tool`);
+    if (typeof stack.optionalTools[name].note !== "string" || stack.optionalTools[name].note.trim() === "") errors.push(`$.optionalTools.${name}: note must say why this build was chosen`);
+  }
+
   for (const a of assetsOf(stack)) {
-    const where = `$.tools.${a.tool}.assets.${a.platform}`;
+    const where = `$.${a.optional ? "optionalTools" : "tools"}.${a.tool}.assets.${a.platform}`;
     const last = new URL(a.url).pathname.split("/").pop();
     if (last !== a.file && decodeURIComponent(last) !== a.file) errors.push(`${where}: file ${a.file} is not the last segment of its url (${last})`);
   }

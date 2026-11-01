@@ -14,5 +14,6 @@
   ],
   "straw": { "relay": "https://relay.waydo.example" },
   "linear": { "enabled": true },
+  "tools": ["bun"],
   "instructions": "- 文案用語以《Waydo 用語表》為準：docs/glossary.md。\n- 改動價格或方案文字前，先問 PM 是否已和業務確認。"
 }
