@@ -64,10 +64,14 @@ describe("Processes", () => {
 		assert.deepEqual(await processes.inspect([]), []);
 	});
 
-	it("gives this process a start token that differs from another process's", { timeout: 60_000 }, async () => {
-		const { child } = startChild();
-		const [mine, other] = await processes.inspect([process.pid, child.pid ?? 0]);
-		assert.ok(mine?.startTime);
-		assert.notEqual(mine.startTime, other?.startTime);
+	it("gives two processes started over a second apart different start tokens", { timeout: 60_000 }, async () => {
+		// macOS `ps -o lstart` has one-second resolution, so a process started in the same second as this test file's process (or another child)
+		// can carry the same token; the kill rule pairs the token with the pid, so only processes a second or more apart are compared here.
+		const first = startChild().child;
+		await sleep(1_200);
+		const second = startChild().child;
+		const [a, b, mine] = await processes.inspect([first.pid ?? 0, second.pid ?? 0, process.pid]);
+		assert.ok(a?.startTime && b?.startTime && mine?.startTime);
+		assert.notEqual(a.startTime, b.startTime);
 	});
 });
