@@ -3,6 +3,7 @@
 // uses it skips by name, and under SBD_REQUIRE_HOSTED_FIXTURES=1 it fails there. Windows gets the CurrentUser root store (never the machine store),
 // macOS the System keychain of the ephemeral runner (a user-domain trust setting asks the person at the keyboard).
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ export const trustedCaScenario: { run: ((trusted: TrustedCa) => Promise<void>) |
 
 const SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
 
-// Windows: `certutil -user -addstore Root` and `-delstore` each stop at a "Security Warning" dialog (class #32770, buttons Yes = 6 and No = 7) that waits
+// Windows: adding a root to the CurrentUser store stops at a "Security Warning" dialog, and removing it at a "Root Certificate Store" one (class #32770, buttons Yes = 6 and No = 7); each waits
 // for a click, and the policy value under HKCU\\Software\\Policies\\Microsoft\\SystemCertificates\\Root\\ProtectedRoots does not remove it; the .NET and
 // PowerShell store APIs refuse ("UI is not allowed"), and a Blob written straight into the registry key is deleted again by Windows (all found on
 // windows-2025). The hosted runner's session is interactive, so a second process finds the dialog by its window and presses Yes with BM_CLICK, and the
@@ -42,7 +43,7 @@ while ((Get-Date) -lt $deadline) {
   $root = [System.Windows.Automation.AutomationElement]::RootElement
   $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
   foreach ($w in $wins) {
-    if ($w.Current.Name -eq 'Security Warning' -and $w.Current.ClassName -eq '#32770') {
+    if (($w.Current.Name -eq 'Security Warning' -or $w.Current.Name -eq 'Root Certificate Store') -and $w.Current.ClassName -eq '#32770') {
       $yes = [SbdWin]::GetDlgItem([IntPtr]$w.Current.NativeWindowHandle, 6)
       [void][SbdWin]::SendMessage($yes, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       Write-Output 'clicked'
@@ -60,14 +61,14 @@ async function must(io: FixtureIO, command: string, args: readonly string[], tim
 	assert.equal(result.code, 0, `${what} exited with ${result.code}${result.timedOut ? " (timed out)" : ""}: ${(result.stderr || result.stdout).trim().slice(0, 400)}`);
 }
 
-/** Runs a certutil call that raises the Security Warning dialog, with the clicker beside it. */
-async function certutilWithDialog(io: FixtureIO, system32: string, args: readonly string[], what: string): Promise<void> {
+/** Runs a command that raises one of those dialogs, with the clicker beside it. */
+async function withDialog(io: FixtureIO, command: string, args: readonly string[], system32: string, what: string): Promise<void> {
 	const powershell = join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
-	const [clicker, certutil] = await Promise.all([
+	const [clicker, result] = await Promise.all([
 		io.run(powershell, ["-NoProfile", "-Command", CLICK_YES], { timeoutMs: 90_000 }),
-		io.run(join(system32, "certutil.exe"), args, { timeoutMs: 90_000 }),
+		io.run(command, args, { timeoutMs: 90_000 }),
 	]);
-	assert.equal(certutil.code, 0, `${what} exited with ${certutil.code}${certutil.timedOut ? " (timed out)" : ""}; the dialog clicker said ${clicker.stdout.trim() || clicker.stderr.trim().slice(0, 200)}`);
+	assert.equal(result.code, 0, `${what} exited with ${result.code}${result.timedOut ? " (timed out)" : ""}; the dialog clicker said ${clicker.stdout.trim() || clicker.stderr.trim().slice(0, 200)}`);
 }
 
 /**
@@ -94,13 +95,17 @@ export const trustedTestCa = defineFixture({
 		const win = process.platform === "win32";
 		const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
 		try {
-			if (win) await certutilWithDialog(io, system32, ["-user", "-addstore", "-f", "Root", file], "certutil -addstore");
+			if (win) await withDialog(io, join(system32, "certutil.exe"), ["-user", "-addstore", "-f", "Root", file], system32, "certutil -addstore");
 			else await must(io, "/usr/bin/sudo", ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", SYSTEM_KEYCHAIN, file], 120_000, "security add-trusted-cert");
 			assert.equal(await inSystemStore(io, ca), true, "the CA is in the store as a new Node process reads it (tls.getCACertificates('system'))");
 			await scenario({ ca, dir, store: win ? "Windows CurrentUser\\Root" : "macOS System keychain" });
 		} finally {
 			try {
-				if (win) await certutilWithDialog(io, system32, ["-user", "-delstore", "Root", ca.commonName], "certutil -delstore");
+				if (win) {
+					const thumbprint = createHash("sha1").update(ca.caDer).digest("hex").toUpperCase();
+					const powershell = join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
+					await withDialog(io, powershell, ["-NoProfile", "-Command", `Remove-Item 'Cert:\\CurrentUser\\Root\\${thumbprint}' -DeleteKey -ErrorAction Stop`], system32, "Remove-Item on the Root store");
+				}
 				else {
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "remove-trusted-cert", "-d", file], { timeoutMs: 120_000 });
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "delete-certificate", "-c", ca.commonName, SYSTEM_KEYCHAIN], { timeoutMs: 120_000 });

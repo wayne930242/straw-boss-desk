@@ -34,7 +34,6 @@ import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { nodeBinaryPath, npmCliPath } from "../src/main/bootstrap/npm.ts";
 import { binShim, npmGlobalPin } from "../src/main/bootstrap/stages/pi.ts";
 import { locateClaude } from "../src/main/bootstrap/stages/claude.ts";
-import { writeSystemCaFile } from "../src/main/system-ca.ts";
 import { runFixture, realIO } from "./harness/hosted.ts";
 import { trustedTestCa, trustedCaScenario } from "./harness/system-ca.ts";
 import { platformKey } from "../src/main/bootstrap/stack.ts";
@@ -678,7 +677,7 @@ describe("the pi stage through the OS proxy setting, claude and the OS certifica
 	// Design record (Network): does the bundled claude trust the OS certificate store through NODE_USE_SYSTEM_CA? A test CA goes into the runner's store (a guarded
 	// fixture); a stand-in HTTPS server on 127.0.0.1 answers with a certificate signed by it; claude is pointed at it with ANTHROPIC_BASE_URL. The case
 	// records the verdict of each configuration and requires that at least one trusts the CA.
-	it("records whether claude trusts a CA in the OS store with NODE_USE_SYSTEM_CA, and with the system-ca.pem file in NODE_EXTRA_CA_CERTS (guarded fixture)", async (t) => {
+	it("records whether claude trusts a CA in the OS store by default and with NODE_USE_SYSTEM_CA (guarded fixture)", async (t) => {
 		assert.ok(claudeExe !== null, "claude was found");
 		const exe = claudeExe as string;
 		trustedCaScenario.run = async (trusted) => {
@@ -695,9 +694,6 @@ describe("the pi stage through the OS proxy setting, claude and the OS certifica
 			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 			const port = (server.address() as { port: number }).port;
 			try {
-				const written = await writeSystemCaFile({ layout: world.layout, nodeBinary: nodeFile(), run: (file, args, options) => run(file, args, { env: options?.env ?? {}, timeoutMs: options?.timeoutMs ?? 60_000 }), appEnv: world.appEnv });
-				t.diagnostic(`system-ca.pem: ${written.count} certificates written to ${written.path}`);
-				assert.ok(readFileSync(written.path, "utf8").includes(trusted.ca.caPem.trim().split("\n")[1] as string), "the test CA is in the file");
 				const home = scratchDir("claude-home");
 				const verdict = async (label: string, extra: Record<string, string>): Promise<"trusted" | "refused" | "no connection"> => {
 					handshakes = 0;
@@ -711,10 +707,9 @@ describe("the pi stage through the OS proxy setting, claude and the OS certifica
 				};
 				const none = await verdict("with neither variable", {});
 				const system = await verdict("with NODE_USE_SYSTEM_CA=1", { NODE_USE_SYSTEM_CA: "1" });
-				const file = await verdict("with NODE_EXTRA_CA_CERTS=system-ca.pem", { NODE_EXTRA_CA_CERTS: written.path });
-				t.diagnostic(`DESIGN RECORD: claude honours NODE_USE_SYSTEM_CA: ${system === "trusted"}; honours NODE_EXTRA_CA_CERTS=system-ca.pem: ${file === "trusted"}; trusted with neither: ${none === "trusted"} (${trusted.store})`);
+				t.diagnostic(`DESIGN RECORD: claude trusts the OS store with neither variable: ${none === "trusted"}; with NODE_USE_SYSTEM_CA=1: ${system === "trusted"} (${trusted.store})`);
 				assert.notEqual(none, "no connection", "claude reached the stand-in server at all");
-				assert.ok(system === "trusted" || file === "trusted", `claude trusts the test CA through neither variable (none: ${none}, NODE_USE_SYSTEM_CA: ${system}, file: ${file})`);
+				assert.ok(system === "trusted" || none === "trusted", `claude trusts the OS store neither by default nor with NODE_USE_SYSTEM_CA (none: ${none}, NODE_USE_SYSTEM_CA: ${system}): the system-ca.pem file of Network is needed`);
 			} finally {
 				server.close();
 			}
