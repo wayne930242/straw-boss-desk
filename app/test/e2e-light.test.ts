@@ -272,8 +272,10 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			assert.equal(installed.code, 0, installed.stderr || installed.stdout);
 			assert.deepEqual(readdirSync(probeHome), [], "nothing in the scratch home");
 			const where = await viaLauncher(world, "bun", ["pm", "cache"], env, join(project, "app"));
+			const seen = await viaLauncher(world, "bun", ["-e", "console.log(JSON.stringify([process.env.BUN_INSTALL, process.env.BUN_INSTALL_CACHE_DIR, process.env.HOME, process.env.USERPROFILE, process.cwd()]))"], env, join(project, "app"));
+			const ascii = await run(join(world.layout.tools.root, "bun", BUN_VERSION, isWindows ? "bun.exe" : "bun"), ["pm", "cache"], { env: { ...env, BUN_INSTALL_CACHE_DIR: join(world.base, "ascii-cache") }, cwd: join(project, "app") });
 			const home = join(world.layout.tools.root, "bun-home");
-			assert.ok(existsSync(home) && readdirSync(home).length > 0, `bun-home is filled; bun pm cache says ${where.stdout.trim()} ${where.stderr.trim()}`);
+			assert.ok(existsSync(home) && readdirSync(home).length > 0, `bun-home is filled; bun pm cache says ${where.stdout.trim()} ${where.stderr.trim()}; bun sees ${seen.stdout.trim()} ${seen.stderr.trim()}; bun.exe itself with an ASCII cache dir: ${ascii.stdout.trim()}`);
 		});
 
 		it("drop, a full start, re-add: the folder stays, no download, the launcher works; then a new pin installs beside it", async () => {
