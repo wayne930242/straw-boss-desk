@@ -10,12 +10,12 @@ const readJson = (name: string): Record<string, unknown> => JSON.parse(readFileS
 
 describe("SBD_BUILD", () => {
 	it("makes the shipped product only for exactly `release`", () => {
-		assert.deepEqual(buildIdentity({ SBD_BUILD: "release" }), { kind: "release", productName: "Straw Boss Desk", appId: "dev.straw-boss-desk" });
+		assert.deepEqual(buildIdentity({ SBD_BUILD: "release" }), { kind: "release", productName: "Straw Boss Desk", appId: "tw.wayneh.straw-boss-desk" });
 	});
 
 	it("names every other build Straw Boss Desk Dev with the .dev application id", () => {
 		for (const env of [{}, { SBD_BUILD: "" }, { SBD_BUILD: "dev" }, { SBD_BUILD: "Release" }, { SBD_BUILD: "release " }, { SBD_BUILD: "1" }]) {
-			assert.deepEqual(buildIdentity(env), { kind: "dev", productName: "Straw Boss Desk Dev", appId: "dev.straw-boss-desk.dev" }, JSON.stringify(env));
+			assert.deepEqual(buildIdentity(env), { kind: "dev", productName: "Straw Boss Desk Dev", appId: "tw.wayneh.straw-boss-desk.dev" }, JSON.stringify(env));
 		}
 	});
 
@@ -29,18 +29,18 @@ describe("SBD_BUILD", () => {
 		const dev = packPlan({});
 		assert.equal(dev.outputDir, "out/dev");
 		assert.deepEqual(dev.configArgs, [
-			"-c.productName=Straw Boss Desk Dev", "-c.appId=dev.straw-boss-desk.dev", "-c.extraMetadata.productName=Straw Boss Desk Dev", "-c.directories.output=out/dev",
+			"-c.productName=Straw Boss Desk Dev", "-c.appId=tw.wayneh.straw-boss-desk.dev", "-c.extraMetadata.productName=Straw Boss Desk Dev", "-c.directories.output=out/dev",
 		]);
 		const release = packPlan({ SBD_BUILD: "release" });
 		assert.equal(release.outputDir, "out/release");
 		assert.ok(release.configArgs.includes("-c.productName=Straw Boss Desk"));
-		assert.ok(release.configArgs.includes("-c.appId=dev.straw-boss-desk"));
+		assert.ok(release.configArgs.includes("-c.appId=tw.wayneh.straw-boss-desk"));
 	});
 
 	it("defaults the checked-in files to the development build, so a plain electron-builder run cannot make the shipped product", () => {
 		const builder = readJson("electron-builder.json");
 		assert.equal(builder.productName, "Straw Boss Desk Dev");
-		assert.equal(builder.appId, "dev.straw-boss-desk.dev");
+		assert.equal(builder.appId, "tw.wayneh.straw-boss-desk.dev");
 		assert.equal(readJson("package.json").productName, "Straw Boss Desk Dev");
 	});
 });

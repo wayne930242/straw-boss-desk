@@ -9,8 +9,8 @@ export interface BuildIdentity {
 	appId: string;
 }
 
-const RELEASE: BuildIdentity = { kind: "release", productName: "Straw Boss Desk", appId: "dev.straw-boss-desk" };
-const DEV: BuildIdentity = { kind: "dev", productName: "Straw Boss Desk Dev", appId: "dev.straw-boss-desk.dev" };
+const RELEASE: BuildIdentity = { kind: "release", productName: "Straw Boss Desk", appId: "tw.wayneh.straw-boss-desk" };
+const DEV: BuildIdentity = { kind: "dev", productName: "Straw Boss Desk Dev", appId: "tw.wayneh.straw-boss-desk.dev" };
 
 export function buildIdentity(env: Readonly<Record<string, string | undefined>>): BuildIdentity {
 	return env.SBD_BUILD === "release" ? RELEASE : DEV;

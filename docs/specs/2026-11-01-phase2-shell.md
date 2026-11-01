@@ -443,7 +443,7 @@ v1 ships unsigned, as the design record decides. What that means, and what phase
 
 **macOS.**
 
-- electron-builder ad-hoc signs the app, which Apple Silicon requires to run at all.
+- The app is ad-hoc signed, which Apple Silicon requires to run at all. electron-builder 26.18 has no automatic ad-hoc fallback, so `electron-builder.json` sets `mac.identity: "-"` (with `hardenedRuntime: false`), and a test runs `codesign --verify` on the packaged app (task 1).
 - A downloaded, unnotarized app is blocked on first open. Since macOS 15 the right-click **Open** shortcut is gone: the PM opens **System Settings**, **Privacy & Security**, and clicks **Open Anyway**, which may ask for an administrator password. On a company Mac a PM may not have one.
 - The app offers to move itself into `/Applications` on first run (`app.moveToApplicationsFolder`), so it never runs from the disk image or a translocated path. When `/Applications` is not writable, Electron's call is believed to ask for an administrator password; the app then copies itself into `~/Applications` with its own code and relaunches from there instead. Task 17 checks both paths.
 - Squirrel.Mac refuses unsigned updates, so the macOS updater offers the new dmg (Updater).
