@@ -208,8 +208,6 @@ const PI_JS = [
 	"process.exit(7);",
 	"",
 ].join("\n");
-/** What a console shows for a path: a character outside the OEM code page comes out as `?`. */
-const asConsole = (text: string): string => text.replace(/[^\x00-\x7f]/g, "?");
 const BATCH_ROOTS = ["a^b!c%d&e 測試", "plain 測試", "100%", "x!y!", "^^", "a&b", "(1) b"];
 
 describe("the batch shims under a root with cmd's special characters (T5-F007 pattern), Windows only", { skip: isWindows ? false : "Windows only: cmd.exe's own parsing" }, () => {
