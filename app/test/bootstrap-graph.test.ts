@@ -189,7 +189,7 @@ describe("failure categories and retries", () => {
 		assert.equal(server.hits(down.path), 2);
 	});
 
-	it("fails a download that goes quiet, with no headers or in the middle of the body, as a network failure that is retried once (T4-F006)", async () => {
+	it("fails a download that goes quiet, with no headers or in the middle of the body, as a network failure that is retried once (T4-F006)", { timeout: 30_000 }, async () => {
 		for (const kind of ["silent", "hang"] as const) {
 			const quiet = publish(server, `quiet-${kind}`, { version: "1.0.0" });
 			server.setMode(quiet.path, { kind });
@@ -205,7 +205,7 @@ describe("failure categories and retries", () => {
 		}
 	});
 
-	it("installs when the retry after a stalled download gets through, leaving no part file", async () => {
+	it("installs when the retry after a stalled download gets through, leaving no part file", { timeout: 30_000 }, async () => {
 		const once = publish(server, "stall-once", { version: "1.0.0" });
 		server.setMode(once.path, { kind: "hang", times: 1 });
 		const run = await runEngine(root, makeStack({ "stall-once": once }), [toolStage("stall-once")], { downloadIdleMs: 250 });
@@ -297,7 +297,7 @@ describe("downloads", () => {
 		assert.ok(Date.now() - started >= 600, "the whole transfer took longer than the idle limit");
 	});
 
-	it("rejects a stalled download with a network StageError and removes the part file", async () => {
+	it("rejects a stalled download with a network StageError and removes the part file", { timeout: 30_000 }, async () => {
 		const body = Buffer.from("h".repeat(4000));
 		const dir = join(scratchRootOf(), "dl");
 		for (const kind of ["hang", "silent"] as const) {

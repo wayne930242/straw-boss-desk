@@ -381,11 +381,13 @@ describe("one run at a time (T4-F002)", () => {
 		let parked!: () => void;
 		const atGate = new Promise<void>((resolve) => (parked = resolve));
 		const inner = toolStage("alpha-busy", { installsLog });
-		// Parked inside `install`, after the archive was extracted into the staging folder.
+		// The first install is parked inside `install`, after the archive was extracted into the staging folder; any later one runs through.
+		let installs = 0;
 		const parkedStage: Stage = {
 			...inner,
 			async install(ctx) {
 				await inner.install(ctx);
+				if (++installs > 1) return;
 				parked();
 				await gate;
 			},
@@ -395,18 +397,20 @@ describe("one run at a time (T4-F002)", () => {
 		await atGate;
 		const staging = join(root, "tools", "alpha-busy", "1.0.0.staging");
 		const lock = join(root, "state", "engine.lock");
-		assert.equal(existsSync(staging), true);
-		const lockText = readFileSync(lock, "utf8");
+		try {
+			assert.equal(existsSync(staging), true);
+			const lockText = readFileSync(lock, "utf8");
 
-		const second = await t.run(stack);
-		assert.equal(second.ok, false);
-		assert.equal(second.error?.name, "EngineBusyError");
-		assert.match(second.error?.message ?? "", /already active/);
-		assert.equal(existsSync(staging), true, "the second run did not sweep the first run's staging folder");
-		assert.equal(readFileSync(lock, "utf8"), lockText, "and did not release or replace its lock");
-		assert.ok(!logLines().some((l) => l.event === "swept"), "nothing was swept");
-
-		open();
+			const second = await t.run(stack);
+			assert.equal(second.ok, false);
+			assert.equal(second.error?.name, "EngineBusyError");
+			assert.match(second.error?.message ?? "", /already active/);
+			assert.equal(existsSync(staging), true, "the second run did not sweep the first run's staging folder");
+			assert.equal(readFileSync(lock, "utf8"), lockText, "and did not release or replace its lock");
+			assert.ok(!logLines().some((l) => l.event === "swept"), "nothing was swept");
+		} finally {
+			open();
+		}
 		const done = await first;
 		assert.equal(done.ok, true, JSON.stringify(done.events));
 		assert.equal(done.outcomes["alpha-busy"]?.status, "installed");
@@ -558,12 +562,16 @@ describe("the state store and the engine lock (T4-F005)", () => {
 		let parked!: () => void;
 		const atGate = new Promise<void>((resolve) => (parked = resolve));
 		const inner = toolStage("alpha-q");
-		const t = testEngine(root, () => [{ ...inner, async install(ctx) { await inner.install(ctx); parked(); await gate; } }]);
+		let installs = 0;
+		const t = testEngine(root, () => [{ ...inner, async install(ctx) { await inner.install(ctx); if (++installs > 1) return; parked(); await gate; } }]);
 		const running = t.run(makeStack({ "alpha-q": alpha }));
 		await atGate;
-		await assert.rejects(new StateStore(testLayout(root)).pruneInactive("alpha-q", testPlatform().processes), EngineLockedError);
-		assert.equal(existsSync(join(root, "tools", "alpha-q", "1.0.0.staging")), true, "the running install's staging folder was not deleted");
-		open();
+		try {
+			await assert.rejects(new StateStore(testLayout(root)).pruneInactive("alpha-q", testPlatform().processes), EngineLockedError);
+			assert.equal(existsSync(join(root, "tools", "alpha-q", "1.0.0.staging")), true, "the running install's staging folder was not deleted");
+		} finally {
+			open();
+		}
 		assert.equal((await running).ok, true);
 	});
 });
