@@ -3,20 +3,25 @@
 //
 //   probe                                  P1: the scratch keychain exists, is the only one in the search list, and a throwaway item stays in it
 //   setup                                  F1 + G1: install gh/glab (forge-install.sh), write the launchers and the private Git configuration
-//   gh --login [--skip-push] [--no-keychain]       G2-G8 (or U1 with --no-keychain), then the token search; the one-time code goes to --code-file
-//   glab --login --token-file <f> [--skip-push]    L1-L7, then U2 and the token search with the same token, then the revoke of the token (C1)
-//   cleanup                                logout of both CLIs, delete-keychain, rm -rf $SPIKE (only after S1 and X1)
-//   x1 before|after                        fingerprint of the user's own gh/glab items (attributes and file hashes only, never a secret)
+//   gh [--reuse-login] [--skip-push] [--skip-search]   G2-G8, then the token search; the one-time code goes to --code-file
+//   glab --token-file <f> [--skip-push] [--skip-search]   L1-L7, then the token search, then the revoke of the token (C1)
+//   cleanup                                logout of both CLIs, delete the scratch keychains (the caller removes $SPIKE after S1 and X1); writes c1.json
+//   x1 before|after                        fingerprint of the user's own gh/glab items, files, default keychain and search list (attributes, hashes and paths only, never a secret)
+//
+// A skipped check prints a WARN "SKIP ..." line; it is never a pass.
+// The store-unavailable checks (P1:store-unavailable, U1 = gh --no-keychain, U2 in glab) write to a locked, read-only keychain, which can raise a SecurityAgent
+// unlock dialog on the screen. They run only with --store-unavailable-risky-dialog, which prints a warning first.
 //
 // Prints PASS/FAIL/WARN lines and writes the steps to $SPIKE/results/<name>.json (no secrets). Exit 1 on any FAIL.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, realpathSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, realpathSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ghTokenVerdict, glabTokenVerdict, gitValueList, hostTokenFindings, removeNestedRoots, splitUnread, yamlEntriesOfFile } from "../win/lib/account-verdict.mjs";
 import { hideSecrets, scan } from "../win/lib/token-scan.mjs";
+import { dialogSteps, parse, RISKY_FLAG } from "./account-opts.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SPIKE = process.env.SPIKE ?? "";
@@ -85,12 +90,13 @@ function run(file, args, { mode = "kc", input, env = {}, timeout = 120_000 } = {
 const sec = (args, mode = "kc", input) => run(SECURITY, args, { mode, input, timeout: 20_000 });
 const firstLine = (t) => hideSecrets(String(t).split(/\r?\n/).find((l) => l.trim()) ?? "", secrets).trim();
 
+mkdirSync(SPIKE, { recursive: true, mode: 0o700 });
 const SPIKE_REAL = realpathSync(SPIKE);
 const inSpike = (p) => p.startsWith(SPIKE + "/") || p.startsWith(SPIKE_REAL + "/");
 const sameFile = (a, b) => a === b || a.replace(SPIKE_REAL, SPIKE) === b.replace(SPIKE_REAL, SPIKE);
 const keychainPaths = (text) => [...String(text).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 /** The guard: before every gh, glab or git call. The default keychain and the user search list must be under $SPIKE, or (no-keychain mode) absent. */
-function assertScratch(mode, skipWritable = false) {
+function assertScratch(mode, skipWritable = false, loose = false) {
   const home = homeOf(mode);
   if (!home.startsWith(SPIKE + "/") || envFor(mode).HOME !== home) throw new Error(`guard: HOME is not under ${SPIKE}`);
   const def = sec(["default-keychain", "-d", "user"], mode);
@@ -99,6 +105,7 @@ function assertScratch(mode, skipWritable = false) {
   const listPaths = list.code === 0 ? keychainPaths(list.out) : [];
   const outside = [...defPaths, ...listPaths].filter((p) => !inSpike(p));
   if (outside.length > 0) throw new Error(`guard: keychain outside ${SPIKE}: ${outside.join(", ")}`);
+  if (loose) return; // before the scratch keychain exists only the checks above apply
   if (mode === "kc" && (defPaths.length !== 1 || !sameFile(defPaths[0], KC_PATH))) throw new Error(`guard: the default keychain is ${JSON.stringify(defPaths)}, not ${KC_PATH}`);
   if (mode === "ro") {
     if (defPaths.length !== 1 || !sameFile(defPaths[0], RO_KC)) throw new Error(`guard: the default keychain is ${JSON.stringify(defPaths)}, not ${RO_KC}`);
@@ -173,7 +180,7 @@ function setupReadOnly() {
 }
 
 // ---- P1 ----
-async function probe() {
+async function probe(opts = {}) {
   resultName = "p1";
   for (const d of [SPIKE, HOME_KC, HOME_EMPTY, TMP, join(SPIKE, "secret"), join(SPIKE, "work")]) mkdirSync(d, { recursive: true, mode: 0o700 });
   // Read-only first: with HOME=<scratch> and no plist, the default keychain must not be the user's. If it is, HOME is not honored: stop before anything is created.
@@ -208,19 +215,24 @@ async function probe() {
   }
   add("P1:item", ok(a.code === 0 && f.code === 0 && inScratch && real.code !== 0 && d.code === 0 && gone),
     `add exit ${a.code} (no keychain argument, so it went to the default); find in scratch exit ${f.code}; listed in scratch dump: ${inScratch}; found in the user's login keychain: ${real.code === 0} (exit ${real.code}); delete exit ${d.code}; gone afterwards: ${gone}; ${firstLine(info.err + info.out)}`);
-  // Store unavailable. The design's first idea, a HOME with no keychain at all, made `security add-generic-password` wait for a SecurityAgent dialog on the
-  // screen (30 s timeout in the first P1 run), so the check uses a scratch keychain that exists but is locked and read-only: the write fails at once.
-  const roSetup = setupReadOnly();
-  const nk = run(SECURITY, ["add-generic-password", "-s", nonce, "-a", "probe", "-w", "probe-value"], { mode: "ro", input: "", timeout: 30_000 });
-  const nkRealHit = run(SECURITY, ["find-generic-password", "-s", nonce, realKc], { mode: "kc", env: { HOME: REAL_HOME }, timeout: 20_000 });
-  const nkScratchHit = dumpItems("kc").items.some((i) => i.svce === nonce);
-  add("P1:store-unavailable", ok(roSetup.code === 0 && nk.code !== 0 && nk.code !== -1 && nkRealHit.code !== 0 && !nkScratchHit),
-    `locked read-only scratch keychain: setup exit ${roSetup.code}; add exit ${nk.code} in ${nk.ms} ms (no dialog wait) ${firstLine(nk.err + nk.out)}; found in the user's keychain: ${nkRealHit.code === 0}; found in the scratch keychain: ${nkScratchHit}`);
-  try {
-    assertScratch("ro");
-    add("P1:guard-ro", "PASS", "the default keychain and search list of the store-unavailable home are only its own read-only keychain");
-  } catch (e) {
-    add("P1:guard-ro", "FAIL", e.message);
+  // Store unavailable. A locked, read-only scratch keychain written to can raise a SecurityAgent unlock dialog, so this runs only with the explicit flag.
+  if (dialogSteps({ cmd: "probe", riskyDialog: opts.riskyDialog }).length === 0) {
+    add("P1:store-unavailable", "WARN", `SKIP: not run, because writing to a locked keychain can raise a SecurityAgent dialog; pass ${RISKY_FLAG} to run it`);
+  } else {
+    console.log(`WARNING: a macOS unlock dialog for a keychain named "login" may appear now. It is the scratch keychain; cancel it.`);
+    const roSetup = setupReadOnly();
+    const nk = run(SECURITY, ["add-generic-password", "-s", nonce, "-a", "probe", "-w", "probe-value"], { mode: "ro", input: "", timeout: 30_000 });
+    const nkRealHit = run(SECURITY, ["find-generic-password", "-s", nonce, realKc], { mode: "kc", env: { HOME: REAL_HOME }, timeout: 20_000 });
+    const nkScratchHit = dumpItems("kc").items.some((i) => i.svce === nonce);
+    const fastFail = nk.code !== 0 && nk.code !== -1 && nk.ms < 2000;
+    add("P1:store-unavailable", roSetup.code === 0 && nkRealHit.code !== 0 && !nkScratchHit ? (fastFail ? "PASS" : "WARN") : "FAIL",
+      `locked read-only scratch keychain: setup exit ${roSetup.code}; add exit ${nk.code} in ${nk.ms} ms (${fastFail ? "failed fast" : "slow or timed out: a dialog probably appeared"}); ${firstLine(nk.err + nk.out)}; found in the user's keychain: ${nkRealHit.code === 0}; found in the scratch keychain: ${nkScratchHit}`);
+    try {
+      assertScratch("ro");
+      add("P1:guard-ro", "PASS", "the default keychain and search list of the store-unavailable home are only its own read-only keychain");
+    } catch (e) {
+      add("P1:guard-ro", "FAIL", e.message);
+    }
   }
   add("P1:finding", "WARN", "a HOME with no keychain at all is not usable for U1/U2: security add-generic-password waited for a SecurityAgent dialog until its 30 s timeout (first P1 run, 2026-11-01)");
   return save();
@@ -230,6 +242,7 @@ async function probe() {
 function setup() {
   resultName = "f1";
   mkdirSync(TMP, { recursive: true, mode: 0o700 });
+  assertScratch("kc", true, true);
   const clean = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SPIKE, SBD_NODE: process.execPath, HOME: HOME_KC, TMPDIR: TMP };
   const st = spawnSync("/bin/bash", [join(here, "forge-install.sh"), "self-test"], { env: clean, encoding: "utf8" });
   add("F1:refusals", ok(st.status === 0), `forge-install.sh self-test: ${st.stdout.trim().split("\n").join(" | ")}`);
@@ -242,7 +255,7 @@ function setup() {
   const g = spawnSync(process.execPath, [fc, "git-config", "--file", GIT_CONFIG, ...forgeArgs], { encoding: "utf8", env: clean });
   add("F1:launchers", ok(l.status === 0 && g.status === 0), `launchers: ${l.stdout.trim()}; git-config: ${g.stdout.trim()}`);
   for (const [cli, want] of [["gh", pins.gh.version], ["glab", pins.glab.version]]) {
-    const v = run(join(TOOLS, "bin", cli), ["--version"]);
+    const v = forge(cli, ["--version"], { loose: true });
     add(`F1:version-${cli}`, ok(v.code === 0 && (v.out + v.err).includes(want)), `${cli} --version through the launcher -> ${firstLine(v.out + v.err)}`);
   }
   const sys = spawnSync(GIT, ["config", "--system", "--get-all", "credential.helper"], { encoding: "utf8", env: clean });
@@ -264,7 +277,10 @@ const FORGE = {
   glab: { host: "gitlab.moldplan.app", repo: "https://gitlab.moldplan.app/weihung/sbd-account-check", cfg: join(SPIKE, "config/glab-cli"), key: "token", version: pins.glab.version },
 };
 const launcher = (cli) => join(TOOLS, "bin", cli);
-const forge = (cli, args, o = {}) => run(launcher(cli), args, o);
+const forge = (cli, args, o = {}) => {
+  assertScratch(o.mode ?? "kc", true, o.loose);
+  return run(launcher(cli), args, o);
+};
 
 function findings(cli) {
   const f = FORGE[cli];
@@ -417,7 +433,10 @@ function readSharedText(p) {
 const roSnapshot = () => createHash("sha256").update(readFileSync(RO_KC)).digest("hex");
 
 async function ghLogin(opts) {
+  if (opts.noKeychain && dialogSteps(opts).length === 0) throw new Error(`--no-keychain (U1) writes to a locked keychain and can raise a SecurityAgent dialog; it needs ${RISKY_FLAG}`);
+  if (opts.noKeychain) console.log(`WARNING: a macOS unlock dialog for a keychain named "login" may appear. It is the scratch keychain; cancel it.`);
   const mode = opts.noKeychain ? "ro" : "kc";
+  if (opts.noKeychain && !existsSync(RO_KC)) setupReadOnly();
   resultName = opts.noKeychain ? "u1" : "g2-g8";
   const f = FORGE.gh;
   assertScratch(mode);
@@ -428,14 +447,18 @@ async function ghLogin(opts) {
   const roBefore = opts.noKeychain ? roSnapshot() : null;
   const outF = join(SPIKE, "logs", `gh-login-${mode}.out.txt`);
   const errF = join(SPIKE, "logs", `gh-login-${mode}.err.txt`);
-  rmSync(outF, { force: true });
-  rmSync(errF, { force: true });
   let plainLine = false;
   if (opts.reuseLogin) {
-    // Resume after an interrupted run: the login already exists in the scratch keychain; run the checks that follow it.
+    // Resume after an interrupted run: the login already exists in the scratch keychain; run the checks that follow it. The earlier run's logs are kept and read.
     const st = forge("gh", ["auth", "status", "--hostname", f.host], { mode });
-    add("login", ok(st.code === 0), `reused the gh login already in the scratch keychain (gh auth status exit ${st.code}); the interrupted run printed no plain-text warning`);
+    const haveLogs = existsSync(outF) || existsSync(errF);
+    const prior = readSharedText(outF) + "\n" + readSharedText(errF);
+    plainLine = /saved in plain text/i.test(prior);
+    const logNote = haveLogs ? `the earlier run's login logs were read: "saved in plain text" printed: ${plainLine}` : "no earlier login log was found, so the plain-text warning of that login was NOT checked";
+    add("login (reused)", st.code !== 0 || plainLine ? "FAIL" : haveLogs ? "PASS" : "WARN", `reused the gh login already in the scratch keychain (gh auth status exit ${st.code}); ${logNote}`);
   } else {
+    rmSync(outF, { force: true });
+    rmSync(errF, { force: true });
     await loadGate("gh auth login");
     const t0 = Date.now();
     const outFd = openSync(outF, "w");
@@ -489,9 +512,12 @@ async function ghLogin(opts) {
     return save();
   } else if (!opts.skipPush) {
     await pushCheck("gh", mode);
+  } else {
+    add("SKIP:git-push", "WARN", "SKIP: git clone and push were not run (--skip-push); this is not a pass");
   }
   if (token && !opts.skipSearch) tokenSearch(opts.noKeychain ? "gh-U1-token" : "gh-G2-token", token);
   else if (!token) add("S1:token", "FAIL", "could not read the token from gh; nothing was searched");
+  else add("SKIP:token-search", "WARN", "SKIP: the token search was not run (--skip-search); this is not a pass");
   if (!opts.noKeychain) logout("gh", "requested", mode);
   else rmSync(FORGE.gh.cfg, { recursive: true, force: true });
   return save();
@@ -526,7 +552,7 @@ async function glabAll(opts) {
   if (!opts.tokenFile || !existsSync(opts.tokenFile)) throw new Error(`token file not found: ${opts.tokenFile}`);
   let tok = readAndDestroy(opts.tokenFile);
   secrets.push(tok);
-  add("L1:token-file-deleted", ok(!existsSync(opts.tokenFile)), `token file read, overwritten with zeros and removed: ${opts.tokenFile}`);
+  add("L1:token-file-deleted", ok(!existsSync(opts.tokenFile)), `token file read, truncated and removed (APFS does not overwrite the old blocks): ${opts.tokenFile}`);
   let revoked = false;
   try {
     assertScratch("kc");
@@ -542,14 +568,21 @@ async function glabAll(opts) {
       logout("glab", "plain-text", "kc");
     } else if (!opts.skipPush) {
       await pushCheck("glab", "kc");
+    } else {
+      add("SKIP:git-push", "WARN", "SKIP: git clone and push were not run (--skip-push); this is not a pass");
     }
-    tokenSearch("glab-L2-token", tok);
+    if (opts.skipSearch) add("SKIP:token-search", "WARN", "SKIP: the token search was not run (--skip-search); this is not a pass");
+    else tokenSearch("glab-L2-token", tok);
     logout("glab", "requested", "kc");
     const left = itemsFor(["glab:"]).filter((i) => i.svce.startsWith("glab:gitlab.moldplan.app"));
     add("C1:glab-keychain-item-gone", ok(left.length === 0), `glab items for ${f.host} left in the scratch keychain after logout: ${left.length}`);
     rmSync(f.cfg, { recursive: true, force: true });
-    // U2: the same token with no keychain at all. Held (--skip-u2): the store-unavailable keychain may raise a SecurityAgent dialog.
-    if (!opts.skipU2) {
+    // U2: the same token with a locked, read-only keychain. Only with the explicit flag: it may raise a SecurityAgent dialog.
+    if (dialogSteps({ cmd: "glab", riskyDialog: opts.riskyDialog }).length === 0) {
+      add("SKIP:U2", "WARN", `SKIP: the store-unavailable glab login (U2) was not run, because it can raise a SecurityAgent dialog; pass ${RISKY_FLAG} to run it`);
+    } else {
+    console.log(`WARNING: a macOS unlock dialog for a keychain named "login" may appear. It is the scratch keychain; cancel it.`);
+    if (!existsSync(RO_KC)) setupReadOnly();
     assertScratch("ro");
     const roBefore = roSnapshot();
     const u2 = await glabLogin("ro", tok, "U2");
@@ -561,7 +594,8 @@ async function glabAll(opts) {
       logout("glab", "plain-text", "ro");
     }
     add("U2:store-unchanged", ok(roSnapshot() === roBefore), "the read-only keychain file is byte-for-byte what it was before the login");
-    tokenSearch("glab-U2-token", tok);
+    if (opts.skipSearch) add("SKIP:token-search-U2", "WARN", "SKIP: the token search was not run (--skip-search); this is not a pass");
+    else tokenSearch("glab-U2-token", tok);
     rmSync(f.cfg, { recursive: true, force: true });
     }
   } finally {
@@ -594,10 +628,16 @@ function x1Snapshot() {
   }
   const files = {};
   for (const p of [".config/gh/hosts.yml", ".config/gh/config.yml", ".config/glab-cli/config.yml", "Library/Application Support/glab-cli/config.yml"]) files[p] = sha(join(REAL_HOME, p));
+  // Read-only: paths only, as the real user sees them.
+  const keychains = {};
+  for (const [k, args] of [["default-keychain", ["default-keychain", "-d", "user"]], ["list-keychains", ["list-keychains", "-d", "user"]]]) {
+    const r = spawnSync(SECURITY, args, { env, encoding: "utf8", timeout: 20_000 });
+    keychains[k] = { exit: r.status, paths: keychainPaths(r.stdout ?? "") };
+  }
   const plist = join(REAL_HOME, "Library/Preferences/com.apple.security.plist");
   files["Library/Preferences/com.apple.security.plist"] = sha(plist);
   const kcMtime = statSync(join(REAL_HOME, "Library/Keychains/login.keychain-db"), { throwIfNoEntry: false })?.mtimeMs ?? null;
-  return { items, files, loginKeychainFileMtime: kcMtime };
+  return { items, files, keychains, loginKeychainFileMtime: kcMtime };
 }
 function x1(which) {
   mkdirSync(KEEP, { recursive: true });
@@ -606,9 +646,10 @@ function x1(which) {
   console.log(`X1 ${which}: ${Object.entries(snap.items).map(([k, v]) => `${k}=${v.found ? "found mdat " + v.mdat : "absent"}`).join("; ")}`);
   if (which === "after") {
     const b = JSON.parse(readFileSync(join(KEEP, "x1-before.json"), "utf8"));
-    const same = JSON.stringify({ items: b.items, files: b.files }) === JSON.stringify({ items: snap.items, files: snap.files });
+    const kcSame = b.keychains ? JSON.stringify(b.keychains) === JSON.stringify(snap.keychains) : null;
+    const same = JSON.stringify({ items: b.items, files: b.files }) === JSON.stringify({ items: snap.items, files: snap.files }) && kcSame !== false;
     resultName = "x1";
-    add("X1", ok(same), `attributes (mdat, cdat, acct, svce) of the user's gh and glab keychain items and the SHA256 of ~/.config/gh/hosts.yml, config.yml, glab config.yml and the security plist are ${same ? "unchanged" : "CHANGED"} between before and after; the login keychain file's mtime is ${b.loginKeychainFileMtime === snap.loginKeychainFileMtime ? "unchanged" : "different (other apps write it too; not part of the verdict)"}`);
+    add("X1", ok(same), `attributes (mdat, cdat, acct, svce) of the user's gh and glab keychain items and the SHA256 of ~/.config/gh/hosts.yml, config.yml, glab config.yml and the security plist, and the real user's default keychain and keychain search list (${kcSame === null ? "not recorded in the before snapshot" : kcSame ? "unchanged" : "CHANGED"}) are ${same ? "unchanged" : "CHANGED"} between before and after; the login keychain file's mtime is ${b.loginKeychainFileMtime === snap.loginKeychainFileMtime ? "unchanged" : "different (other apps write it too; not part of the verdict)"}`);
     return save();
   }
   return 0;
@@ -617,6 +658,7 @@ function x1(which) {
 // ---- cleanup ----
 function cleanup() {
   resultName = "c1";
+  assertScratch("kc", true, !existsSync(KC_PATH));
   for (const cli of ["gh", "glab"]) if (existsSync(launcher(cli))) logout(cli, `cleanup-${cli}`, "kc");
   if (existsSync(KC_PATH)) {
     assertScratch("kc");
@@ -636,30 +678,12 @@ function cleanup() {
 }
 
 // ---- main ----
-function parse(argv) {
-  const o = { cmd: argv[0], sub: null };
-  for (let i = 1; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--login") o.login = true;
-    else if (a === "--reuse-login") o.reuseLogin = true;
-    else if (a === "--skip-u2") o.skipU2 = true;
-    else if (a === "--skip-push") o.skipPush = true;
-    else if (a === "--skip-search") o.skipSearch = true;
-    else if (a === "--no-keychain") o.noKeychain = true;
-    else if (a === "--token-file") o.tokenFile = resolve(argv[++i]);
-    else if (a === "--code-file") o.codeFile = resolve(argv[++i]);
-    else if (!a.startsWith("--")) o.sub = a;
-    else throw new Error(`unknown option ${a}`);
-  }
-  return o;
-}
-
 async function main() {
   const o = parse(process.argv.slice(2));
   for (const k of Object.keys(process.env)) if (/^(PI_|HERDR_)/.test(k)) delete process.env[k];
   let fails = 0;
   try {
-    if (o.cmd === "probe") fails = await probe();
+    if (o.cmd === "probe") fails = await probe(o);
     else if (o.cmd === "setup") fails = setup();
     else if (o.cmd === "gh") fails = await ghLogin(o);
     else if (o.cmd === "glab") fails = await glabAll(o);

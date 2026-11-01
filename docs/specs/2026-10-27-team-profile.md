@@ -681,7 +681,7 @@ On the Windows VM and on macOS:
 - `glab` token login. `config.yml` holds no token, and an `api` token pushes over HTTPS.
 - With the credential store made unavailable, the wizard refuses the login instead of keeping a plain-text token.
 
-Status (2026-11-01): macOS ran the `gh` and `glab` checks on a scratch HOME keychain and passed (branch `feat/mac-account-check`); the pushed branches are test branches. The store-unavailable refusal could not be checked safely on the Mac: a missing or read-only keychain can raise a SecurityAgent dialog, and go-keyring calls `/usr/bin/security` by absolute path. It stays a wizard-level check with the store probe's 10 s limit.
+Status (2026-11-01): macOS ran the `gh` and `glab` checks on a scratch HOME keychain and passed (branch `feat/mac-account-check`); the pushed branches are test branches. The store-unavailable refusal could not be checked safely on the Mac: a missing or read-only keychain can raise a SecurityAgent dialog, and go-keyring calls `/usr/bin/security` by absolute path. It stays a wizard-level check: the store probe is defined in `docs/specs/2026-11-01-phase2-shell.md`, The code-host screens.
 
 ### Scripted PM runs, in the Windows VM and on macOS
 

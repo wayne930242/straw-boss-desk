@@ -97,6 +97,11 @@ describe("unread files and roots", () => {
     assert.equal(sp.extra.length, 3);
     assert.match(sp.extra[2].reason, /EACCES/);
   });
+  it("root comparison ignores case when asked (Windows paths)", () => {
+    assert.equal(splitUnread([un("/Users/X/Kit/a.bin")], ["/users/x/kit"], true).strict.length, 1);
+    assert.equal(splitUnread([un("/Users/X/Kit/a.bin")], ["/users/x/kit"], false).strict.length, 0);
+    assert.deepEqual(removeNestedRoots(["/A/b", "/a/B/c"], true), ["/A/b"]);
+  });
   it("nothing unread is nothing to report", () => assert.deepEqual(splitUnread([], strictRoots), { strict: [], extra: [] }));
   it("a root inside another is dropped, a sibling that shares the prefix is kept", () => {
     const nr = removeNestedRoots(["/a/b", "/a", "/a/b/c/", "/d/x", "/a/", "/ab"]);
@@ -119,5 +124,17 @@ describe("git config --get-all output", () => {
   it("CRLF lines", () => {
     const crlf = gitValueList("\r\n!'/x/bin/gh' auth git-credential\r\n");
     assert.ok(crlf.length === 2 && crlf[0] === "" && !crlf[1].endsWith("\r"));
+  });
+});
+
+describe("case-insensitive like the .ps1", () => {
+  it("Null, NULL and !!Null are not tokens", () => {
+    for (const v of ["Null", "NULL", "!!Null", "~"]) assert.equal(glab(`hosts:\n  gitlab.example.org:\n    token: ${v}\n`).own, 0, v);
+  });
+  it("key, prefix and source spellings in other case still count", () => {
+    assert.equal(gh("github.com:\n    OAUTH_TOKEN: fake_token_value_20\n").own, 1);
+    assert.equal(gh("Hosts:\n    github.com:\n        oauth_token: fake_token_value_21\n", "github.com", ["hosts"]).own, 1);
+    assert.ok(ghTokenVerdict({ source: "OAuth_Token", hostsTokens: 0, configTokens: 0 }).plain);
+    assert.ok(ghTokenVerdict({ source: "Keyring", hostsTokens: 0, configTokens: 0 }).verified);
   });
 });

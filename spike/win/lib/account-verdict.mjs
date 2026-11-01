@@ -31,7 +31,7 @@ export function yamlEntriesOfFile(path) {
 
 /** A non-empty value that is a token: not an empty string and not YAML's null spellings. */
 export function isTokenValue(value) {
-  return Boolean(value) && !["!!null", "null", "~"].includes(value);
+  return Boolean(value) && !["!!null", "null", "~"].includes(String(value).toLowerCase());
 }
 
 /**
@@ -44,10 +44,10 @@ export function hostTokenFindings(entries, { host, key, prefix = [], directOnly 
   let own = 0;
   const other = new Set();
   for (const e of entries) {
-    if (e.key !== key || !isTokenValue(e.value)) continue;
+    if (e.key.toLowerCase() !== key.toLowerCase() || !isTokenValue(e.value)) continue;
     const p = e.path;
     if (p.length < prefix.length) continue;
-    if (!prefix.every((k, i) => p[i] === k)) continue;
+    if (!prefix.every((k, i) => p[i].toLowerCase() === k.toLowerCase())) continue;
     if (p.length === prefix.length) {
       other.add("(no host)");
       continue;
@@ -74,7 +74,8 @@ export function gitValueList(text) {
 export function ghTokenVerdict({ source, hostsTokens, configTokens }) {
   const fileHit = hostsTokens + configTokens > 0;
   const src = source ?? "";
-  if (src === "oauth_token" || /[\\/]/.test(src) || /\.ya?ml$/.test(src)) {
+  const lsrc = src.toLowerCase();
+  if (lsrc === "oauth_token" || /[\\/]/.test(src) || /\.ya?ml$/.test(lsrc)) {
     return { plain: true, verified: false, reason: `gh reports the token source as '${src}' (a file), not the keyring` };
   }
   if (fileHit) {
@@ -83,7 +84,7 @@ export function ghTokenVerdict({ source, hostsTokens, configTokens }) {
   if (src.trim() === "") {
     return { plain: false, verified: false, reason: "could not verify: gh reported no tokenSource (status failed or the field is missing); this is not a plain-text verdict, so no logout" };
   }
-  if (src === "keyring") return { plain: false, verified: true, reason: "tokenSource is 'keyring'" };
+  if (lsrc === "keyring") return { plain: false, verified: true, reason: "tokenSource is 'keyring'" };
   return { plain: false, verified: false, reason: `tokenSource is '${src}', not the keyring, and no token is in a file; not a plain-text verdict, so no logout (an environment token wins over the login)` };
 }
 
@@ -97,25 +98,27 @@ export function glabTokenVerdict({ configTokens, statusExit }) {
 }
 
 /** A root that lies inside another root is covered by it; scanning both would read its files twice. */
-export function removeNestedRoots(roots) {
+export function removeNestedRoots(roots, ci = process.platform === "win32") {
+  const k = (x) => (ci ? x.toLowerCase() : x);
   const seen = new Set();
   const norm = [];
   for (const r of roots.filter(Boolean).map((x) => x.replace(/[\\/]+$/, ""))) {
-    if (!seen.has(r)) {
-      seen.add(r);
+    if (!seen.has(k(r))) {
+      seen.add(k(r));
       norm.push(r);
     }
   }
-  return norm.filter((r) => !norm.some((o) => o !== r && r.startsWith(o + "/")));
+  return norm.filter((r) => !norm.some((o) => k(o) !== k(r) && k(r).startsWith(k(o) + "/")));
 }
 
 /** Unread files split by whether they lie under a folder the spec names (an unread file there fails the search) or elsewhere (a warning). */
-export function splitUnread(unread, strictRoots) {
-  const roots = strictRoots.filter(Boolean).map((r) => r.replace(/[\\/]+$/, ""));
+export function splitUnread(unread, strictRoots, ci = process.platform === "win32") {
+  const k = (x) => (ci ? x.toLowerCase() : x);
+  const roots = strictRoots.filter(Boolean).map((r) => k(r.replace(/[\\/]+$/, "")));
   const strict = [];
   const extra = [];
   for (const u of unread) {
-    (roots.some((r) => u.path === r || u.path.startsWith(r + "/")) ? strict : extra).push(u);
+    (roots.some((r) => k(u.path) === r || k(u.path).startsWith(r + "/")) ? strict : extra).push(u);
   }
   return { strict, extra };
 }
