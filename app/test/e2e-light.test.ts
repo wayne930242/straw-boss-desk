@@ -101,7 +101,8 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 
 	it("runs every stage from an empty root: all verified, none failed", () => {
 		assert.equal(first.error, null);
-		assert.ok(first.ok, JSON.stringify(first.outcomes, null, 1).slice(0, 2000));
+		const failures = Object.values(first.outcomes).filter((o) => o.failure !== undefined).map((o) => `${o.stage}: ${o.failure?.sentence} | ${o.failure?.detail}`);
+		assert.ok(first.ok, failures.length > 0 ? failures.join("\n") : JSON.stringify(first.outcomes, null, 1).slice(0, 2000));
 		const expected = ["preflight", "node", "git", "herdr", "fd-rg", "gh", "glab", "opt:bun", "tool-paths", "launchers", "git-helpers"].sort();
 		assert.deepEqual(stagesOf(first), expected);
 		// The preflight checks and records its result without installing anything, so it is skipped-verified even on a first run.
