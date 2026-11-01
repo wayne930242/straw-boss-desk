@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { fdRgStage } from "../src/main/bootstrap/stages/tools.ts";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -18,6 +19,7 @@ import type { CommandRunner } from "../src/main/platform/index.ts";
 import { tarGz, zip } from "./harness/archives.ts";
 import { currentKey, leftovers, makeStack, publish, runEngine, scratchRoot, testLayout, toolStage } from "./harness/engine-fixture.ts";
 import { FixtureServer } from "./harness/fixture-server.ts";
+import { echoingStatements, statementsOf } from "./harness/helper-output-guard.ts";
 import { sha256Hex } from "./harness/hash.ts";
 
 // Task 5b: the fixes of the task 5 review (T5-F003, T5-F004, T5-F006). Each case fails when its fix is reverted.
@@ -362,31 +364,71 @@ describe("T5-F011 b: the CI cache of downloads holds only what the e2e uses", ()
 	});
 });
 
-describe("R5-F004: the helper-output guard catches every assert form", () => {
-	const output = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\b/;
-	const asked = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\.includes\(/;
-	const flags = (line: string): boolean => /\bassert\.\w+\(/.test(line) && output.test(line.replace(asked, ""));
-	it("flags the first-argument match that was the original bug, the last-argument forms, and a message that echoes the output", () => {
-		assert.equal(flags("assert.match(filled.stdout, /password=ghp_x/);"), true);
-		assert.equal(flags("assert.equal(filled.stdout.trim(), 'x');"), true);
-		assert.equal(flags("assert.ok(ok, filled.stderr);"), true);
-		assert.equal(flags("assert.equal(credentialRun.stdout, '');"), true);
+describe("R5-F004 and T6-F008: the helper-output guard", () => {
+	const testDir = fileURLToPath(new URL(".", import.meta.url));
+	const real = readFileSync(new URL("./e2e-light.test.ts", import.meta.url), "utf8");
+	/** Every test file but this one, which plants the forms in strings, and the guard itself. */
+	const testFiles = (): string[] =>
+		[testDir, join(testDir, "harness")].flatMap((dir) => readdirSync(dir).filter((f) => f.endsWith(".ts")).map((f) => join(dir, f))).filter((f) => !/bootstrap-t5-fixes\.test\.ts$|helper-output-guard\.ts$/.test(f));
+	const planted = (code: string): string[] => echoingStatements(`${real}\n\ndescribe("planted", () => {\n${code}\n});\n`).map((s) => s.text);
+
+	it("finds no helper output in an assertion, a diagnostic, or an error in any real test file", () => {
+		const found = testFiles().flatMap((file) => echoingStatements(readFileSync(file, "utf8")).map((s) => `${file}:${s.line}: ${s.text}`));
+		assert.deepEqual(found, []);
+		assert.ok(testFiles().some((f) => f.endsWith("e2e-light.test.ts")), "the real e2e file is among those read");
 	});
-	it("lets a question through: .includes hands assert a boolean", () => {
-		assert.equal(flags('assert.ok(filled.stdout.includes("password=x"), "the helper answered");'), false);
-		assert.equal(flags("assert.equal(filled.code, 0);"), false);
+
+	it("reads the real e2e-light.test.ts as clean before anything is planted, and its credential cases as statements", () => {
+		assert.deepEqual(echoingStatements(real), []);
+		const statements = statementsOf(real).map((s) => s.text);
+		// Ordinary string literals are blanked, so the statements read `run(git, ["", ""], ...)` and `filled.stdout.includes("")`.
+		assert.ok(statements.some((t) => t.startsWith('const filled = await run(git, ["", ""]') && t.includes("stdin:")), "the helper run is one statement");
+		assert.ok(statements.some((t) => t.startsWith('assert.ok(filled.stdout.includes(""), ""')), "the question is one statement");
+	});
+
+	// Each form is planted into a copy of the real file; exactly one statement, the one that reaches the sink, is flagged.
+	const FORMS: Record<string, string> = {
+		"the first-argument match that was the original bug": "assert.match(filled.stdout, /password=ghp_x/);",
+		"a last-argument form": "assert.equal(filled.stdout.trim(), 'x');",
+		"a message that echoes the output": "assert.ok(ok, filled.stderr);",
+		"a helper named credentialRun": "assert.equal(credentialRun.stdout, '');",
+		"a multi-line assertion": "assert.match(\n\tfilled.stdout,\n\t/password=ghp_x/,\n);",
+		"a multi-line assertion with the output on a later line of a message": "assert.ok(\n\tok,\n\t`the helper said ${filled.stderr}`,\n);",
+		"an alias": "const out = filled.stdout;\nassert.match(out, /password=ghp_x/);",
+		"an alias made by trimming": "const line = filled.stdout.trim().split('\\n')[0];\nassert.equal(line, 'x');",
+		"an alias of an alias": "const a = filled.stdout;\nconst b = a.trim();\nassert.equal(b, 'x');",
+		"a destructured alias": "const { stdout } = filled;\nassert.ok(stdout.length > 0, stdout);",
+		"a renamed destructured alias": "const { stderr: seen } = credentialRun;\nassert.equal(seen, '');",
+		"t.diagnostic": "t.diagnostic(filled.stdout);",
+		"console output": "console.log(credentialRun.stderr);",
+		"a bare assert": "assert(filled.stdout === 'x');",
+		"a thrown error": "throw new Error(filled.stderr);",
+	};
+	for (const [name, code] of Object.entries(FORMS)) {
+		it(`flags ${name}`, () => {
+			const found = planted(code);
+			assert.equal(found.length, 1, `${JSON.stringify(code)} -> ${JSON.stringify(found)}`);
+		});
+	}
+
+	it("lets a question through: .includes hands assert a boolean, on the output and on an alias, on one line or several", () => {
+		for (const code of [
+			'assert.ok(filled.stdout.includes("password=x"), "the helper answered");',
+			"assert.equal(filled.code, 0);",
+			'const out = filled.stdout;\nassert.ok(out.includes("password=x"), "the helper answered");',
+			'assert.ok(\n\tfilled.stdout.includes("password=x"),\n\t"the helper answered",\n);',
+			"const m = filled.stdout.includes('x');\nassert.ok(m);",
+			'assert.equal(typeof "filled.stdout", "string");',
+			"// assert.match(filled.stdout, /x/)\nassert.ok(true);",
+		]) {
+			assert.deepEqual(planted(code), [], JSON.stringify(code));
+		}
 	});
 });
 
 describe("T5-F008: the credential-helper cases never print what a helper answered", () => {
-	it("no assertion of e2e-light.test.ts takes a helper's stdout or stderr as its message", () => {
+	it("the cases are gated by hostedCase, and one signal alone is not a gate", () => {
 		const source = readFileSync(new URL("./e2e-light.test.ts", import.meta.url), "utf8");
-		// R5-F004: node's assert prints `actual` when it fails, so a helper's output must never be an argument of any assert call, first or last, unless
-		// it is only asked a question (`.includes(...)`), which hands assert a boolean.
-		const asked = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\.includes\(/;
-		const output = /\b(?:filled|credential)\w*\.(?:stdout|stderr)\b/;
-		const echoing = source.split("\n").map((text, i) => ({ text, line: i + 1 })).filter(({ text }) => /\bassert\.\w+\(/.test(text) && output.test(text.replace(asked, "")));
-		assert.deepEqual(echoing, []);
 		assert.ok(source.includes("hosted(\"credential helper\")"), "the case is gated by hostedCase");
 		assert.ok(!/GITHUB_ACTIONS === "true"/.test(source), "one signal alone is not a gate");
 	});
