@@ -158,7 +158,6 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 	// Only a temp file this call created is removed on failure: when `wx` finds the name taken, what is there is someone else's.
 	let created = false;
 	try {
-		assertNoLinks(root, path, "write path");
 		hooks.beforeTemp?.();
 		assertNoLinks(root, path, "write path (checked again before its temp file is created)");
 		const fd = openSync(tmp, "wx");

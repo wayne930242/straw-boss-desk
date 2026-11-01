@@ -775,6 +775,14 @@ describe("RC-F003: the temp file and the links of a write", () => {
 		assert.deepEqual(readdirSync(dir), ["a.md"], "no temp file landed outside");
 	});
 
+	it("a parent that is already a link, even a dangling one, is refused before any folder is made", () => {
+		const gone = join(tmp, "outside", "not-yet");
+		mkdirSync(join(agentDir), { recursive: true });
+		dirLink(gone, join(agentDir, "rules"));
+		assert.throws(() => writeAtomic(agentDir, join(agentDir, "rules", "deep", "a.md"), "data"), /^Error: refusing write path .*symbolic link or junction/);
+		assert.ok(!existsSync(gone), "no folder was made behind the link");
+	});
+
 	it("refuses a path outside the agent folder, and leaves no temp file after any failure", () => {
 		assert.throws(() => writeAtomic(agentDir, join(tmp, "elsewhere.txt"), "x"), /outside the agent folder/);
 		assert.ok(!existsSync(join(tmp, "elsewhere.txt")));
