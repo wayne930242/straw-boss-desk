@@ -5,9 +5,12 @@
 // user's own terminal is unchanged.
 //
 // The batch files follow the T5-F007 pattern (`setlocal DisableDelayedExpansion`, `pushd` to the paths file's folder, `call ".\paths.cmd"`, R5-F007)
-// and are one-line commands after `endlocal &`: cmd expands every `%` of a line before it runs any of it, so `endlocal & set "PATH=..." & "<program>" %*`
-// hands the program the new `PATH` and the caller's arguments exactly once expanded, with no `call` to double carets or expand `%` a second time, and
-// control never returns to the shim (the exit code is the program's).
+// and run their program inside that `setlocal`, never after an `endlocal`: delayed expansion is applied to each command when it runs, so after an
+// `endlocal` a cmd started with `/v:on` (the per-user DelayedExpansion setting) would strip the `!` of a root or an argument from the commands that follow
+// on the same line. Without a `call` the program gets the caller's arguments exactly once expanded (`call` would double carets and expand `%` a second
+// time); a batch program takes over from the shim and the `PATH` set in the shim's scope reaches it (found on `windows-2025`), and a program that is not a
+// batch file returns, so the line after it leaves with its exit code instead of running into the pass-through. The scope ends with the shim: a terminal
+// that typed `pi` keeps its own `PATH` and variables.
 
 /** The shim files a Windows install writes, by name. `bun.cmd` and `bunx.cmd` only for a recipe that names bun. */
 export interface ShimSpec {
@@ -38,7 +41,8 @@ export function cmdShim(spec: ShimSpec): string {
 		spec.desk === "launcher"
 			? [
 					`if not exist "%SBD_APP_ROOT%\\tools\\bin\\${name}.cmd" goto :missing_desk`,
-					`endlocal & "%SBD_APP_ROOT%\\tools\\bin\\${name}.cmd" %*`,
+					`"%SBD_APP_ROOT%\\tools\\bin\\${name}.cmd" %*`,
+					"exit /b %ERRORLEVEL%",
 				]
 			: [
 					spec.desk === "pi" ? 'if not exist "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" goto :missing_desk' : "rem the bash path is checked once paths.cmd has named it",
@@ -47,10 +51,8 @@ export function cmdShim(spec: ShimSpec): string {
 					'call ".\\paths.cmd"',
 					"popd",
 					...(spec.desk === "bash" ? ['if not exist "%SBD_GIT_BASH%" goto :missing_desk'] : []),
-					spec.desk === "pi"
-						? 'endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*'
-						: 'endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_GIT_BASH%" %*',
-					// A program that is not a batch file returns, and the next line would run the pass-through too: leave with the program's exit code.
+					'set "PATH=%SBD_PATH%;%PATH%"',
+					spec.desk === "pi" ? '"%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*' : '"%SBD_GIT_BASH%" %*',
 					"exit /b %ERRORLEVEL%",
 				];
 	return crlf([
@@ -78,7 +80,9 @@ export function cmdShim(spec: ShimSpec): string {
 		'set "SBD_NEXT="',
 		`for %%F in (${name}.com ${name}.exe ${name}.bat ${name}.cmd) do if not defined SBD_NEXT if /i not "%%~dp$SBD_REST:F"=="%SBD_SHIMS%" set "SBD_NEXT=%%~$SBD_REST:F"`,
 		"if not defined SBD_NEXT goto :missing_pass",
-		'endlocal & "%SBD_NEXT%" %*',
+		// The copy of the PATH in SBD_REST would double the environment the program inherits.
+		'set "SBD_REST="',
+		'"%SBD_NEXT%" %*',
 		"exit /b %ERRORLEVEL%",
 		"",
 		":missing_pass",

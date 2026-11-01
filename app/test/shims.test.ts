@@ -48,16 +48,17 @@ describe("what the shim files say", () => {
 		}
 	});
 
-	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and one expanded line after endlocal", () => {
+	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and the program run inside the setlocal (no endlocal)", () => {
 		for (const name of ["pi.cmd", "bash.cmd"]) {
 			const text = files[name] as string;
 			assert.match(text, /setlocal DisableDelayedExpansion\r\n/);
 			assert.match(text, /pushd "%~dp0\.\.\\bin"\r\ncall "\.\\paths\.cmd"\r\npopd\r\n/, name);
 			assert.ok(!/call "?%/.test(text), `${name} calls a path built from variables`);
 			assert.ok(!/^\s*call (?!"\.\\paths\.cmd")/m.test(text), `${name} uses call for anything but the paths file`);
-			assert.match(text, /^endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%[A-Z_]+%(?:\\[^"]*)?" %\*\r$/m, `${name}'s exec line`);
+			assert.match(text, /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%[A-Z_]+%(?:\\[^"]*)?" %\*\r\nexit \/b %ERRORLEVEL%\r$/m, `${name}'s exec lines`);
+			assert.ok(!/endlocal/.test(text), `${name} leaves its setlocal before the program runs: cmd /v:on would then strip a "!" from the line`);
 		}
-		assert.match(files["bun.cmd"] as string, /^endlocal & "%SBD_APP_ROOT%\\tools\\bin\\bun\.cmd" %\*\r$/m);
+		assert.match(files["bun.cmd"] as string, /^"%SBD_APP_ROOT%\\tools\\bin\\bun\.cmd" %\*\r\nexit \/b %ERRORLEVEL%\r$/m);
 		assert.match(files["bunx.cmd"] as string, /bunx\.cmd" %\*/);
 	});
 
@@ -328,7 +329,7 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		assert.match(desk.stderr, /not set up in this Straw Boss Desk/);
 	});
 
-	it("leaves the caller's variables alone after a pass-through, and only the PATH changed after a desk run (a wrapper batch checks both)", async () => {
+	it("leaves the caller's variables and PATH alone after a pass-through and after a desk run (a wrapper batch checks both)", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\nexit /b 0\r\n");
 		const wrapper = join(base, "wrapper.cmd");
@@ -337,7 +338,7 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		const passed = await run(comspec, ["/d", "/c", wrapper], { env, cwd: base });
 		assert.equal(passed.stdout.replace(/\r/g, "").trim(), "PATH_SAME\nDONE", passed.stdout + passed.stderr);
 		const desk = await run(comspec, ["/d", "/c", wrapper], { env: { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, cwd: base });
-		assert.equal(desk.stdout.replace(/\r/g, "").trim(), "PATH_CHANGED\nDONE", desk.stdout + desk.stderr);
+		assert.equal(desk.stdout.replace(/\r/g, "").trim(), "PATH_SAME\nDONE", desk.stdout + desk.stderr);
 		writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
 	});
 });
