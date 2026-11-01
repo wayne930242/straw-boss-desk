@@ -1,7 +1,7 @@
 // Headless stand-in for the Electron window (M2 without a screen): the shared Follower (spike/win/proto/src/follow.ts, run by Node's type stripping) follows the
 // spike's REAL sb server through the three rotations of the desk B7 plan, and this script reports what the window would have done. It never prints a URL's token.
-//   1. `cli.mjs restart`   -> moved: the old URL answers 403, the new one 200, the follower loads it, and runs no `up` of its own
-//   2. kill -9 the server  -> a pi session's look (the tower) restarts it within about 6 s and the follower follows (moved), else the follower's gone rule runs `up`
+//   1. `cli.mjs restart`   -> kept (0.48.0 on, D27): the URL stays valid and the follower loads nothing and runs no `up` of its own
+//   2. kill -9 the server  -> (the URL is kept: same port and token) a pi session's look (the tower) restarts it within about 6 s and the follower follows (moved), else the follower's gone rule runs `up`
 //   3. `cli.mjs stop`      -> the server-stopped screen; the Start button (startFromScreen) runs `up` and loads the new URL
 // Needs the spike's herdr and sb server running (02-herdr-server.sh under MonitorCreate, then 03-up.sh); run it through 07-follow-check.sh.
 import { spawn, spawnSync } from "node:child_process";
@@ -57,15 +57,16 @@ await sleep(1500);
 check("M2.0 steady", loads.length === 0 && upCalls === 0, `loads=${loads.length} up=${upCalls}; the window stays on port ${portOf(first.url)}`);
 
 // 1. restart
+const pid0 = (() => { try { return JSON.parse(readFileSync(join(first.dir, "server.json"), "utf8")).pid; } catch { return undefined; } })();
 const t1 = Date.now();
 const r = cliSync(["restart", "--reason", "m2 follow check"]);
 check("M2.1a restart", r.status === 0, `cli restart exit ${r.status}`);
-const moved1 = await until(() => loads.length >= 1, 30_000);
-const url1 = loads[0]?.url;
-check("M2.1b follower loaded the new URL", moved1 && url1 !== first.url, `after ${loads[0] ? loads[0].at - t1 : "-"} ms, port ${portOf(first.url)} -> ${url1 ? portOf(url1) : "-"}`);
-if (url1) {
-	check("M2.1c old URL 403, new URL 200", (await probe(first.url)) === 403 && (await probe(url1)) === 200, `old ${await probe(first.url)}, new ${await probe(url1)}`);
-}
+// Since 0.48.0 (D27) a restart keeps the GUI's port and token (gui-secrets.json): the URL in the window stays valid, the page reconnects by itself, and the follower has nothing to load.
+const pidOf = () => { try { return JSON.parse(readFileSync(join(first.dir, "server.json"), "utf8")).pid; } catch { return undefined; } };
+const back1 = await until(async () => pidOf() !== pid0 && (await probe(first.url)) === 200, 30_000);
+await sleep(3000); // a late load would show here
+check("M2.1b the restart keeps the URL and the follower loads nothing", back1 && loads.length === 0, `new server pid after ${back1 ? Date.now() - t1 : "-"} ms, loads=${loads.length}, port ${portOf(first.url)}`);
+check("M2.1c the window's URL answers 200 after the restart", (await probe(first.url)) === 200, `status ${await probe(first.url)}`);
 check("M2.1d no up run by the follower on a plain restart", upCalls === 0, `up=${upCalls}`);
 
 // 2. kill the server
@@ -77,7 +78,7 @@ check("M2.2.pre the server still holds the recorded start time", lstart !== "" &
 if (lstart !== "" && lstart === rec.started) process.kill(rec.pid, "SIGKILL");
 const moved2 = await until(() => loads.length > before, 60_000);
 const url2 = loads[loads.length - 1]?.url;
-check("M2.2a follower followed the killed server", moved2 && url2 !== url1 && (await probe(url2)) === 200, `after ${moved2 ? loads[loads.length - 1].at - t2 : "-"} ms; follower ran up ${upCalls - upBefore}x (0 = a pi session restarted it; 1 = the gone rule did)`);
+check("M2.2a follower followed the killed server", moved2 && (await probe(url2)) === 200, `after ${moved2 ? loads[loads.length - 1].at - t2 : "-"} ms; follower ran up ${upCalls - upBefore}x (0 = a pi session restarted it; 1 = the gone rule did)`);
 
 // 3. stop on purpose, then the Start button
 const before3 = loads.length, nScreens = screens.length;

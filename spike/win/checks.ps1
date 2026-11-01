@@ -289,11 +289,21 @@ Add-Check 'new-base-via-gui-api' {
     $data = [ordered]@{ dirsStatus = $d.Json.status; dirsSample = @($d.Json.body.dirs | Select-Object -First 5); openBase = $j }
     $ev = "POST /api/dirs -> $($d.Json.status); POST /api/open/base -> $($j.status) workspace=$($j.body.workspace) pane=$($j.body.pane) session=$($j.body.session) $($j.body.reason)"
     if ($j.status -eq 200) {
-        $l = Invoke-Herdr @('pane', 'list') 30
-        $pi = @((($l.StdOut | ConvertFrom-Json).result.panes) | Where-Object { $_.agent -eq 'pi' })
+        # The new base's own pane must run pi. The home base's pane does not since 0.48.0 (its tower is the server's service, the pane a `tower>` shell), so a count of pi panes
+        # says nothing on a fresh state (VM 2026-11-01: 1 pane, the new base's, FAIL against a threshold of 2); pi is detected a few seconds after it starts, hence the look again.
+        $newPane = [string]$j.body.pane
+        $pi = @()
+        $isPi = $false
+        for ($try = 1; $try -le 6 -and -not $isPi; $try++) {
+            $l = Invoke-Herdr @('pane', 'list') 30
+            $pi = @((($l.StdOut | ConvertFrom-Json).result.panes) | Where-Object { $_.agent -eq 'pi' })
+            $isPi = [bool]($newPane -and @($pi | Where-Object { $_.pane_id -eq $newPane }).Count -gt 0)
+            if (-not $isPi) { Start-Sleep -Seconds 5 }
+        }
         $data['piPanes'] = $pi.Count
-        $ev += "; pi panes now=$($pi.Count)"
-        if ($pi.Count -ge 2) { return (Pass $ev $data) }
+        $data['newPaneIsPi'] = $isPi
+        $ev += "; pi panes now=$($pi.Count); the new base's pane $newPane runs pi: $isPi"
+        if ($isPi) { return (Pass $ev $data) }
     }
     Fail $ev $data
 }
