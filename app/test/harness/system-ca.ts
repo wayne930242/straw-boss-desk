@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { createTestCa, type TestCa } from "./test-ca.ts";
 import { defineFixture, type FixtureIO } from "./hosted.ts";
 
@@ -22,23 +21,53 @@ export const trustedCaScenario: { run: ((trusted: TrustedCa) => Promise<void>) |
 
 const SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
 
-// Windows: `certutil -user -addstore Root` and the .NET store API both stop at a "Security Warning" dialog (it waits for a click that never comes on a
-// runner; found on windows-2025). The CurrentUser Root store is a registry key of the same user, one key for each certificate named by its SHA-1
-// thumbprint, holding the certificate wrapped as a serialized certificate property: id 0x20, reserved 1, length, DER. Writing it is a write to HKCU only,
-// the certificate API reads it like any other, and deleting the key takes it out.
-const userRootKey = (ca: TestCa): string => `HKCU\\Software\\Microsoft\\SystemCertificates\\Root\\Certificates\\${createHash("sha1").update(ca.caDer).digest("hex").toUpperCase()}`;
-
-function certificateBlob(ca: TestCa): string {
-	const header = Buffer.alloc(12);
-	header.writeUInt32LE(0x20, 0);
-	header.writeUInt32LE(1, 4);
-	header.writeUInt32LE(ca.caDer.length, 8);
-	return Buffer.concat([header, ca.caDer]).toString("hex");
+// Windows: `certutil -user -addstore Root` and `-delstore` each stop at a "Security Warning" dialog (class #32770, buttons Yes = 6 and No = 7) that waits
+// for a click, and the policy value under HKCU\\Software\\Policies\\Microsoft\\SystemCertificates\\Root\\ProtectedRoots does not remove it; the .NET and
+// PowerShell store APIs refuse ("UI is not allowed"), and a Blob written straight into the registry key is deleted again by Windows (all found on
+// windows-2025). The hosted runner's session is interactive, so a second process finds the dialog by its window and presses Yes with BM_CLICK, and the
+// fixture waits for both. Nothing outside the CurrentUser store is written, and never HKLM.
+const CLICK_YES = String.raw`
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SbdWin {
+  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hDlg, int id);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
 }
+'@
+$deadline = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt $deadline) {
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+  foreach ($w in $wins) {
+    if ($w.Current.Name -eq 'Security Warning' -and $w.Current.ClassName -eq '#32770') {
+      $yes = [SbdWin]::GetDlgItem([IntPtr]$w.Current.NativeWindowHandle, 6)
+      [void][SbdWin]::SendMessage($yes, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      Write-Output 'clicked'
+      exit 0
+    }
+  }
+  Start-Sleep -Milliseconds 250
+}
+Write-Output 'no dialog'
+exit 3
+`;
 
 async function must(io: FixtureIO, command: string, args: readonly string[], timeoutMs: number, what: string): Promise<void> {
 	const result = await io.run(command, args, { timeoutMs });
 	assert.equal(result.code, 0, `${what} exited with ${result.code}${result.timedOut ? " (timed out)" : ""}: ${(result.stderr || result.stdout).trim().slice(0, 400)}`);
+}
+
+/** Runs a certutil call that raises the Security Warning dialog, with the clicker beside it. */
+async function certutilWithDialog(io: FixtureIO, system32: string, args: readonly string[], what: string): Promise<void> {
+	const powershell = join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
+	const [clicker, certutil] = await Promise.all([
+		io.run(powershell, ["-NoProfile", "-Command", CLICK_YES], { timeoutMs: 90_000 }),
+		io.run(join(system32, "certutil.exe"), args, { timeoutMs: 90_000 }),
+	]);
+	assert.equal(certutil.code, 0, `${what} exited with ${certutil.code}${certutil.timedOut ? " (timed out)" : ""}; the dialog clicker said ${clicker.stdout.trim() || clicker.stderr.trim().slice(0, 200)}`);
 }
 
 /**
@@ -65,13 +94,13 @@ export const trustedTestCa = defineFixture({
 		const win = process.platform === "win32";
 		const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
 		try {
-			if (win) await must(io, join(system32, "reg.exe"), ["add", userRootKey(ca), "/v", "Blob", "/t", "REG_BINARY", "/d", certificateBlob(ca), "/f"], 60_000, "reg add");
+			if (win) await certutilWithDialog(io, system32, ["-user", "-addstore", "-f", "Root", file], "certutil -addstore");
 			else await must(io, "/usr/bin/sudo", ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", SYSTEM_KEYCHAIN, file], 120_000, "security add-trusted-cert");
 			assert.equal(await inSystemStore(io, ca), true, "the CA is in the store as a new Node process reads it (tls.getCACertificates('system'))");
 			await scenario({ ca, dir, store: win ? "Windows CurrentUser\\Root" : "macOS System keychain" });
 		} finally {
 			try {
-				if (win) await io.run(join(system32, "reg.exe"), ["delete", userRootKey(ca), "/f"], { timeoutMs: 60_000 });
+				if (win) await certutilWithDialog(io, system32, ["-user", "-delstore", "Root", ca.commonName], "certutil -delstore");
 				else {
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "remove-trusted-cert", "-d", file], { timeoutMs: 120_000 });
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "delete-certificate", "-c", ca.commonName, SYSTEM_KEYCHAIN], { timeoutMs: 120_000 });

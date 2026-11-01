@@ -114,7 +114,8 @@ async function runStagedShims(ctx: StageContext, dir: string, enabled: EnabledTo
 	if (!/GNU bash/i.test(bashLine)) throw new StageError("other", { stage: "pi-shim" }, `bash.cmd --version printed ${JSON.stringify(bashLine)}, not GNU bash`);
 	lines.push(`bash.cmd -> ${bashLine}`);
 	const git = ctx.versionsOf(["git"]).git as string;
-	const sh = join(toolDir(ctx.layout, "git", git), "usr", "bin", "sh.exe");
+	// PortableGit's `bin\sh.exe`, the launcher that puts /usr/bin on the PATH as a pane's bash does (npm's POSIX wrapper needs `sed`); `usr\bin\sh.exe` alone does not.
+	const sh = join(toolDir(ctx.layout, "git", git), "bin", "sh.exe");
 	const viaSh = await runLineIn(ctx, sh, ["-c", './pi --version'], dir, env);
 	if (pin !== undefined) expectVersion(ctx, "pi (sh)", viaSh, pin);
 	lines.push(`pi (sh) -> ${viaSh}`);

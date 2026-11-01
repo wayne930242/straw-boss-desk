@@ -443,7 +443,8 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 				const version = await cmdRun(env, ["pi", "--version"]);
 				assert.equal(version.stdout.trim().split(/\r?\n/)[0], pinOf(), version.stderr);
 				const viaBash = await cmdRun(env, ["bash", "-c", "echo $PI_CODING_AGENT_DIR"]);
-				assert.equal(viaBash.stdout.trim().replace(/\\/g, "/").toLowerCase(), mine.replace(/\\/g, "/").toLowerCase(), viaBash.stderr);
+				// Git's bash may print the Windows path or its /c/ form; either way it ends with the folder the child named.
+				assert.ok(viaBash.stdout.trim().replace(/\\/g, "/").toLowerCase().endsWith("/neutral 測試/.pi/agent"), `${viaBash.stdout} ${viaBash.stderr}`);
 			});
 
 			it("has the shims folder first in the user PATH with its registry type kept (a guarded fixture)", async (t) => {
