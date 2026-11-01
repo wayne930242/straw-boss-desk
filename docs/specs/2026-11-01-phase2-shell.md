@@ -837,3 +837,18 @@ A task whose tests use a fixture that changes the machine registers it through t
 | R2-F010 fallback folders per home | fixed: `~/.straw-boss-desk/<id>/…` with `<id>` from the root's hash; **Remove all data** deletes the fallback folder; tasks 3 and 14 |
 | R2-F011 `resolveProxy` lists, follower pids | fixed: the first entry is taken; a pid the app did not start is recorded only when its executable lies under `<root>/tools`; tasks 3 and 8a |
 | R2-F012 opt-in guard | fixed: the fixture scan over `app/test` (task 1); task 6's WSL case passes the `Path` value and the file check in and never writes `HKLM` |
+
+## Build notes
+
+Decisions made while building, with the task that made them. Later tasks follow them.
+
+- **Task 3: gh and glab configuration stays at `<root>/config/gh` and `<root>/config/glab-cli`**, even when the macOS fallback moves Herdr's folder. The launchers derive that path from their own location; only `herdr/` and `zsh/` follow the fallback `configHome`.
+- **Task 3: the agent-folder-inside-home rule is Windows only**, as **App data layout** says. A macOS development root outside home keeps its agent folder.
+- **Task 3: the macOS pane `PATH` is the tool folders followed by `/usr/bin:/bin:/usr/sbin:/sbin`**, never the inherited `PATH`, so a Homebrew gh, git, or node cannot win (F007). Windows keeps the inherited `PATH` after the tool folders.
+- **Task 3: kit parity adds `NPM_CONFIG_FUND=false` and `NPM_CONFIG_AUDIT=false`**; credential-store calls on Windows have a 60 s limit.
+- **Task 3 review (T3-F002 to T3-F007), carried by later tasks:**
+  - Task 10 never records an empty modification time and never treats `""` as a match: an unreadable time is foreign (T3-F004).
+  - Task 10 deletes only an entry it listed: on Windows it checks that the name and account it lists identify one stored entry before `delete`, and on macOS it names the keychain it listed the entry in (T3-F002, T3-F003).
+  - Task 14 checks that `fallbackDir` from `state/layout.json` lies under `~/.straw-boss-desk/` and matches the root's `<id>` before it deletes it (T3-F006).
+  - The fixture scan catches literal commands only. Reviewers of tasks 5 to 14 check that no test calls the platform layer's writing methods outside the harness (T3-F005).
+  - On macOS a lowercase `no_proxy` the PM set is kept beside the resolved `NO_PROXY`. Task 6 records whether npm, Git, and Claude read both (T3-F007).

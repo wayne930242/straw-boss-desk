@@ -46,6 +46,12 @@ export async function createScratchKeychain({ parent = tmpdir(), makeIO = proces
 		const seen: Record<string, string[]> = {};
 		for (const args of [["default-keychain", "-d", "user"], ["list-keychains", "-d", "user"]]) {
 			const r = await io.run(SECURITY, args, LIMIT);
+			// An empty answer proves nothing unless the query really ran: a timeout or any other failure stops before a write. The one failure that is an answer is a
+			// fresh HOME's "A default keychain could not be found" (exit 1), measured 2026-11-01.
+			const noDefault = args[0] === "default-keychain" && r.code === 1 && /default keychain could not be found/i.test(r.stderr);
+			if (r.timedOut || (r.code !== 0 && !noDefault)) {
+				throw new Error(`scratch keychain guard: \`security ${args[0]}\` did not answer (exit ${r.code}${r.timedOut ? ", timed out" : ""}); nothing was written`);
+			}
 			const paths = keychainPaths(`${r.stdout}\n${r.stderr}`);
 			const outside = paths.filter((p) => !underHome(home, p));
 			if (outside.length > 0) throw new Error(`scratch keychain guard: \`security ${args[0]}\` names ${outside.join(", ")}, outside ${home}; HOME is not honored, nothing was written`);

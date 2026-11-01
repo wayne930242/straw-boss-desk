@@ -48,4 +48,24 @@ describe("scratch keychain guard", () => {
 		await assert.rejects(createScratchKeychain({ makeIO: () => io }), /outside/);
 		assert.ok(!calls.some((c) => c.includes("stdin")), "no keychain was created");
 	});
+
+	for (const [what, answer] of [
+		["a timed-out query", { code: null, stdout: "", stderr: "", timedOut: true }],
+		["a failed query with no output", { code: 2, stdout: "", stderr: "" }],
+		["exit 1 that is not the no-default answer", { code: 1, stdout: "", stderr: "security: something else" }],
+	] as const) {
+		it(`refuses, and writes nothing, on ${what}`, async () => {
+			const calls: string[] = [];
+			const io: FixtureIO = {
+				async run(_command, args, options) {
+					calls.push(`${args[0]}${options?.stdin ? " (stdin)" : ""}`);
+					return args[0] === "list-keychains" ? { ...answer } : { code: 1, stdout: "", stderr: "security: SecKeychainCopyDomainDefault user: A default keychain could not be found.\n" };
+				},
+				writeFile: () => { throw new Error("no file"); },
+				removeFile: () => { throw new Error("no file"); },
+			};
+			await assert.rejects(createScratchKeychain({ makeIO: () => io }), /did not answer/);
+			assert.deepEqual(calls, ["default-keychain", "list-keychains"], "it stopped at the read-only checks");
+		});
+	}
 });
