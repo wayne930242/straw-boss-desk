@@ -250,9 +250,9 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 
 		it(`runs PortableGit's bash from bash.cmd in a desk pane${suffix}`, async () => {
 			for (const { layout, other } of roots) {
-				const r = await ask(layout, other, "bash", ["-p", "process.argv.slice(1).join('|') + '|' + process.env.PATH.split(';')[0].length > 0"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
+				const r = await ask(layout, other, "bash", ["-p", "String(process.env.PATH.split(';')[0].toLowerCase().endsWith('\\\\tools\\\\bin'))"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
 				assert.equal(r.code, 0, `${layout.root}: ${r.stdout}${r.stderr}`);
-				assert.match(r.stdout, /true/, layout.root);
+				assert.equal(r.stdout.trim(), "true", `${layout.root}: the app's bin folder is first on the PATH of PortableGit's bash`);
 			}
 		});
 
