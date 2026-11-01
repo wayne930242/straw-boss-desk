@@ -250,7 +250,8 @@ export const HELPERS_BLOCK = "forge credential helpers";
 export function helpersBody(platform: AppPlatform, binDir: string, forges: ReadonlyArray<{ kind: "github" | "gitlab"; host: string }>): string {
 	const lines: string[] = [];
 	for (const { kind, host } of forges) {
-		lines.push(`[credential "https://${host}"]`, "\thelper =", `\thelper = ${configValue(helperCommand(platform, join(binDir, kind === "github" ? "gh" : "glab")))}`);
+		const launcher = (platform === "win32" ? win32 : posix).join(binDir, kind === "github" ? "gh" : "glab");
+		lines.push(`[credential "https://${host}"]`, "\thelper =", `\thelper = ${configValue(helperCommand(platform, launcher))}`);
 	}
 	return lines.join("\n");
 }

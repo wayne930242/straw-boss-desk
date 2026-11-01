@@ -352,7 +352,7 @@ describe("the herdr and git configuration", () => {
 		const current: CurrentTools = { node: "24.22.1", git: "2.56.0-2", herdr: "0.9.5" };
 		assert.equal(buildEnv({ layout, current, appEnv: {} }).BUN_INSTALL, undefined);
 		assert.equal(buildEnv({ layout, current, appEnv: {}, optionalTools: ["bun"] }).BUN_INSTALL, bunHome(layout));
-		assert.equal(bunHome(layout), join(layout.tools.root, "bun-home"));
+		assert.equal(bunHome(layout), `${layout.tools.root}/bun-home`);
 	});
 });
 
