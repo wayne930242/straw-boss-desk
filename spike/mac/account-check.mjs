@@ -430,38 +430,45 @@ async function ghLogin(opts) {
   const errF = join(SPIKE, "logs", `gh-login-${mode}.err.txt`);
   rmSync(outF, { force: true });
   rmSync(errF, { force: true });
-  await loadGate("gh auth login");
-  const t0 = Date.now();
-  const outFd = openSync(outF, "w");
-  const errFd = openSync(errF, "w");
-  const child = spawn(launcher("gh"), ["auth", "login", "--hostname", f.host, "--git-protocol", "https", "--web"], { env: envFor(mode), stdio: ["ignore", outFd, errFd] });
-  let exit = null;
-  child.on("exit", (c) => { exit = c ?? 1; });
-  let code = null;
-  while (!code && Date.now() - t0 < 90_000 && exit === null) {
-    await new Promise((r) => setTimeout(r, 500));
-    const m = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/.exec(readSharedText(outF) + readSharedText(errF));
-    if (m) code = m[1];
+  let plainLine = false;
+  if (opts.reuseLogin) {
+    // Resume after an interrupted run: the login already exists in the scratch keychain; run the checks that follow it.
+    const st = forge("gh", ["auth", "status", "--hostname", f.host], { mode });
+    add("login", ok(st.code === 0), `reused the gh login already in the scratch keychain (gh auth status exit ${st.code}); the interrupted run printed no plain-text warning`);
+  } else {
+    await loadGate("gh auth login");
+    const t0 = Date.now();
+    const outFd = openSync(outF, "w");
+    const errFd = openSync(errF, "w");
+    const child = spawn(launcher("gh"), ["auth", "login", "--hostname", f.host, "--git-protocol", "https", "--web"], { env: envFor(mode), stdio: ["ignore", outFd, errFd] });
+    let exit = null;
+    child.on("exit", (c) => { exit = c ?? 1; });
+    let code = null;
+    while (!code && Date.now() - t0 < 90_000 && exit === null) {
+      await new Promise((r) => setTimeout(r, 500));
+      const m = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/.exec(readSharedText(outF) + readSharedText(errF));
+      if (m) code = m[1];
+    }
+    if (!code) {
+      child.kill("SIGTERM");
+      add("login:code-printed", "FAIL", `gh printed no one-time code within 90 s: ${firstLine(readSharedText(outF) + " " + readSharedText(errF))}`);
+      return save();
+    }
+    if (opts.codeFile) writeFileSync(opts.codeFile, code);
+    console.log(`GH CODE ${code}`);
+    add("login:code-printed", "PASS", `gh printed a one-time code (length ${code.length}); written to ${opts.codeFile ?? "(no file)"}; waiting for the person to approve at https://github.com/login/device`, Date.now() - t0);
+    const waitMs = 14 * 60_000;
+    while (exit === null && Date.now() - t0 < waitMs) await new Promise((r) => setTimeout(r, 1000));
+    if (exit === null) {
+      child.kill("SIGTERM");
+      add("login", "FAIL", "not approved within 14 minutes; gh login stopped", Date.now() - t0);
+      return save();
+    }
+    const outTxt = readSharedText(outF) + "\n" + readSharedText(errF);
+    const line = outTxt.split("\n").filter((l) => /Logged in|Authentication complete|error|failed|plain text/i.test(l)).slice(0, 3).join(" | ");
+    plainLine = /saved in plain text/i.test(outTxt);
+    add("login", ok(opts.noKeychain ? exit === 0 : exit === 0 && !plainLine), `gh auth login --hostname ${f.host} --git-protocol https --web exit ${exit}; ${hideSecrets(line, secrets)}; "saved in plain text" printed: ${plainLine}`, Date.now() - t0);
   }
-  if (!code) {
-    child.kill("SIGTERM");
-    add("login:code-printed", "FAIL", `gh printed no one-time code within 90 s: ${firstLine(readSharedText(outF) + " " + readSharedText(errF))}`);
-    return save();
-  }
-  if (opts.codeFile) writeFileSync(opts.codeFile, code);
-  console.log(`GH CODE ${code}`);
-  add("login:code-printed", "PASS", `gh printed a one-time code (length ${code.length}); written to ${opts.codeFile ?? "(no file)"}; waiting for the person to approve at https://github.com/login/device`, Date.now() - t0);
-  const waitMs = 14 * 60_000;
-  while (exit === null && Date.now() - t0 < waitMs) await new Promise((r) => setTimeout(r, 1000));
-  if (exit === null) {
-    child.kill("SIGTERM");
-    add("login", "FAIL", "not approved within 14 minutes; gh login stopped", Date.now() - t0);
-    return save();
-  }
-  const outTxt = readSharedText(outF) + "\n" + readSharedText(errF);
-  const line = outTxt.split("\n").filter((l) => /Logged in|Authentication complete|error|failed|plain text/i.test(l)).slice(0, 3).join(" | ");
-  const plainLine = /saved in plain text/i.test(outTxt);
-  add("login", ok(opts.noKeychain ? exit === 0 : exit === 0 && !plainLine), `gh auth login --hostname ${f.host} --git-protocol https --web exit ${exit}; ${hideSecrets(line, secrets)}; "saved in plain text" printed: ${plainLine}`, Date.now() - t0);
   let token = null;
   const tk = forge("gh", ["auth", "token", "--hostname", f.host], { mode });
   if (tk.code === 0) token = tk.out.trim();
@@ -632,6 +639,7 @@ function parse(argv) {
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--login") o.login = true;
+    else if (a === "--reuse-login") o.reuseLogin = true;
     else if (a === "--skip-push") o.skipPush = true;
     else if (a === "--skip-search") o.skipSearch = true;
     else if (a === "--no-keychain") o.noKeychain = true;
