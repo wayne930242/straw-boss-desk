@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createMacLocate, isUnderDir, parseDumpKeychain, parseLsofExecutables, parsePsStart } from "../src/main/platform/mac.ts";
+import { createMacCredentialStore, createMacLocate, isUnderDir, parseDumpKeychain, parseLsofExecutables, parsePsStart } from "../src/main/platform/mac.ts";
 import {
 	createWinCredentialStore, createWinLocate, filetimeToIso, isUnderWinDir, parseCredentialList, parseProcessLines, planEnsureFirst, planRemove, splitTarget,
 } from "../src/main/platform/win.ts";
@@ -247,5 +247,64 @@ describe("Windows: processes", () => {
 		assert.equal(isUnderWinDir("C:\\Users\\a\\R\\tools", "c:\\users\\a\\r\\TOOLS\\node\\node.exe"), true);
 		assert.equal(isUnderWinDir("C:\\r\\tools", "C:\\r\\tools-other\\node.exe"), false);
 		assert.equal(isUnderWinDir("C:\\r\\tools", "D:\\r\\tools\\node.exe"), false);
+	});
+});
+
+describe("macOS: credential store failures", () => {
+	const locate = createMacLocate();
+	type Call = { args: readonly string[]; stdin: string | undefined };
+	const recording = (answer: (args: readonly string[]) => { code: number | null; stdout?: string; stderr?: string; timedOut?: boolean }) => {
+		const calls: Call[] = [];
+		const run: CommandRunner = async (_file, args, options) => {
+			calls.push({ args, stdin: options?.stdin });
+			const a = answer(args);
+			return { code: a.code, stdout: a.stdout ?? "", stderr: a.stderr ?? "", ...(a.timedOut ? { timedOut: true } : {}) };
+		};
+		return { run, calls };
+	};
+
+	it("probe: writes through `security -i` on standard input, never a password on a command line, then finds and deletes the item", async () => {
+		const { run, calls } = recording(() => ({ code: 0 }));
+		const result = await createMacCredentialStore({ run, locate }).probe();
+		assert.deepEqual(result, { ok: true });
+		assert.ok(calls.every((c) => !c.args.includes("-w")), "no -w on any command line");
+		assert.deepEqual(calls.map((c) => c.args[0]?.replace(/-generic-password$/, "")), ["-i", "find", "delete"]);
+		assert.match(calls[0]?.stdin ?? "", /^add-generic-\w+ -U -s straw-boss-desk-probe-[0-9a-f]+ -a straw-boss-desk-probe -w probe\n$/);
+	});
+
+	it("probe: an unanswered keychain (a locked one waiting for a password) is ok: false, and the throwaway is still removed", async () => {
+		const { run, calls } = recording((args) => (args[0] === "-i" ? { code: null, timedOut: true } : { code: 0 }));
+		const result = await createMacCredentialStore({ run, locate }).probe();
+		assert.equal(result.ok, false);
+		assert.match(result.ok ? "" : result.reason, /did not answer within 10 s/);
+		assert.ok(calls.some((c) => c.args[0]?.startsWith("delete-")), "a cleanup delete ran");
+	});
+
+	it("probe: an item the keychain did not keep (find exits 44) is ok: false", async () => {
+		const { run } = recording((args) => (args[0] === "find-generic-password" ? { code: 44, stderr: "The specified item could not be found in the keychain." } : { code: 0 }));
+		const result = await createMacCredentialStore({ run, locate }).probe();
+		assert.equal(result.ok, false);
+		assert.match(result.ok ? "" : result.reason, /did not keep the throwaway item/);
+	});
+
+	it("list: a timeout and a failing dump are errors, not an empty list", async () => {
+		const timed = recording(() => ({ code: null, timedOut: true }));
+		await assert.rejects(createMacCredentialStore({ run: timed.run, locate }).list(["gh:github.com"]), (e: unknown) => e instanceof CredentialStoreError && /within 10 s/.test(e.message));
+		const failed = recording(() => ({ code: 1, stderr: "security: SecKeychainCopyDomainDefault: no default keychain" }));
+		await assert.rejects(createMacCredentialStore({ run: failed.run, locate }).list(["gh:github.com"]), (e: unknown) => e instanceof CredentialStoreError && /exited 1/.test(e.message));
+	});
+
+	it("list: makes no call for no names, and the call is `dump-keychain` without -d", async () => {
+		const { run, calls } = recording(() => ({ code: 0, stdout: "" }));
+		const store = createMacCredentialStore({ run, locate });
+		assert.deepEqual(await store.list([]), []);
+		assert.equal(calls.length, 0);
+		await store.list(["gh:github.com"]);
+		assert.deepEqual(calls.map((c) => c.args), [["dump-keychain"]]);
+	});
+
+	it("delete: a failure throws with the service named", async () => {
+		const { run } = recording(() => ({ code: 44, stderr: "could not be found" }));
+		await assert.rejects(createMacCredentialStore({ run, locate }).delete({ name: "gh:github.com", account: "" }), (e: unknown) => e instanceof CredentialStoreError && /gh:github\.com/.test(e.message));
 	});
 });

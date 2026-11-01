@@ -150,7 +150,8 @@ describe("layout on this machine's file system", () => {
 	// A short parent on macOS: a runner's $TMPDIR is long enough to push Herdr's socket path past its limit, which is the fallback's job to catch, not this test's.
 	const parentDir = process.platform === "win32" ? tmpdir() : "/tmp";
 	const made = (): string => {
-		const dir = realpathSync(mkdtempSync(join(parentDir, "sbd-")));
+		// `.native`: the plain call keeps a runner's 8.3 short names (RUNNER~1), which the layout (rightly) resolves.
+		const dir = realpathSync.native(mkdtempSync(join(parentDir, "sbd-")));
 		scratch.push(dir);
 		return dir;
 	};

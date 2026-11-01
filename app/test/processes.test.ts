@@ -9,15 +9,18 @@ import { createPlatform } from "../src/main/platform/index.ts";
 // Real processes: a copy of this Node placed in a folder with a space and CJK characters runs a long sleep, and the platform's Processes finds it by
 // its full executable path and reads a stable start token, as the stop sequence and the leftover listing do.
 const processes = createPlatform().processes;
+const waitForExit = (child: ChildProcess): Promise<void> => new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", () => resolve()); });
 const scratch: string[] = [];
 const children: ChildProcess[] = [];
-after(() => {
-	for (const c of children) if (c.exitCode === null) c.kill("SIGKILL");
-	for (const d of scratch) rmSync(d, { recursive: true, force: true });
+after(async () => {
+	for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL");
+	// Windows refuses to delete a program that is still running: wait for each child to be gone first.
+	await Promise.all(children.map(waitForExit));
+	for (const d of scratch) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 });
 
 function startChild(): { child: ChildProcess; dir: string; exe: string } {
-	const dir = realpathSync(mkdtempSync(join(tmpdir(), "sbd-proc-")));
+	const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-proc-")));
 	scratch.push(dir);
 	const bin = join(dir, "sbd 測試", "tools", "node");
 	mkdirSync(bin, { recursive: true });
@@ -30,7 +33,6 @@ function startChild(): { child: ChildProcess; dir: string; exe: string } {
 	return { child, dir, exe };
 }
 
-const waitForExit = (child: ChildProcess): Promise<void> => new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", () => resolve()); });
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 describe("Processes", () => {

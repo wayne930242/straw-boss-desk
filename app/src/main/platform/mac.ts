@@ -14,6 +14,8 @@ const SYSTEM_TOOLS: Partial<Record<SystemTool, string>> = {
 
 /** Each call into `security`, `ps`, and `lsof` has this long; a locked keychain's unlock dialog on a PM's Mac ends in a timeout (spec: store probe). */
 const LIMIT_MS = 10_000;
+/** `lsof -d txt` walks every process on the machine, which takes longer on a loaded Mac. */
+const LISTING_LIMIT_MS = 30_000;
 
 const firstLine = (text: string): string => text.trim().split("\n")[0]?.slice(0, 200) ?? "";
 
@@ -102,9 +104,9 @@ export function createMacProcesses(run: CommandRunner, locate: Locate): Processe
 			return pids.map((pid): ProcessInfo => ({ pid, startTime: starts.get(pid) ?? null, executable: exes.get(pid) ?? null }));
 		},
 		async listUnder(dir) {
-			const r = await run(lsof, ["-d", "txt", "-Fpn"], { timeoutMs: LIMIT_MS });
+			const r = await run(lsof, ["-d", "txt", "-Fpn"], { timeoutMs: LISTING_LIMIT_MS });
 			// lsof exits 1 when it could not read some process (another user's, a protected one); what it did read is still listed.
-			if (r.code === null) throw new Error(`lsof did not finish: ${r.stderr.trim().slice(0, 200)}`);
+			if (r.code === null) throw new Error(`lsof did not finish${r.timedOut ? " within 30 s" : ""}: ${r.stderr.trim().slice(0, 200)}`);
 			const hits = [...parseLsofExecutables(r.stdout)].filter(([, exe]) => isUnderDir(dir, exe));
 			const starts = await startTimes(hits.map(([pid]) => pid));
 			return hits.map(([pid, executable]): ProcessInfo => ({ pid, startTime: starts.get(pid) ?? null, executable }));
