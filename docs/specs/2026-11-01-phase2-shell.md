@@ -742,6 +742,8 @@ A task whose tests use a fixture that changes the machine registers it through t
 
 ## Open for the boss
 
+**Decided 2026-11-01:** the boss approved this spec and took the recommendation on every item below (「全部照建議核准」). Item 13 is guide only. Item 5's accounts and secrets are prepared by the boss when the tasks need them.
+
 1. **Windows code signing.** Recommendation: stay unsigned through the pilot, as the design record decides, and buy an OV code-signing certificate with cloud signing before more than the pilot PMs install it. Azure Artifact Signing is not available to Taiwanese individuals or organizations. A certificate costs on the order of a few hundred US dollars a year, and SmartScreen still warns until reputation builds.
 2. **Apple Developer Program** (US$99 a year; an organization membership needs a D-U-N-S number). Recommendation: join before any PM pilots on a Mac. Without it the PM must click **Open Anyway** in System Settings, which may need an administrator password; updates mean downloading a dmg by hand; and the Linear key may ask for Keychain access after each update.
 3. **The app's name, icon, and application id.** Recommendation: the name "Straw Boss Desk" in both languages, an icon drawn from the straw-boss mark, and an id under a domain the boss controls, e.g. `tw.wayneh.straw-boss-desk`. The internal folder name `straw-boss-desk` stays whatever is chosen.
