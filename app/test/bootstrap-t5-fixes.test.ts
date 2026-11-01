@@ -339,3 +339,25 @@ describe("T5-F002: the cache folder check", () => {
 		assert.equal(sameFolder("/private/var/x/tools/cache", "/var/x/tools/cache", table), true);
 	});
 });
+
+describe("T5-F011 b: the CI cache of downloads holds only what the e2e uses", () => {
+	it("seeding deletes files no pin names, copies the pinned ones, and harvest copies only pinned files", async () => {
+		const { seedDownloads, harvestDownloads, wantedDownloads } = await import("./harness/e2e-light.ts");
+		const { base, root } = fresh();
+		const wanted = [...wantedDownloads()];
+		assert.ok(wanted.length >= 8, `${wanted.length} pinned files`);
+		const cache = join(base, "cache");
+		mkdirSync(cache);
+		writeFileSync(join(cache, wanted[0] as string), "kept");
+		writeFileSync(join(cache, "node-v1.0.0-old-pin.tar.gz"), "from a pin that was replaced");
+		const layout = testLayout(root);
+		const world = { cache, layout } as unknown as Parameters<typeof seedDownloads>[0];
+		seedDownloads(world);
+		assert.deepEqual(readdirSync(cache), [wanted[0]], "the old pin's file is gone from the cache");
+		assert.deepEqual(readdirSync(layout.tools.downloads), [wanted[0]]);
+		writeFileSync(join(layout.tools.downloads, wanted[1] as string), "new");
+		writeFileSync(join(layout.tools.downloads, "not-a-pin.bin"), "stray");
+		harvestDownloads(world);
+		assert.deepEqual(readdirSync(cache).sort(), [wanted[0], wanted[1]].sort());
+	});
+});

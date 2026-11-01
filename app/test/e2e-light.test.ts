@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { StateStore } from "../src/main/bootstrap/state.ts";
@@ -25,18 +26,22 @@ import {
 	type World,
 } from "./harness/e2e-light.ts";
 import { testPlatform } from "./harness/engine-fixture.ts";
-import type { FixtureIO } from "./harness/hosted.ts";
+import { createPlatform } from "../src/main/platform/index.ts";
+import { hostedRunner, requireHosted, type FixtureIO } from "./harness/hosted.ts";
+import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { systemEnv } from "../src/main/env.ts";
 
 // The task 5 anchor (spec: Tasks 5). These tests download the real releases of stack.json into a scratch root and run them, so they run only where the
 // workflow asks (SBD_E2E_LIGHT=1: a CI step, or a local run on purpose). Everything lives in a scratch folder: its own home, data root, and Herdr socket.
 const ON = process.env.SBD_E2E_LIGHT === "1";
 const off = ON ? false : "SBD_E2E_LIGHT=1 is not set: this test downloads the real releases of stack.json";
-const HOSTED = process.env.GITHUB_ACTIONS === "true";
+// The credential-helper cases let gh and glab read the OS credential store, so they run on a GitHub-hosted runner only: all six signals of the guard, not one.
+const HOSTED = hostedRunner(process.env, userInfo());
 const GH_VERSION = realStack.tools.gh.assets["darwin-arm64"].version as string;
 const BUN_VERSION = realStack.optionalTools.bun.assets["darwin-arm64"].version as string;
 
 const platform = isWindows ? "win32" : "darwin";
+const PROXY_FREE_GIT_URL = "https://github.com/octocat/Hello-World.git";
 const ioForSudo: FixtureIO = {
 	run: (command: string, args: readonly string[], options?: { timeoutMs?: number }) => run(command, args, { env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" }, timeoutMs: options?.timeoutMs ?? 60_000 }),
 	writeFile: (path: string, data: string) => writeFileSync(path, data),
@@ -105,6 +110,17 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 		for (const name of expected) assert.equal(bootstrap[name]?.status, "ok", `${name} in state/bootstrap.json`);
 	});
 
+	// T5-F005. PortableGit's self-extractor runs `post-install.bat` through git-bash from the extracted tree before it exits. Record what it left.
+	it("records what PortableGit's post-install left in the Git folder, and that no process runs from it", { skip: isWindows ? false : "Windows only: PortableGit" }, async (t) => {
+		const git = join(world.layout.tools.root, "git", stateOf(world, "current").versions.git as string);
+		const listing = (dir: string): string => (existsSync(dir) ? readdirSync(dir).join(", ") : "(missing)");
+		t.diagnostic(`post-install.bat still present: ${existsSync(join(git, "post-install.bat"))}`);
+		t.diagnostic(`etc/post-install: ${listing(join(git, "etc", "post-install"))}`);
+		t.diagnostic(`git folder top level: ${listing(git)}`);
+		const left = await createPlatform().processes.listUnder(git);
+		assert.deepEqual(left, [], "the stage's own check found nothing either");
+	});
+
 	it("the developer tools moved aside case: skipped locally by name, run on a hosted macOS runner", (t) => {
 		if (aside.state === "skipped") t.skip(aside.reason);
 		else assert.equal(aside.state, "active", "the case ran with the tools moved aside");
@@ -147,17 +163,67 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 		assert.equal((await run(git as string, ["config", "--global", "--get", "init.defaultBranch"], { env })).stdout.trim(), "main");
 	});
 
-	it("runs each credential helper through Git's sh (hosted runners: gh reads the OS credential store there)", { skip: HOSTED ? false : "hosted runner only: a local run would let gh read the author's OS credential store" }, async () => {
+	/**
+	 * T5-F008. The gate is the guard's: off a hosted runner the case is skipped by name, and under SBD_REQUIRE_HOSTED_FIXTURES=1 it fails there, so a skip
+	 * never passes the anchor unseen. The assertions never print what the helper answered: a local run that got past the gate could hold a real token.
+	 */
+	it("runs each credential helper through Git's sh (hosted runners: gh and glab read the OS credential store there)", async (t) => {
+		if (!HOSTED.hosted) {
+			const reason = `credential helper runs only on a GitHub-hosted runner: ${HOSTED.reason}`;
+			if (requireHosted(process.env)) assert.fail(`${reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
+			t.skip(reason);
+			return;
+		}
 		const env = { ...childEnvOf(world, ["bun"]) };
 		const git = env.PATH?.split(isWindows ? ";" : ":").map((dir) => join(dir, isWindows ? "git.exe" : "git")).find((p) => existsSync(p)) as string;
 		mkdirSync(join(world.root, "config", "gh"), { recursive: true });
 		writeFileSync(join(world.root, "config", "gh", "hosts.yml"), "github.com:\n    oauth_token: ghp_sbd_fixture_token\n    user: fixture\n    git_protocol: https\n");
 		const filled = await run(git, ["credential", "fill"], { env: { ...env, GIT_TERMINAL_PROMPT: "0" }, stdin: "protocol=https\nhost=github.com\n\n" });
-		assert.equal(filled.code, 0, filled.stderr);
-		assert.match(filled.stdout, /password=ghp_sbd_fixture_token/);
+		assert.equal(filled.code, 0, `git credential fill for github.com exited with ${filled.code}`);
+		assert.ok(filled.stdout.includes("password=ghp_sbd_fixture_token"), "the gh helper answered with the fixture token (the answer is not printed)");
 		const config = read(join(world.root, "gitconfig"));
 		assert.match(config, /\[credential "https:\/\/github\.com"\]\n\thelper =\n\thelper = /);
 		assert.match(config, /\[credential "https:\/\/gitlab\.com"\]/);
+	});
+
+	it("runs the glab helper for a GitLab host (hosted runners only), T5-F011 d", async (t) => {
+		if (!HOSTED.hosted) {
+			const reason = `glab credential helper runs only on a GitHub-hosted runner: ${HOSTED.reason}`;
+			if (requireHosted(process.env)) assert.fail(`${reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
+			t.skip(reason);
+			return;
+		}
+		const env = { ...childEnvOf(world, ["bun"]) };
+		const git = env.PATH?.split(isWindows ? ";" : ":").map((dir) => join(dir, isWindows ? "git.exe" : "git")).find((p) => existsSync(p)) as string;
+		mkdirSync(join(world.root, "config", "glab-cli"), { recursive: true });
+		writeFileSync(join(world.root, "config", "glab-cli", "config.yml"), "hosts:\n    gitlab.com:\n        token: glpat_sbd_fixture_token\n        api_protocol: https\n        api_host: gitlab.com\n        git_protocol: https\n");
+		const filled = await run(git, ["credential", "fill"], { env: { ...env, GIT_TERMINAL_PROMPT: "0" }, stdin: "protocol=https\nhost=gitlab.com\n\n" });
+		assert.equal(filled.code, 0, `git credential fill for gitlab.com exited with ${filled.code}`);
+		assert.ok(filled.stdout.includes("password=glpat_sbd_fixture_token"), "the glab helper answered with the fixture token (the answer is not printed)");
+	});
+
+	// T5-F009. A zero-byte file is a CA bundle that trusts nothing, so a Git that reads it cannot verify github.com. No file with a certificate extension is
+	// ever written. The control is the unset run, which the earlier ls-remote case also makes.
+	it("the app's Git reads GIT_SSL_CAINFO: an empty bundle gives a certificate error, and unset succeeds", async (t) => {
+		const env = childEnvOf(world, ["bun"]);
+		const git = env.PATH?.split(isWindows ? ";" : ":").map((dir) => join(dir, isWindows ? "git.exe" : "git")).find((p) => existsSync(p)) as string;
+		const empty = join(world.base, "empty-ca-bundle");
+		writeFileSync(empty, "");
+		const backend = (await run(git, ["config", "--show-origin", "--get", "http.sslBackend"], { env })).stdout.trim();
+		t.diagnostic(`http.sslBackend: ${backend === "" ? "(unset)" : backend}`);
+		const control = await run(git, ["ls-remote", PROXY_FREE_GIT_URL, "HEAD"], { env, timeoutMs: 120_000 });
+		assert.equal(control.code, 0, `control: ${control.stderr}`);
+		const bundle = await run(git, ["ls-remote", PROXY_FREE_GIT_URL, "HEAD"], { env: { ...env, GIT_SSL_CAINFO: empty }, timeoutMs: 120_000 });
+		t.diagnostic(`GIT_SSL_CAINFO=empty-ca-bundle: exit ${bundle.code}; ${bundle.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
+		const certFile = await run(git, ["ls-remote", PROXY_FREE_GIT_URL, "HEAD"], { env: { ...env, SSL_CERT_FILE: empty }, timeoutMs: 120_000 });
+		t.diagnostic(`SSL_CERT_FILE=empty-ca-bundle: exit ${certFile.code}; ${certFile.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
+		if (isWindows && /schannel/i.test(backend)) {
+			// schannel asks the Windows store; the variable has no effect (a Git built for it reads `http.schannelUseSSLCAInfo` first).
+			assert.equal(bundle.code, 0, `schannel ignores GIT_SSL_CAINFO: ${bundle.stderr}`);
+		} else {
+			assert.notEqual(bundle.code, 0, "an empty CA bundle must stop the connection");
+			assert.match(bundle.stderr, /SSL certificate problem|certificate|CAfile|error setting certificate|unable to get local issuer/i);
+		}
 	});
 
 	it("keeps versions out of the launchers and the ZDOTDIR files, and the root's bytes out of the paths files", () => {
@@ -184,11 +250,15 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 		}
 	});
 
-	it("runs the machine-PATH gh on Windows and still resolves the launcher to the pin", { skip: isWindows ? false : "Windows only: the runner image has gh on the machine PATH" }, async () => {
+	it("runs the machine-PATH gh on Windows and still resolves the bare name to the launcher and its pin, from a neutral folder (T5-F011 a)", { skip: isWindows ? false : "Windows only: the runner image has gh on the machine PATH" }, async () => {
 		const machine = await run("where.exe", ["gh"], { env: systemEnv("win32", world.appEnv) });
 		assert.equal(machine.code, 0, "the runner has a machine-PATH gh");
 		assert.equal(under(world.root, firstLine(machine)), false);
-		const pinned = await viaLauncher(world, "gh", ["--version"], systemEnv("win32", world.appEnv));
+		// cmd looks in the current folder before the PATH, so this runs from a folder that holds no launcher: only the PATH order can find the pinned gh.
+		const neutral = join(world.base, "neutral 測試");
+		mkdirSync(neutral, { recursive: true });
+		const pinned = await run(join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe"), ["/d", "/c", "gh", "--version"], { env: childEnvOf(world, ["bun"]), cwd: neutral });
+		assert.equal(pinned.code, 0, pinned.stderr);
 		assert.match(firstLine(pinned), new RegExp(`gh version ${GH_VERSION.replace(/\./g, "\\.")}`));
 	});
 
@@ -249,7 +319,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	});
 
 	describe("the optional tool bun", () => {
-		it("is found by a spawn without a shell on Windows through bun.exe in tools/bin, and a bun.cmd alone is not (FE2R-F009)", { skip: isWindows ? false : "Windows only: macOS finds the launcher script by name" }, async () => {
+		it("is found by a spawn without a shell on Windows through bun.exe in tools/bin-exe, and a bun.cmd alone is not (FE2R-F009)", { skip: isWindows ? false : "Windows only: macOS finds the launcher script by name" }, async () => {
 			const env = childEnvOf(world, ["bun"]);
 			const found = await run("bun", ["--version"], { env });
 			assert.equal(found.code, 0, found.stderr);
@@ -260,6 +330,34 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			const missing = await run("bun", ["--version"], { env: { ...systemEnv("win32", world.appEnv), PATH: lonely } });
 			assert.notEqual(missing.code, 0, "a spawn without a shell does not try .cmd");
 			assert.match(missing.stderr, /ENOENT/);
+		});
+
+		// T5-F001. cmd and PowerShell try every PATHEXT extension in one folder before the next folder, so with the shim beside the launcher a bare `bun`
+		// ran the shim and skipped the launcher's short names. The shims are in tools\\bin-exe now, one PATH folder later.
+		it("a bare bun typed in cmd and in PowerShell reaches the launcher: bun's cache is under bun-home and DO_NOT_TRACK is 1 (T5-F001)", { skip: isWindows ? false : "Windows only: PATHEXT" }, async (t) => {
+			const env = childEnvOf(world, ["bun"]);
+			const project = join(world.base, "bare project 測試");
+			mkdirSync(project, { recursive: true });
+			const system32 = join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
+			const expected = join(world.layout.tools.root, "bun-home", "install", "cache");
+			assert.equal(existsSync(join(world.layout.tools.bin, "bun.exe")), false, "no .exe beside the launcher");
+			assert.equal(existsSync(join(world.layout.tools.binExe, "bun.exe")), true);
+			const shells: Array<[string, string, string[]]> = [
+				["cmd", join(system32, "cmd.exe"), ["/d", "/c", "bun pm cache"]],
+				["PowerShell", join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", "bun pm cache"]],
+			];
+			for (const [name, file, args] of shells) {
+				const cache = await run(file, args, { env, cwd: project });
+				assert.equal(cache.code, 0, `${name}: ${cache.stderr || cache.stdout}`);
+				assert.ok(sameFolder(firstLine(cache), expected), `${name}: a bare bun says its cache is ${firstLine(cache)}`);
+				const dnt = await run(file, name === "cmd" ? ["/d", "/c", "bun -p process.env.DO_NOT_TRACK"] : ["-NoProfile", "-NonInteractive", "-Command", "bun -p process.env.DO_NOT_TRACK"], { env: Object.fromEntries(Object.entries(env).filter(([k]) => k !== "DO_NOT_TRACK")), cwd: project });
+				assert.equal(dnt.stdout.trim(), "1", `${name}: the launcher set DO_NOT_TRACK`);
+			}
+			// Settles where the `??` of the task 5 run came from: the shim, started without the launcher, with the constructed environment's long names.
+			const direct = await run(join(world.layout.tools.binExe, "bun.exe"), ["-p", "[process.env.BUN_INSTALL, process.env.BUN_INSTALL_CACHE_DIR].join('|')"], { env, cwd: project });
+			t.diagnostic(`bun.exe by itself, long names in the environment, sees: ${direct.stdout.trim()} (exit ${direct.code})`);
+			const where = await run(join(world.layout.tools.binExe, "bun.exe"), ["pm", "cache"], { env, cwd: project });
+			t.diagnostic(`bun.exe by itself says its cache is: ${where.stdout.trim()}`);
 		});
 
 		it("fills tools/bun-home and leaves a scratch home empty", async () => {
@@ -289,6 +387,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			assert.ok(existsSync(bunDir), "tools/bun/<version> stays");
 			assert.equal(stateOf(world, "current").versions.bun, BUN_VERSION, "a dropped tool keeps its version in current.json");
 			for (const name of isWindows ? ["bun", "bun.cmd", "bunx", "bunx.cmd", "bun.exe", "bunx.exe"] : ["bun", "bunx"]) assert.equal(existsSync(join(world.layout.tools.bin, name)), false, `${name} is gone`);
+			if (isWindows) for (const name of ["bun.exe", "bunx.exe"]) assert.equal(existsSync(join(world.layout.tools.binExe, name)), false, `${name} is gone from tools\\bin-exe`);
 			assert.ok(!read(join(world.layout.tools.bin, "paths.sh")).includes("SBD_BUN"));
 			const pane = await (herdr as WorldHerdr).inPane("nobun", (out) => paneScript(out, ["bun"]), world.home);
 			const found = resolved(pane, "bun");
@@ -344,6 +443,7 @@ describe("a recipe with no optional tool and a private forge host (e2e-light)", 
 		assert.equal("opt:bun" in stages, false);
 		assert.equal(existsSync(join(world.layout.tools.root, "bun")), false);
 		for (const name of ["bun", "bunx", "bun.cmd", "bunx.cmd", "bun.exe", "bunx.exe"]) assert.equal(existsSync(join(world.layout.tools.bin, name)), false, name);
+		for (const name of ["bun.exe", "bunx.exe"]) assert.equal(existsSync(join(world.layout.tools.binExe, name)), false, `${name} in tools\\bin-exe`);
 		assert.ok(!read(join(world.layout.tools.bin, "paths.sh")).includes("SBD_BUN"));
 		if (isWindows) assert.ok(!read(join(world.layout.tools.bin, "paths.cmd")).includes("SBD_BUN"));
 	});

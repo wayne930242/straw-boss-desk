@@ -13,6 +13,8 @@ import { removeTree } from "../../src/main/bootstrap/fsutil.ts";
 import { toolStages, type StageOptions } from "../../src/main/bootstrap/stages/index.ts";
 import type { StageOutcome } from "../../src/main/bootstrap/stage.ts";
 import type { RunResult } from "../../src/main/platform/types.ts";
+import { platformKey } from "../../src/main/bootstrap/stack.ts";
+import { ALT_BUN, ALT_GH } from "./alt-pins.ts";
 import { tarGz } from "./archives.ts";
 import { testPlatform, secretPatterns } from "./engine-fixture.ts";
 
@@ -72,19 +74,41 @@ export function disposeWorld(world: World): void {
 
 // ---- downloads ---------------------------------------------------------------------------------------------------------
 
-/** Puts the CI cache's files into the world's download folder; the engine hashes every file it finds there, so a stale or bad file is replaced, not trusted. */
+/**
+ * The file names the e2e downloads on this machine: every pin of stack.json for its platform key (required and optional tools) and the alternative gh and
+ * bun pins. The CI cache holds these and nothing else (T5-F011 b): `restore-keys` brings back the files of older pins, and without this they would be saved
+ * again forever.
+ */
+export function wantedDownloads(): Set<string> {
+	const key = platformKey(process.platform, process.arch);
+	const names = new Set<string>();
+	for (const entry of [...Object.values(realStack.tools), ...Object.values(realStack.optionalTools)]) {
+		const file = (entry.assets as Record<string, { file?: string }>)[key]?.file;
+		if (file !== undefined) names.add(file);
+	}
+	names.add(ALT_GH[key].file);
+	names.add(ALT_BUN[key].file);
+	return names;
+}
+
+/** Puts the CI cache's wanted files into the world's download folder and deletes the others from the cache; the engine hashes every file it finds there, so a stale or bad file is replaced, not trusted. */
 export function seedDownloads(world: World): void {
 	if (world.cache === null || !existsSync(world.cache)) return;
 	mkdirSync(world.layout.tools.downloads, { recursive: true });
-	for (const name of readdirSync(world.cache)) if (!name.endsWith(".part")) copyFileSync(join(world.cache, name), join(world.layout.tools.downloads, name));
+	const wanted = wantedDownloads();
+	for (const name of readdirSync(world.cache)) {
+		if (!wanted.has(name)) rmSync(join(world.cache, name), { recursive: true, force: true });
+		else copyFileSync(join(world.cache, name), join(world.layout.tools.downloads, name));
+	}
 }
 
-/** Copies the world's verified downloads to the CI cache folder. */
+/** Copies the world's verified downloads that this run wants to the CI cache folder. */
 export function harvestDownloads(world: World): void {
 	if (world.cache === null || !existsSync(world.layout.tools.downloads)) return;
 	mkdirSync(world.cache, { recursive: true });
+	const wanted = wantedDownloads();
 	for (const name of readdirSync(world.layout.tools.downloads)) {
-		if (name.endsWith(".part")) continue;
+		if (name.endsWith(".part") || !wanted.has(name)) continue;
 		const target = join(world.cache, name);
 		if (!existsSync(target)) copyFileSync(join(world.layout.tools.downloads, name), target);
 	}

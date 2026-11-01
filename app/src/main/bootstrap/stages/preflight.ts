@@ -135,13 +135,8 @@ export function preflightStage(options: PreflightOptions): Stage {
 		for (const reason of ctx.layout.record.reasons) facts.push(`layout: ${reason}`);
 
 		const warnings: StageWarning[] = [];
-		if (options.platform === "win32") {
-			const sac = await smartAppControl(ctx);
-			facts.push(`Smart App Control ${sac}`);
-			if (sac === "on" || sac === "evaluation") {
-				warnings.push({ kind: "smart-app-control", sentence: sac === "on" ? "Smart App Control is on, which blocks unsigned programs such as Straw Boss." : "Smart App Control is in evaluation mode; Windows may turn it on later and then block Straw Boss." });
-			}
-		}
+		// The Smart App Control query (reg.exe, up to 15 s) runs while the hosts are asked, so it never adds to the 10 s an unreachable host's sentence needs (T5-F011 c).
+		const sacPending = options.platform === "win32" ? smartAppControl(ctx) : null;
 
 		const hosts = downloadHosts(ctx.stack, ctx.key, ctx.recipe);
 		const forgeHosts = [...new Set(ctx.recipe.forges.map((f) => f.host))].filter((h) => !hosts.includes(h));
@@ -154,6 +149,13 @@ export function preflightStage(options: PreflightOptions): Stage {
 		if (first !== undefined) {
 			const cause = first.kind === "tls" ? "tls" : "path";
 			throw new StageError("network", { host: first.host, cause }, `cannot reach ${blocked.map((r) => `${r.host} (${r.kind}: ${r.detail})`).join(", ")}`);
+		}
+		if (sacPending !== null) {
+			const sac = await sacPending;
+			facts.push(`Smart App Control ${sac}`);
+			if (sac === "on" || sac === "evaluation") {
+				warnings.push({ kind: "smart-app-control", sentence: sac === "on" ? "Smart App Control is on, which blocks unsigned programs such as Straw Boss." : "Smart App Control is in evaluation mode; Windows may turn it on later and then block Straw Boss." });
+			}
 		}
 		for (const r of results) {
 			if (r.kind !== "ok" && !hosts.includes(r.host)) warnings.push({ kind: "forge-host-unreachable", host: r.host, sentence: privateHostSentence(r.host) });
