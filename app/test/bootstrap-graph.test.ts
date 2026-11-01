@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { downloadVerified } from "../src/main/bootstrap/download.ts";
@@ -189,6 +189,31 @@ describe("failure categories and retries", () => {
 		assert.equal(server.hits(down.path), 2);
 	});
 
+	it("fails a download that goes quiet, with no headers or in the middle of the body, as a network failure that is retried once (T4-F006)", async () => {
+		for (const kind of ["silent", "hang"] as const) {
+			const quiet = publish(server, `quiet-${kind}`, { version: "1.0.0" });
+			server.setMode(quiet.path, { kind });
+			const started = Date.now();
+			const run = await runEngine(scratchRootOf(), makeStack({ [`quiet-${kind}`]: quiet }), [toolStage(`quiet-${kind}`)], { downloadIdleMs: 250 });
+			const outcome = run.outcomes[`quiet-${kind}`];
+			assert.equal(outcome?.status, "failed", kind);
+			assert.equal(outcome?.failure?.category, "network", kind);
+			assert.equal(outcome?.attempts, 2, `${kind}: retried once`);
+			assert.equal(server.hits(quiet.path), 2, kind);
+			assert.match(outcome?.failure?.detail ?? "", /no (data|response) for 250 ms/, kind);
+			assert.ok(Date.now() - started < 10_000, `${kind}: gave up promptly`);
+		}
+	});
+
+	it("installs when the retry after a stalled download gets through, leaving no part file", async () => {
+		const once = publish(server, "stall-once", { version: "1.0.0" });
+		server.setMode(once.path, { kind: "hang", times: 1 });
+		const run = await runEngine(root, makeStack({ "stall-once": once }), [toolStage("stall-once")], { downloadIdleMs: 250 });
+		assert.equal(run.outcomes["stall-once"]?.status, "installed");
+		assert.equal(run.outcomes["stall-once"]?.attempts, 2);
+		assert.deepEqual(readdirSync(join(root, "tools", "downloads")), [`stall-once-1.0.0.${process.platform === "win32" ? "zip" : "tar.gz"}`]);
+	});
+
 	it("takes a connection cut mid-download as a network failure and removes the partial file", async () => {
 		const cut = publish(server, "cut", { version: "1.0.0" });
 		server.setMode(cut.path, { kind: "drop" });
@@ -257,6 +282,35 @@ describe("downloads", () => {
 		assert.deepEqual(readdirSync(dir), ["thing.bin"]);
 	});
 
+	it("counts the idle time from the last byte, not from the start: a slow download that keeps sending is not cut (T4-F006)", async () => {
+		const body = Buffer.from("s".repeat(4000));
+		server.serve("/trickle.bin", body, { kind: "trickle", chunks: 8, gapMs: 100 });
+		const started = Date.now();
+		const done = await downloadVerified({
+			fetch: (url, init) => fetch(url, init),
+			asset: { url: server.url("/trickle.bin"), sha256: sha256Hex(body), file: "trickle.bin" },
+			tool: "trickle",
+			dir: join(scratchRootOf(), "dl"),
+			idleTimeoutMs: 400,
+		});
+		assert.equal(done.bytes, body.length);
+		assert.ok(Date.now() - started >= 600, "the whole transfer took longer than the idle limit");
+	});
+
+	it("rejects a stalled download with a network StageError and removes the part file", async () => {
+		const body = Buffer.from("h".repeat(4000));
+		const dir = join(scratchRootOf(), "dl");
+		for (const kind of ["hang", "silent"] as const) {
+			server.serve(`/${kind}.bin`, body, { kind });
+			await assert.rejects(
+				downloadVerified({ fetch: (url, init) => fetch(url, init), asset: { url: server.url(`/${kind}.bin`), sha256: sha256Hex(body), file: `${kind}.bin` }, tool: kind, dir, idleTimeoutMs: 200 }),
+				(e: unknown) => e instanceof StageError && e.category === "network" && /no (data|response) for 200 ms/.test(e.message),
+				kind,
+			);
+		}
+		assert.deepEqual(readdirSync(dir), []);
+	});
+
 	it("refuses a pinned URL that is neither https nor loopback", async () => {
 		await assert.rejects(
 			downloadVerified({ fetch: async () => new Response("x"), asset: { url: "http://example.com/x.zip", sha256: "0".repeat(64), file: "x.zip" }, tool: "x", dir: join(scratchRootOf(), "dl") }),
@@ -288,6 +342,7 @@ describe("the stack", () => {
 		assert.throws(() => parseStack(mutate((s) => (s.tools.node.assets["linux-x64"] = s.tools.node.assets["win32-x64"]))), /unknown platform key/);
 		assert.throws(() => parseStack(mutate((s) => (s.tools.node.assets["win32-x64"].version = "^24.0.0"))), /exact version/);
 		assert.throws(() => parseStack(mutate((s) => (s.tools.node.assets["win32-x64"].file = "../x.zip"))), /plain file name/);
+		for (const file of ["-", "-x.zip", "--help"]) assert.throws(() => parseStack(mutate((s) => (s.tools.node.assets["win32-x64"].file = file))), /must not start with `-`/, file);
 		assert.throws(() => parseStack(mutate((s) => (s.schema = 2))), /schema/);
 		assert.throws(() => assetFor(parseStack(good), "nope", "win32-x64"), /no nope/);
 	});
@@ -331,30 +386,89 @@ describe("the engine lock", () => {
 		...testPlatform().processes,
 		inspect: async (asked: readonly number[]) => asked.map((pid) => ({ pid, startTime: pids.includes(pid) ? `start-${pid}` : null, executable: null })),
 	});
+	/** The OS answers that no pid exists, so a missing start time means the owner is gone. */
+	const gone = { pidAlive: () => false, unreadableGraceMs: 0 };
+	const lockFile = () => join(testLayout(root).state, "engine.lock");
 
 	it("refuses a second engine while the first lives, and takes over the lock of one that is gone or whose pid was reused", async () => {
 		const layout = testLayout(root);
-		const first = await acquireEngineLock(layout, alive([1001]), 1001);
-		await assert.rejects(acquireEngineLock(layout, alive([1001, 1002]), 1002), EngineLockedError);
+		const first = await acquireEngineLock(layout, alive([1001]), 1001, gone);
+		await assert.rejects(acquireEngineLock(layout, alive([1001, 1002]), 1002, gone), EngineLockedError);
 		first.release();
 		assert.equal(existsSync(join(layout.state, "engine.lock")), false);
 
 		// The owner died: its lock is stale.
-		await acquireEngineLock(layout, alive([1001]), 1001);
-		const taken = await acquireEngineLock(layout, alive([1002]), 1002);
+		await acquireEngineLock(layout, alive([1001]), 1001, gone);
+		const taken = await acquireEngineLock(layout, alive([1002]), 1002, gone);
 		assert.equal((JSON.parse(readFileSync(join(layout.state, "engine.lock"), "utf8")) as { pid: number }).pid, 1002);
 		taken.release();
 
 		// The pid is alive but belongs to another process now (a different start token).
 		writeFileSync(join(layout.state, "engine.lock"), JSON.stringify({ pid: 1003, startTime: "an-older-start" }));
-		const reused = await acquireEngineLock(layout, alive([1003, 1004]), 1004);
+		const reused = await acquireEngineLock(layout, alive([1003, 1004]), 1004, gone);
 		reused.release();
 
-		// An unreadable lock is stale too, and releasing someone else's lock removes nothing.
+		// An unreadable lock that nobody is writing is stale too, and releasing someone else's lock removes nothing.
 		writeFileSync(join(layout.state, "engine.lock"), "garbage");
-		const over = await acquireEngineLock(layout, alive([1005]), 1005);
-		await acquireEngineLock(layout, alive([1005]), 1005).catch(() => {});
+		const over = await acquireEngineLock(layout, alive([1005]), 1005, gone);
+		await acquireEngineLock(layout, alive([1005]), 1005, gone).catch(() => {});
 		over.release();
+		const mine = await acquireEngineLock(layout, alive([1006]), 1006, gone);
+		writeFileSync(join(layout.state, "engine.lock"), JSON.stringify({ pid: 1007, startTime: "start-1007", token: "theirs" }));
+		mine.release();
+		assert.equal(existsSync(join(layout.state, "engine.lock")), true, "a lock someone else took over is theirs");
+	});
+
+	it("counts a lock that names this very process as held, never as stale (T4-F002)", async () => {
+		const layout = testLayout(root);
+		const first = await acquireEngineLock(layout, alive([2001]), 2001, gone);
+		await assert.rejects(acquireEngineLock(layout, alive([2001]), 2001, gone), EngineLockedError);
+		await assert.rejects(acquireEngineLock(layout, alive([2001]), 2001, gone), /another engine \(pid 2001\)/);
+		assert.equal(JSON.parse(readFileSync(lockFile(), "utf8")).pid, 2001, "the held lock is still the first one's");
+		first.release();
+		assert.equal(existsSync(lockFile()), false);
+
+		// A start token nobody can read fails closed; two known, different tokens are a reused pid, which is stale.
+		const unknown = { ...testPlatform().processes, inspect: async (asked: readonly number[]) => asked.map((pid) => ({ pid, startTime: null, executable: null })) };
+		await acquireEngineLock(layout, unknown, 2002, gone);
+		await assert.rejects(acquireEngineLock(layout, unknown, 2002, gone), EngineLockedError);
+		rmSync(lockFile());
+		writeFileSync(lockFile(), JSON.stringify({ pid: 2003, startTime: "start-of-a-dead-incarnation" }));
+		(await acquireEngineLock(layout, alive([2003]), 2003, gone)).release();
+	});
+
+	it("fails closed when the start time of a live owner cannot be read, and takes over only when the OS says the pid is gone (T4-F009)", async () => {
+		const layout = testLayout(root);
+		mkdirSync(layout.state, { recursive: true });
+		const noStartTime = { ...testPlatform().processes, inspect: async (asked: readonly number[]) => asked.map((pid) => ({ pid, startTime: null, executable: null })) };
+		writeFileSync(lockFile(), JSON.stringify({ pid: 3001, startTime: "start-3001" }));
+		await assert.rejects(acquireEngineLock(layout, noStartTime, 3002, { pidAlive: (pid) => pid === 3001 }), /another engine \(pid 3001\)/, "ps answered nothing, the pid still exists: held");
+		assert.equal(JSON.parse(readFileSync(lockFile(), "utf8")).pid, 3001, "and the lock was not touched");
+		(await acquireEngineLock(layout, noStartTime, 3002, { pidAlive: () => false })).release();
+	});
+
+	it("lets exactly one of several contenders take over the same stale lock (T4-F009)", async () => {
+		const layout = testLayout(root);
+		mkdirSync(layout.state, { recursive: true });
+		writeFileSync(lockFile(), JSON.stringify({ pid: 4000, startTime: "start-4000" }));
+		const contenders = Array.from({ length: 12 }, (_, i) => 4001 + i);
+		const everyone = alive(contenders);
+		const results = await Promise.allSettled(contenders.map((pid) => acquireEngineLock(layout, everyone, pid, gone)));
+		const winners = results.flatMap((r, i) => (r.status === "fulfilled" ? [contenders[i] as number] : []));
+		assert.equal(winners.length, 1, `winners: ${winners.join(",")}`);
+		for (const r of results) if (r.status === "rejected") assert.ok(r.reason instanceof EngineLockedError);
+		assert.equal(JSON.parse(readFileSync(lockFile(), "utf8")).pid, winners[0], "the lock on disk is the winner's");
+		assert.deepEqual(readdirSync(layout.state).filter((n) => n.includes("stale")), [], "no moved-aside file stays");
+	});
+
+	it("does not take a lock that is being written, only one that has stayed unreadable (T4-F009)", async () => {
+		const layout = testLayout(root);
+		mkdirSync(layout.state, { recursive: true });
+		writeFileSync(lockFile(), "");
+		await assert.rejects(acquireEngineLock(layout, alive([5001]), 5001, { pidAlive: () => false }), /is writing/);
+		const longAgo = new Date(Date.now() - 60_000);
+		utimesSync(lockFile(), longAgo, longAgo);
+		(await acquireEngineLock(layout, alive([5001]), 5001, { pidAlive: () => false })).release();
 	});
 
 	it("makes a run fail at once with an error event when another engine holds the root", async () => {
@@ -365,6 +479,7 @@ describe("the engine lock", () => {
 		const run = await runEngine(root, makeStack({}), [plain("a", [])], { platform: { ...testPlatform(), processes } });
 		assert.equal(run.ok, false);
 		assert.match(run.error?.message ?? "", /another engine \(pid 4242\)/);
+		assert.equal(run.error?.name, "EngineLockedError");
 	});
 });
 

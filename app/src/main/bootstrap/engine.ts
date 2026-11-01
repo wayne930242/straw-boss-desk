@@ -4,7 +4,7 @@ import { execRunner } from "../platform/exec.ts";
 import { createPlatform, type CommandRunner, type Platform } from "../platform/index.ts";
 import { netFetch, type Fetch } from "./download.ts";
 import { runGraph, sweepLeftovers, type GraphResult } from "./graph.ts";
-import { Logger, Redactor, loadSecretPatterns, type RotationOptions } from "./log.ts";
+import { Logger, Redactor, SecretRefusedError, loadSecretPatterns, MIN_SECRET_LENGTH, type RotationOptions } from "./log.ts";
 import { parseStack, platformKey, type Stack } from "./stack.ts";
 import { runStage, type Stage, type StageOutcome } from "./stage.ts";
 import { acquireEngineLock, StateStore } from "./state.ts";
@@ -16,7 +16,10 @@ import { allStages } from "./stages/index.ts";
 
 // ---- the messages ----------------------------------------------------------------------------------------------------
 
-/** Main to engine. `secret` may arrive before `run`; it is held and registered with the redactor once that exists. */
+/**
+ * Main to engine. `secret` may arrive at any time, before `run` included: the engine keeps every value it holds for the life of its process and
+ * seeds the redactor of each run from them. One `run` at a time: a second one while a run is active is answered with an `EngineBusyError`.
+ */
 export type EngineRequest =
 	| { type: "run"; config: EngineConfig }
 	| { type: "secret"; op: "add" | "remove"; value: string }
@@ -40,7 +43,8 @@ export type EngineEvent =
 	| { type: "stage-start"; stage: string }
 	| { type: "stage"; outcome: StageOutcome }
 	| { type: "done"; ok: boolean; outcomes: StageOutcome[] }
-	| { type: "error"; message: string; details: string[] };
+	/** `name` is the error's class name (`EngineBusyError`, `EngineLockedError`, `SecretRefusedError`, `StackError`, ...), so main can tell a refused request from a failed run. */
+	| { type: "error"; name: string; message: string; details: string[] };
 
 export interface ParentPort {
 	postMessage(message: EngineEvent): void;
@@ -61,7 +65,17 @@ export interface EngineDeps {
 	/** Default: the layout recorded in `state/layout.json`, computed once. */
 	layout?: Layout;
 	retryDelayMs?: number;
+	/** A download that receives no bytes for this long fails as a network failure (default 60 s). */
+	downloadIdleMs?: number;
 	log?: RotationOptions;
+}
+
+/** A second `run` arrived while one was active. */
+export class EngineBusyError extends Error {
+	constructor() {
+		super("a run is already active in this engine");
+		this.name = "EngineBusyError";
+	}
 }
 
 export interface Engine {
@@ -69,23 +83,45 @@ export interface Engine {
 }
 
 export function createEngine(deps: EngineDeps): Engine {
-	const heldSecrets: { op: "add" | "remove"; value: string }[] = [];
+	/** Every value main registered and has not dropped. It outlives each run; a run's redactor starts from it. */
+	const secrets = new Set<string>();
+	/** The redactor of the run in progress, or null between runs. */
 	let redactor: Redactor | null = null;
 	let abort: AbortController | null = null;
+	let running = false;
 
 	const applySecret = (op: "add" | "remove", value: string): void => {
-		if (redactor === null) heldSecrets.push({ op, value });
-		else if (op === "add") redactor.add(value);
-		else redactor.remove(value);
+		if (op === "add") {
+			if (value.length < MIN_SECRET_LENGTH) throw new SecretRefusedError(value.length);
+			secrets.add(value);
+			redactor?.add(value);
+		} else {
+			secrets.delete(value);
+			redactor?.remove(value);
+		}
+	};
+
+	const seeded = (patterns: readonly RegExp[]): Redactor => {
+		const fresh = new Redactor(patterns);
+		for (const value of secrets) fresh.add(value);
+		return fresh;
+	};
+
+	/** Text that main receives outside the logger's reach: the registered values and the GUI URL are masked even when no run has patterns yet. */
+	const safe = (text: string): string => (redactor ?? seeded([])).redact(text);
+
+	const emitError = (thrown: unknown, details: string[] = []): void => {
+		const error = thrown instanceof Error ? thrown : new Error(String(thrown));
+		deps.emit({ type: "error", name: error.name, message: safe(error.message), details });
 	};
 
 	async function run(config: EngineConfig): Promise<void> {
 		const platformName: AppPlatform = config.platform ?? (process.platform === "win32" ? "win32" : "darwin");
-		redactor = new Redactor(loadSecretPatterns(config.secretPatterns));
-		for (const held of heldSecrets.splice(0)) applySecret(held.op, held.value);
+		const live = seeded(loadSecretPatterns(config.secretPatterns));
+		redactor = live;
 
 		const layout = deps.layout ?? loadLayout({ root: config.root, home: config.home ?? homedir(), platform: platformName });
-		const logger = new Logger({ dir: layout.logs, redactor, ...deps.log });
+		const logger = new Logger({ dir: layout.logs, redactor: live, ...deps.log });
 		const platform = deps.platform ?? createPlatform();
 		const lock = await acquireEngineLock(layout, platform.processes);
 		abort = new AbortController();
@@ -116,6 +152,7 @@ export function createEngine(deps: EngineDeps): Engine {
 						logFor: (name) => logger.stage(name),
 						redact: (text) => logger.redactor.redact(text),
 						retryDelayMs,
+						...(deps.downloadIdleMs !== undefined ? { downloadIdleMs: deps.downloadIdleMs } : {}),
 						...(config.force ? { force: true } : {}),
 					}),
 				onStart: (stage) => deps.emit({ type: "stage-start", stage: stage.name }),
@@ -127,7 +164,7 @@ export function createEngine(deps: EngineDeps): Engine {
 		} catch (error) {
 			logger.event({ event: "run-error", detail: (error as Error).message });
 			logger.flush();
-			deps.emit({ type: "error", message: (error as Error).message, details: logger.tail(40) });
+			emitError(error, logger.tail(40));
 		} finally {
 			abort = null;
 			lock.release();
@@ -138,17 +175,30 @@ export function createEngine(deps: EngineDeps): Engine {
 		async handle(request) {
 			switch (request.type) {
 				case "secret":
-					applySecret(request.op, request.value);
+					try {
+						applySecret(request.op, request.value);
+					} catch (error) {
+						emitError(error);
+					}
 					return;
 				case "cancel":
 					abort?.abort();
 					return;
 				case "run":
+					// Checked and set before the first await: two requests in the same tick cannot both pass.
+					if (running) {
+						emitError(new EngineBusyError());
+						return;
+					}
+					running = true;
 					try {
 						await run(request.config);
 					} catch (error) {
-						// Before the logger exists (a bad config, a held lock): the message is all main gets, and it holds no secret.
-						deps.emit({ type: "error", message: (error as Error).message, details: [] });
+						// Before the logger exists (a bad config, a held lock): the message is all main gets, with the registered values masked.
+						emitError(error);
+					} finally {
+						redactor = null;
+						running = false;
 					}
 					return;
 			}
@@ -166,7 +216,10 @@ export function startEngine(port: ParentPort | undefined = utilityParentPort()):
 	if (port === undefined) return null;
 	const engine = createEngine({ emit: (event) => port.postMessage(event) });
 	port.on("message", (event) => {
-		void engine.handle(event.data);
+		// `handle` reports its own failures as `error` events; this is only the last guard against an unhandled rejection that would end the process.
+		engine.handle(event.data).catch((error: unknown) => {
+			port.postMessage({ type: "error", name: error instanceof Error ? error.name : "Error", message: error instanceof Error ? error.message : String(error), details: [] });
+		});
 	});
 	port.postMessage({ type: "ready" });
 	return engine;

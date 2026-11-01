@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join, posix } from "node:path";
-import type { Layout } from "../paths.ts";
+import { join, posix, win32 } from "node:path";
+import { isInside, type Layout } from "../paths.ts";
 import type { CommandRunner, Platform, RunOptions, RunResult } from "../platform/index.ts";
 import { classifyError, RETRIED_ONCE, StageError, type FailureCategory, type FailureParams } from "./errors.ts";
 import { downloadVerified, type Downloaded, type Fetch } from "./download.ts";
@@ -26,7 +26,7 @@ export interface Evidence {
 	version: string;
 	/** Versions of other tools this output names (`tools/<tool>/<version>` folders): a change of one fails `detect`. */
 	dependsOn?: Record<string, string>;
-	/** Installed files to hash, relative to the data root with `/` separators. */
+	/** Installed files to hash, as `fileKey` writes them: relative to the data root with `/` separators, or `agent:` and a path relative to the agent folder. */
 	files?: string[];
 }
 
@@ -106,6 +106,8 @@ export interface RunDeps {
 	redact(text: string): string;
 	/** Delay before the one automatic retry of network, registry, and locked failures (spec: 5 s). */
 	retryDelayMs: number;
+	/** A download that receives no bytes for this long fails as a network failure (default 60 s). */
+	downloadIdleMs?: number;
 	now?: () => Date;
 	/** Ignore `detect` and install everything (a repair). */
 	force?: boolean;
@@ -114,23 +116,57 @@ export interface RunDeps {
 /** `tools/<tool>/<version>`, the folder a binary stage activates. */
 export const installDir = (layout: Layout, tool: string, version: string): string => join(layout.tools.root, tool, version);
 
-const toKey = (layout: Layout, absolute: string): string => {
-	const root = layout.root.replace(/[\\/]+$/, "");
-	const rel = absolute.slice(root.length + 1);
-	return rel.split(/[\\/]/).join("/");
+/** A path that should lie under the data root or the agent folder does not. Raised before anything is renamed into place. */
+export class OutsideRootError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "OutsideRootError";
+	}
+}
+
+const pathModule = (layout: Layout): typeof posix => (layout.platform === "win32" ? win32 : posix);
+const AGENT_BASE = "agent:";
+
+const relativeUnder = (base: string, absolute: string, P: typeof posix): string | null => {
+	if (!isInside(base, absolute, P)) return null;
+	const rel = P.relative(base, absolute);
+	return rel === "" ? null : rel.split(P.sep).join("/");
 };
 
-/** A path relative to the data root with `/` separators, as hashes and evidence name files. */
-export const relativeToRoot = toKey;
+/** A path relative to the data root with `/` separators. Throws `OutsideRootError` for a path that is not under the root: `relative()` would give a `..` or absolute path there. */
+export function relativeToRoot(layout: Layout, absolute: string): string {
+	const key = relativeUnder(layout.root, absolute, pathModule(layout));
+	if (key === null) throw new OutsideRootError(`${absolute} is not a file under the data root ${layout.root}`);
+	return key;
+}
 
-const fromKey = (layout: Layout, key: string): string => join(layout.root, ...key.split("/"));
+/**
+ * How hashes and evidence name an installed file: relative to the data root (`tools/node/24.1.0/node.exe`), or, for a file in the agent folder (fd and
+ * rg install into `<agent>/bin`, and on Windows the agent folder can lie outside the root), `agent:bin/fd.exe`. Any other path throws `OutsideRootError`.
+ */
+export function fileKey(layout: Layout, absolute: string): string {
+	const P = pathModule(layout);
+	const inRoot = relativeUnder(layout.root, absolute, P);
+	if (inRoot !== null) return inRoot;
+	const inAgent = relativeUnder(layout.agent, absolute, P);
+	if (inAgent !== null) return `${AGENT_BASE}${inAgent}`;
+	throw new OutsideRootError(`${absolute} is under neither the data root ${layout.root} nor the agent folder ${layout.agent}`);
+}
+
+/** The absolute path of a key. A key that is absolute, has a `..` or empty segment, a backslash, a drive letter, or a NUL byte throws `OutsideRootError`. */
+export function pathOfKey(layout: Layout, key: string): string {
+	const agent = key.startsWith(AGENT_BASE);
+	const rel = agent ? key.slice(AGENT_BASE.length) : key;
+	const segments = rel.split("/");
+	if (rel === "" || /[\\\0:]/.test(rel) || posix.isAbsolute(rel) || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+		throw new OutsideRootError(`evidence names a file outside the data root: ${key}`);
+	}
+	return pathModule(layout).join(agent ? layout.agent : layout.root, ...segments);
+}
 
 async function hashFiles(layout: Layout, files: readonly string[]): Promise<Record<string, string>> {
 	const hashes: Record<string, string> = {};
-	for (const key of files) {
-		if (posix.isAbsolute(key) || key.split("/").includes("..")) throw new Error(`evidence names a file outside the data root: ${key}`);
-		hashes[key] = await sha256File(fromKey(layout, key));
-	}
+	for (const key of files) hashes[key] = await sha256File(pathOfKey(layout, key));
 	return hashes;
 }
 
@@ -164,7 +200,7 @@ export async function detectFromRecord(
 	for (const [key, hash] of Object.entries(rec.hashes)) {
 		let got: string;
 		try {
-			got = await sha256File(fromKey(ctx.layout, key));
+			got = await sha256File(pathOfKey(ctx.layout, key));
 		} catch (error) {
 			return why(`${key} cannot be read: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}`);
 		}
@@ -242,6 +278,7 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 				tool,
 				dir: deps.layout.tools.downloads,
 				signal: deps.signal,
+				...(deps.downloadIdleMs !== undefined ? { idleTimeoutMs: deps.downloadIdleMs } : {}),
 				log: (event) => log.event(event),
 			});
 		},
@@ -345,6 +382,8 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			if (deps.signal.aborted) throw new StageError("other", { stage: stage.name }, "cancelled");
 			const evidence = await stage.verify(ctx);
 			log.event({ event: "verified", evidence: evidence.text });
+			// A key outside the data root is refused here, before anything is renamed into place.
+			for (const key of evidence.files ?? []) pathOfKey(deps.layout, key);
 			await stage.activate(ctx, evidence);
 			const hashes = await hashFiles(deps.layout, evidence.files ?? []);
 			cleanup(staging, fsErrors);

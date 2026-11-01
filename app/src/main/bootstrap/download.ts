@@ -22,6 +22,9 @@ export function netFetch(): Fetch {
 	};
 }
 
+/** A download that receives no bytes for this long (no response headers, or no next chunk of the body) is a network failure. */
+export const DEFAULT_IDLE_MS = 60_000;
+
 export interface DownloadRequest {
 	fetch: Fetch;
 	asset: Pick<Asset, "url" | "sha256" | "file">;
@@ -30,6 +33,8 @@ export interface DownloadRequest {
 	/** `tools/downloads`. */
 	dir: string;
 	signal?: AbortSignal;
+	/** Idle limit in milliseconds (default 60 s); tests shorten it. */
+	idleTimeoutMs?: number;
 	log?: (event: { event: string; [key: string]: string | number | boolean }) => void;
 }
 
@@ -48,6 +53,8 @@ const hostOf = (url: string): string => {
 		return url;
 	}
 };
+
+const idleText = (ms: number): string => (ms >= 1000 ? `${ms / 1000} s` : `${ms} ms`);
 
 const NETWORK_STATUS = (status: number): boolean => status >= 500 || status === 408 || status === 429;
 
@@ -79,56 +86,95 @@ export async function downloadVerified(request: DownloadRequest): Promise<Downlo
 
 	const part = join(dir, `${asset.file}.${randomBytes(4).toString("hex")}.part`);
 	log({ event: "download-begin", file: asset.file, host });
-	let response: Response;
-	try {
-		response = await fetch(asset.url, signal ? { signal } : undefined);
-	} catch (error) {
-		if (signal?.aborted) throw error;
-		throw new StageError("network", { host }, `could not fetch ${asset.file} from ${host}: ${(error as Error).message}`, { cause: error });
-	}
-	if (!response.ok || response.body === null) {
-		await response.body?.cancel().catch(() => {});
-		if (NETWORK_STATUS(response.status)) throw new StageError("network", { host }, `${host} answered HTTP ${response.status} for ${asset.file}`);
-		throw new StageError("other", { stage: tool }, `${host} answered HTTP ${response.status} for ${asset.file}; the pinned download is gone or moved`);
-	}
 
-	const hash = createHash("sha256");
-	let bytes = 0;
-	const file = await open(part, "w");
+	// One timer per download, re-armed before each wait for the network. When it fires it aborts the request and rejects `stalled`, which every wait
+	// races against, so a connection that is held open without a byte (a half-open socket, a proxy that died, a captive portal) cannot freeze the stage.
+	const idleMs = request.idleTimeoutMs ?? DEFAULT_IDLE_MS;
+	const idle = new AbortController();
+	let timer: NodeJS.Timeout | undefined;
+	let timedOut = false;
+	let expire: (error: Error) => void = () => {};
+	const stalled = new Promise<never>((_, reject) => {
+		expire = reject;
+	});
+	stalled.catch(() => {});
+	const arm = (): void => {
+		clearTimeout(timer);
+		timer = setTimeout(() => {
+			timedOut = true;
+			idle.abort();
+			expire(new Error(`no data for ${idleText(idleMs)}`));
+		}, idleMs);
+	};
+	const disarm = (): void => clearTimeout(timer);
+
 	try {
-		const reader = response.body.getReader();
-		for (;;) {
-			let step: Awaited<ReturnType<typeof reader.read>>;
-			try {
-				step = await reader.read();
-			} catch (error) {
-				if (signal?.aborted) throw error;
-				throw new StageError("network", { host }, `the download of ${asset.file} from ${host} broke off after ${bytes} bytes: ${(error as Error).message}`, { cause: error });
-			}
-			if (step.done) break;
-			hash.update(step.value);
-			bytes += step.value.byteLength;
-			await file.write(step.value);
+		let response: Response;
+		arm();
+		try {
+			response = await Promise.race([fetch(asset.url, { signal: signal ? AbortSignal.any([signal, idle.signal]) : idle.signal }), stalled]);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			const why = timedOut ? `${host} sent no response for ${idleText(idleMs)} while fetching ${asset.file}` : `could not fetch ${asset.file} from ${host}: ${(error as Error).message}`;
+			throw new StageError("network", { host }, why, { cause: error });
+		} finally {
+			disarm();
 		}
-	} catch (error) {
-		await file.close().catch(() => {});
-		rmSync(part, { force: true });
-		throw error;
-	}
-	await file.close();
+		if (!response.ok || response.body === null) {
+			await response.body?.cancel().catch(() => {});
+			if (NETWORK_STATUS(response.status)) throw new StageError("network", { host }, `${host} answered HTTP ${response.status} for ${asset.file}`);
+			throw new StageError("other", { stage: tool }, `${host} answered HTTP ${response.status} for ${asset.file}; the pinned download is gone or moved`);
+		}
 
-	const got = hash.digest("hex");
-	if (got !== asset.sha256) {
-		rmSync(part, { force: true });
-		log({ event: "download-integrity-mismatch", file: asset.file, expected: asset.sha256, got });
-		throw new StageError("integrity", { tool }, `${asset.file} from ${host}: SHA256 is ${got}, the pin says ${asset.sha256}`);
+		const hash = createHash("sha256");
+		let bytes = 0;
+		const file = await open(part, "w");
+		try {
+			const reader = response.body.getReader();
+			for (;;) {
+				let step: Awaited<ReturnType<typeof reader.read>>;
+				arm();
+				try {
+					step = await Promise.race([reader.read(), stalled]);
+				} catch (error) {
+					void reader.cancel().catch(() => {});
+					if (signal?.aborted) throw error;
+					const why = timedOut
+						? `the download of ${asset.file} from ${host} stalled: no data for ${idleText(idleMs)} after ${bytes} bytes`
+						: `the download of ${asset.file} from ${host} broke off after ${bytes} bytes: ${(error as Error).message}`;
+					throw new StageError("network", { host }, why, { cause: error });
+				} finally {
+					disarm();
+				}
+				if (step.done) break;
+				hash.update(step.value);
+				bytes += step.value.byteLength;
+				await file.write(step.value);
+			}
+		} catch (error) {
+			await file.close().catch(() => {});
+			rmSync(part, { force: true });
+			throw error;
+		}
+		await file.close();
+
+		const got = hash.digest("hex");
+		if (got !== asset.sha256) {
+			rmSync(part, { force: true });
+			log({ event: "download-integrity-mismatch", file: asset.file, expected: asset.sha256, got });
+			throw new StageError("integrity", { tool }, `${asset.file} from ${host}: SHA256 is ${got}, the pin says ${asset.sha256}`);
+		}
+		try {
+			renameRetry(part, target);
+		} catch (error) {
+			rmSync(part, { force: true });
+			throw error;
+		}
+		log({ event: "download-done", file: asset.file, sha256: got, bytes });
+		return { path: target, cached: false, bytes };
+	} finally {
+		disarm();
+		// Ends the request in every case: after success the body is already read, so this changes nothing; after a failure it frees the socket.
+		idle.abort();
 	}
-	try {
-		renameRetry(part, target);
-	} catch (error) {
-		rmSync(part, { force: true });
-		throw error;
-	}
-	log({ event: "download-done", file: asset.file, sha256: got, bytes });
-	return { path: target, cached: false, bytes };
 }

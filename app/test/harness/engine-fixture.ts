@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { layoutFromRecord, type AppPlatform, type Layout } from "../../src/main/paths.ts";
 import { createPlatform, type Platform } from "../../src/main/platform/index.ts";
 import { archiveStage } from "../../src/main/bootstrap/archive-stage.ts";
-import { createEngine, type EngineDeps, type EngineEvent } from "../../src/main/bootstrap/engine.ts";
+import { createEngine, type Engine, type EngineDeps, type EngineEvent } from "../../src/main/bootstrap/engine.ts";
 import { StageError } from "../../src/main/bootstrap/errors.ts";
 import { sha256Hex } from "./hash.ts";
 import { platformKey, type PlatformKey, type Stack } from "../../src/main/bootstrap/stack.ts";
@@ -26,7 +26,7 @@ export function scratchRoot(prefix = "sbd-eng-"): { base: string; root: string }
 }
 
 /** The layout of `root` without the socket-length rule, which depends on the runner's temporary folder and is task 3's to test. */
-export function testLayout(root: string): Layout {
+export function testLayout(root: string, options: { agentDir?: string } = {}): Layout {
 	const platform: AppPlatform = process.platform === "win32" ? "win32" : "darwin";
 	return layoutFromRecord({
 		schema: 1,
@@ -35,7 +35,7 @@ export function testLayout(root: string): Layout {
 		realRoot: root,
 		home: root,
 		id: "00000000",
-		agentDir: join(root, "agent"),
+		agentDir: options.agentDir ?? join(root, "agent"),
 		configHome: join(root, "config"),
 		fallbackDir: null,
 		herdrSocket: join(root, "config", "herdr", "herdr.sock"),
@@ -166,8 +166,16 @@ export interface EngineRun {
 	error: Extract<EngineEvent, { type: "error" }> | null;
 }
 
-/** One engine run against `root`, with the fixture server's `fetch`, no retry delay, and the process table of `testPlatform`. */
-export async function runEngine(root: string, stack: Stack, stages: Stage[], extra: Partial<EngineDeps> = {}, secrets: string[] = []): Promise<EngineRun> {
+/** An engine that lives across runs, as it does in the utilityProcess: the fixture server's `fetch`, no retry delay, and the process table of `testPlatform`. */
+export interface TestEngine {
+	engine: Engine;
+	/** Every event the engine emitted, over all runs. */
+	events: EngineEvent[];
+	/** Sends a `run` and returns what that run (and only that run) emitted. */
+	run(stack: Stack): Promise<EngineRun>;
+}
+
+export function testEngine(root: string, stages: () => Stage[], extra: Partial<EngineDeps> = {}): TestEngine {
 	const events: EngineEvent[] = [];
 	const engine = createEngine({
 		emit: (event) => events.push(event),
@@ -175,11 +183,21 @@ export async function runEngine(root: string, stack: Stack, stages: Stage[], ext
 		layout: testLayout(root),
 		platform: testPlatform(),
 		retryDelayMs: 0,
-		stages: () => stages,
+		stages,
 		...extra,
 	});
-	for (const value of secrets) await engine.handle({ type: "secret", op: "add", value });
-	await engine.handle({ type: "run", config: { root, stack, secretPatterns } });
+	return {
+		engine,
+		events,
+		async run(stack) {
+			const from = events.length;
+			await engine.handle({ type: "run", config: { root, stack, secretPatterns } });
+			return summarize(events.slice(from));
+		},
+	};
+}
+
+function summarize(events: EngineEvent[]): EngineRun {
 	const done = events.find((e) => e.type === "done");
 	const error = events.find((e): e is Extract<EngineEvent, { type: "error" }> => e.type === "error") ?? null;
 	return {
@@ -188,6 +206,13 @@ export async function runEngine(root: string, stack: Stack, stages: Stage[], ext
 		outcomes: Object.fromEntries((done?.type === "done" ? done.outcomes : []).map((o) => [o.stage, o])),
 		error,
 	};
+}
+
+/** One engine run against `root`, with the fixture server's `fetch`, no retry delay, and the process table of `testPlatform`. */
+export async function runEngine(root: string, stack: Stack, stages: Stage[], extra: Partial<EngineDeps> = {}, secrets: string[] = []): Promise<EngineRun> {
+	const test = testEngine(root, () => stages, extra);
+	for (const value of secrets) await test.engine.handle({ type: "secret", op: "add", value });
+	return test.run(stack);
 }
 
 /** Every path under `root` whose name marks unfinished work: a staging folder, a folder moved aside, an unfinished download, a temporary file. */

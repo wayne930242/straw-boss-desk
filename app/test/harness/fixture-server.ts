@@ -5,8 +5,12 @@ import type { AddressInfo } from "node:net";
 
 export type RouteMode =
 	| { kind: "ok" }
-	/** Sends the status line and half the body, then holds the socket open until the server closes. */
-	| { kind: "hang" }
+	/** Sends the status line and half the body, then holds the socket open until the server closes. After `times` requests the route answers normally. */
+	| { kind: "hang"; times?: number }
+	/** Takes the request and sends nothing, not even the status line, until the server closes. After `times` requests the route answers normally. */
+	| { kind: "silent"; times?: number }
+	/** Sends the body in `chunks` pieces, `gapMs` apart: a slow link that never goes quiet for long. */
+	| { kind: "trickle"; chunks: number; gapMs: number }
 	| { kind: "status"; code: number; times?: number }
 	/** Destroys the socket after the headers, `times` times (default always). */
 	| { kind: "drop"; times?: number };
@@ -85,10 +89,32 @@ export class FixtureServer {
 			response.socket?.destroy();
 			return;
 		}
-		if (mode.kind === "hang") {
+		if (mode.kind === "silent" && (mode.times === undefined || mode.times > 0)) {
+			if (mode.times !== undefined) route.mode = { ...mode, times: mode.times - 1 };
+			this.#sockets.add(response);
+			return;
+		}
+		if (mode.kind === "hang" && (mode.times === undefined || mode.times > 0)) {
+			if (mode.times !== undefined) route.mode = { ...mode, times: mode.times - 1 };
 			this.#sockets.add(response);
 			response.writeHead(200, { "content-length": String(route.body.length) });
 			response.write(route.body.subarray(0, Math.floor(route.body.length / 2)));
+			return;
+		}
+		if (mode.kind === "trickle") {
+			this.#sockets.add(response);
+			response.writeHead(200, { "content-length": String(route.body.length) });
+			const size = Math.ceil(route.body.length / mode.chunks);
+			let sent = 0;
+			const timer = setInterval(() => {
+				if (response.destroyed) return clearInterval(timer);
+				response.write(route.body.subarray(sent, sent + size));
+				sent += size;
+				if (sent >= route.body.length) {
+					clearInterval(timer);
+					response.end();
+				}
+			}, mode.gapMs);
 			return;
 		}
 		response.writeHead(200, { "content-length": String(route.body.length) }).end(route.body);

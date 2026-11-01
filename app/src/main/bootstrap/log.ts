@@ -15,9 +15,16 @@ const MAX_PENDING_LINE = 1024 * 1024;
 
 /**
  * `http://127.0.0.1:<port>/<token>`: the pi-straw-boss page URL carries its token as the first path segment. A segment of 16 or more URL-safe
- * characters that ends the URL (a slash, a query, a quote, white space, or the end) counts; a file name such as `node-v24-win-x64.zip` has a dot after it and does not.
+ * characters counts when whatever follows it is not part of a name: anything but a URL-safe character, and not a dot with a letter or digit after it.
+ * So `<token>.`, `<token>)`, `<token>,`, `<token>>`, `<token>&x`, `<token>;`, and a quote all end it, while a file name such as `node-v24-win-x64.zip`
+ * has `.zip` after it and does not.
  */
-const GUI_URL = /((?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}\/)[A-Za-z0-9_~-]{16,}(?=[/?#"'\s\\]|$)/g;
+const GUI_URL = /((?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}\/)[A-Za-z0-9_~-]{16,}(?![A-Za-z0-9_~-]|\.[A-Za-z0-9])/g;
+
+/** A PEM block, `-----BEGIN <label>-----` to the matching `-----END <label>-----` (to the end of the text when there is none), whatever its label. */
+const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----[\s\S]*?(?:-----END \1-----|$)/g;
+const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]+-----/;
+const PEM_END = /-----END [A-Z0-9 ]+-----/;
 
 export interface PatternEntry {
 	id: string;
@@ -34,6 +41,14 @@ export function loadSecretPatterns(json: unknown): RegExp[] {
 	});
 }
 
+/** Raised when main registers a value that is too short to be a secret; named, so the engine reports it instead of crashing on it. */
+export class SecretRefusedError extends Error {
+	constructor(length: number) {
+		super(`a secret to redact must be at least ${MIN_SECRET_LENGTH} characters (this one has ${length})`);
+		this.name = "SecretRefusedError";
+	}
+}
+
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export class Redactor {
@@ -47,7 +62,7 @@ export class Redactor {
 
 	/** Registers a secret value main holds. Its percent-encoded form is registered too, since URLs carry it that way. */
 	add(value: string): void {
-		if (value.length < MIN_SECRET_LENGTH) throw new Error(`a secret to redact must be at least ${MIN_SECRET_LENGTH} characters`);
+		if (value.length < MIN_SECRET_LENGTH) throw new SecretRefusedError(value.length);
 		this.#secrets.add(value);
 		const encoded = encodeURIComponent(value);
 		if (encoded !== value && encoded.length >= MIN_SECRET_LENGTH) this.#secrets.add(encoded);
@@ -72,7 +87,7 @@ export class Redactor {
 	}
 
 	redact(text: string): string {
-		let out = text;
+		let out = text.replace(PEM_BLOCK, REDACTED);
 		const exact = this.#exactPattern();
 		if (exact) out = out.replace(exact, REDACTED);
 		out = out.replace(GUI_URL, `$1${TOKEN}`);
@@ -155,6 +170,8 @@ export class StageLog {
 	readonly #file: RotatingFile;
 	readonly #events: (fields: Record<string, LogValue>) => void;
 	#pending = "";
+	/** True between the line that opens a PEM block and the line that closes it: the lines in between are never written. */
+	#inBlock = false;
 
 	constructor(redactor: Redactor, file: RotatingFile, events: (fields: Record<string, LogValue>) => void) {
 		this.#redactor = redactor;
@@ -172,18 +189,37 @@ export class StageLog {
 		this.#pending += chunk;
 		let newline = this.#pending.indexOf("\n");
 		while (newline !== -1) {
-			this.#file.append(`${this.#redactor.redact(this.#pending.slice(0, newline))}\n`);
+			this.#line(this.#pending.slice(0, newline));
 			this.#pending = this.#pending.slice(newline + 1);
 			newline = this.#pending.indexOf("\n");
 		}
-		if (this.#pending.length > MAX_PENDING_LINE) this.flush();
+		if (this.#pending.length > MAX_PENDING_LINE) this.#flushPending();
 	}
 
-	/** Writes out a last line that had no newline. */
+	/** Writes out a last line that had no newline, and ends a PEM block that never closed: the next output starts clean. */
 	flush(): void {
+		this.#flushPending();
+		this.#inBlock = false;
+	}
+
+	#flushPending(): void {
 		if (this.#pending === "") return;
-		this.#file.append(`${this.#redactor.redact(this.#pending)}\n`);
+		this.#line(this.#pending);
 		this.#pending = "";
+	}
+
+	/**
+	 * One line of output. A PEM block spans lines, which a per-line redactor cannot see whole: the line that opens it is written with everything from
+	 * `-----BEGIN` on masked, and the lines up to the closing `-----END` are dropped.
+	 */
+	#line(line: string): void {
+		if (this.#inBlock) {
+			if (PEM_END.test(line)) this.#inBlock = false;
+			return;
+		}
+		const begin = PEM_BEGIN.exec(line);
+		if (begin !== null && !PEM_END.test(line.slice(begin.index + begin[0].length))) this.#inBlock = true;
+		this.#file.append(`${this.#redactor.redact(line)}\n`);
 	}
 }
 

@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { Logger, REDACTED, Redactor, RotatingFile, loadSecretPatterns, tailLines } from "../src/main/bootstrap/log.ts";
+import { Logger, REDACTED, Redactor, RotatingFile, SecretRefusedError, loadSecretPatterns, tailLines } from "../src/main/bootstrap/log.ts";
 
 const patterns = loadSecretPatterns(JSON.parse(readFileSync(new URL("../../recipe/secret-patterns.json", import.meta.url), "utf8")));
 const scratch: string[] = [];
@@ -23,6 +23,10 @@ const guiUrl = "http://127.0.0.1:41234/" + "k3Jx9QwErTyUiOp0AsDfGhJk";
 const guiToken = "k3Jx9QwErTyUiOp0AsDfGhJk";
 const exact = "plain-secret-value-with-no-token-shape";
 const awkward = 'quote"back\\slash secret';
+
+// Built at run time, so this file holds no literal that a secret scanner would flag.
+const pemOf = (label: string, body: string[]): string => [`-----${"BEGIN"} ${label}-----`, ...body, `-----${"END"} ${label}-----`].join("\n");
+const keyBody = ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW", "QyNTUxOQAAACDfakefakefakefakefakefakefakefakefakefakeAAAAAAAAAAAAAAAA"];
 
 describe("Redactor", () => {
 	it("replaces token shapes, the GUI URL token, and registered values by exact match", () => {
@@ -50,13 +54,42 @@ describe("Redactor", () => {
 		assert.equal(r.redact("http://127.0.0.1:5555/fixture-archive-of-alpha.zip"), "http://127.0.0.1:5555/fixture-archive-of-alpha.zip");
 	});
 
-	it("forgets a value that is removed, and refuses a value too short to be a secret", () => {
+	it("forgets a value that is removed, and refuses a value too short to be a secret with a named error", () => {
 		const r = new Redactor(patterns);
 		r.add(exact);
 		r.remove(exact);
 		assert.equal(r.redact(exact), exact);
-		assert.throws(() => r.add("abc"), /at least 4/);
+		assert.throws(() => r.add("abc"), (e: unknown) => e instanceof SecretRefusedError && e.name === "SecretRefusedError" && /at least 4/.test(e.message) && !e.message.includes("abc"));
 		assert.throws(() => r.add(""), /at least 4/);
+	});
+
+	it("masks the GUI token when punctuation, a closing bracket, or a quote follows it (T4-F003)", () => {
+		const r = new Redactor(patterns);
+		const around: [string, string][] = [["open ", "."], ["", ", next"], ["(", ")"], ["<", ">"], ["", "&x=1"], ["", ";"], ["'", "'"], ['"', '"'], ["[", "]"], ["{", "}"], ["see ", ".\n"], ["", ""]];
+		for (const [before, after] of around) {
+			const out = r.redact(`${before}${guiUrl}${after}`);
+			assert.ok(!out.includes(guiToken), `${before}<url>${after} came out as ${out}`);
+			assert.ok(out.includes("127.0.0.1:41234/<token>"), out);
+			assert.ok(out.startsWith(before) && out.endsWith(after), `the text around the URL is kept: ${out}`);
+		}
+	});
+
+	it("still leaves a long file name with an extension alone, even with a sentence dot after it (T4-F003)", () => {
+		const r = new Redactor(patterns);
+		for (const url of ["http://127.0.0.1:5555/fixture-archive-of-alpha.zip", "http://localhost:5555/node-v24.22.1-win-x64.zip", "http://127.0.0.1:5555/a-very-long-file-name-here.tar.gz"]) {
+			assert.equal(r.redact(url), url);
+			assert.equal(r.redact(`fetched ${url}.`), `fetched ${url}.`);
+		}
+	});
+
+	it("masks a whole PEM block, header to footer, and keeps the text around it (T4-F012)", () => {
+		const r = new Redactor(patterns);
+		for (const label of ["OPENSSH PRIVATE KEY", "RSA PRIVATE KEY", "PRIVATE KEY", "CERTIFICATE"]) {
+			const out = r.redact(`before\n${pemOf(label, keyBody)}\nafter`);
+			assert.equal(out, `before\n${REDACTED}\nafter`, label);
+		}
+		const unfinished = r.redact(`start ${pemOf("EC PRIVATE KEY", keyBody).split("\n").slice(0, 2).join("\n")}`);
+		assert.ok(!unfinished.includes(keyBody[0] as string) && unfinished.startsWith("start "), unfinished);
 	});
 
 	it("refuses a pattern file without patterns", () => {
@@ -94,6 +127,25 @@ describe("Logger", () => {
 		logger.event({ event: "late", detail: late });
 		redactor.add(late);
 		assert.ok(logger.tail(40).every((l) => !l.includes(late)));
+	});
+
+	it("writes none of a PEM block to a stage log, whichever chunks it arrives in, and writes the lines around it (T4-F012)", () => {
+		const logs = dir();
+		const logger = new Logger({ dir: logs, redactor: new Redactor(patterns) });
+		const stage = logger.stage("pem");
+		const block = pemOf("OPENSSH PRIVATE KEY", keyBody);
+		const cut = block.indexOf(keyBody[0] as string) + 20;
+		stage.raw(`line before\ncat key: ${block.slice(0, cut)}`);
+		stage.raw(`${block.slice(cut)}\nline after\n`);
+		// A block that never closes ends with the command's output, not with the log.
+		stage.raw(`${pemOf("RSA PRIVATE KEY", keyBody).split("\n").slice(0, 2).join("\n")}\n`);
+		stage.flush();
+		stage.raw("next command\n");
+		stage.flush();
+		const text = readFileSync(join(logs, "stage-pem.log"), "utf8");
+		for (const line of keyBody) assert.ok(!text.includes(line), text);
+		assert.ok(!/PRIVATE KEY/.test(text), text);
+		assert.deepEqual(text.split("\n").filter(Boolean), ["line before", `cat key: ${REDACTED}`, "line after", REDACTED, "next command"]);
 	});
 
 	it("returns the last 40 lines", () => {

@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Layout } from "../paths.ts";
 import type { Processes } from "../platform/index.ts";
@@ -93,16 +94,24 @@ export interface StateStoreOptions {
 	onQuarantine?: (file: string, moved: string) => void;
 }
 
-/** The two state files of one data root, with writes serialized inside this process. */
+/**
+ * The two state files of one data root, with writes serialized inside this process.
+ *
+ * Reads (`record`, `version`) answer from a copy read once. Every change re-reads its file from disk first, so a store whose copy went stale (the
+ * engine updated a version since, in this process or another) never writes the stale copy back. The engine holds the engine lock for a whole run;
+ * `rollbackTool` and `pruneInactive`, which main calls between runs, take it themselves.
+ */
 export class StateStore {
 	readonly bootstrapFile: string;
 	readonly currentFile: string;
+	readonly #layout: Layout;
 	readonly #onQuarantine: (file: string, moved: string) => void;
 	#bootstrap: BootstrapState | null = null;
 	#current: CurrentState | null = null;
 	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(layout: Layout, options: StateStoreOptions = {}) {
+		this.#layout = layout;
 		this.bootstrapFile = join(layout.state, "bootstrap.json");
 		this.currentFile = join(layout.state, "current.json");
 		this.#onQuarantine = options.onQuarantine ?? (() => {});
@@ -136,6 +145,12 @@ export class StateStore {
 		return this.#current;
 	}
 
+	/** The state files as they are on disk now, replacing the copy this store read earlier. */
+	#reload(): void {
+		this.#bootstrap = null;
+		this.#current = null;
+	}
+
 	record(stage: string): StageRecord | null {
 		return this.bootstrap().stages[stage] ?? null;
 	}
@@ -145,11 +160,27 @@ export class StateStore {
 		return this.current().versions[tool] ?? null;
 	}
 
-	/** Runs `change` after every earlier change and writes the result by rename. One writer at a time keeps parallel stages from overwriting each other. */
+	/**
+	 * Runs `change` after every earlier change, on the files as they are on disk, and writes the result by rename. One writer at a time keeps
+	 * parallel stages from overwriting each other.
+	 */
 	#serial<T>(change: () => T): Promise<T> {
-		const run = this.#queue.then(change);
+		const run = this.#queue.then(() => {
+			this.#reload();
+			return change();
+		});
 		this.#queue = run.catch(() => {});
 		return run;
+	}
+
+	/** Runs `change` under the engine lock: for the changes main makes between runs. Throws `EngineLockedError` while an engine run holds the root. */
+	async #locked<T>(processes: Processes, change: () => T): Promise<T> {
+		const lock = await acquireEngineLock(this.#layout, processes);
+		try {
+			return await this.#serial(change);
+		} finally {
+			lock.release();
+		}
 	}
 
 	setRecord(stage: string, record: StageRecord): Promise<void> {
@@ -174,9 +205,10 @@ export class StateStore {
 	/**
 	 * Points `current.json` back at the version `tool` had before its last change (spec: Rollback). Returns that version, or null when there is none.
 	 * Stages whose evidence names the tool's version fail `detect` afterwards, so the next graph run writes them again for the old version.
+	 * Takes the engine lock: it throws `EngineLockedError` while a run is active.
 	 */
-	rollbackTool(tool: string): Promise<string | null> {
-		return this.#serial(() => {
+	rollbackTool(tool: string, processes: Processes): Promise<string | null> {
+		return this.#locked(processes, () => {
 			const state = this.current();
 			const back = state.previous[tool];
 			if (back === undefined) return null;
@@ -190,12 +222,13 @@ export class StateStore {
 	/**
 	 * Deletes the folders of `tool` that are not the active version and forgets the rollback target: "the previous version is deleted after the next
 	 * successful start". Failures to delete are returned, not thrown, so a locked old folder does not fail a start.
+	 * Takes the engine lock (it throws `EngineLockedError` while a run is active), so it never deletes a staging folder a run is writing.
 	 */
-	pruneInactive(layout: Layout, tool: string): Promise<string[]> {
-		return this.#serial(() => {
+	pruneInactive(tool: string, processes: Processes): Promise<string[]> {
+		return this.#locked(processes, () => {
 			const state = this.current();
 			const active = state.versions[tool];
-			const base = join(layout.tools.root, tool);
+			const base = join(this.#layout.tools.root, tool);
 			const errors: string[] = [];
 			let names: string[] = [];
 			try {
@@ -233,23 +266,55 @@ export interface EngineLock {
 	release(): void;
 }
 
+export interface LockOptions {
+	/** Whether the OS still has a process with this pid; the default asks with signal 0. Used only when `Processes.inspect` gave no start time. */
+	pidAlive?: (pid: number) => boolean;
+	/** An unreadable lock younger than this is taken to be mid-write by its owner, not stale (default 2 s). */
+	unreadableGraceMs?: number;
+}
+
+const UNREADABLE_GRACE_MS = 2000;
+
+/** True unless the OS says there is no such process: a pid we may not signal (EPERM) is alive. */
+export function osPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+interface LockOwner {
+	pid: number;
+	startTime: string | null;
+}
+
 /**
- * One engine per data root: `state/engine.lock` holds the owner's pid and start token. A lock whose owner is gone, or whose pid now belongs to
- * another process (a different start token), is stale and is taken over; a live owner makes this throw `EngineLockedError`.
+ * One engine per data root: `state/engine.lock` holds the owner's pid, start token, and a random token. Only one run at a time may hold it, this process's
+ * own earlier run included: a lock that names this very process (same pid and start token) is held, never stale. A lock is stale when its owner is
+ * gone, or its pid now belongs to another process (a different start token), and is taken over; a live owner makes this throw `EngineLockedError`.
+ *
+ * When the platform gives no start time for the owner (a timed-out `ps`), the answer is "unknown", and unknown counts as alive unless the OS itself
+ * says the pid does not exist. The takeover renames the stale file to a name of our own and checks that what moved is the file judged stale before
+ * deleting it, so two contenders that read the same stale lock cannot both win; the winner creates the new lock with `wx`.
  */
-export async function acquireEngineLock(layout: Layout, processes: Processes, pid: number = process.pid): Promise<EngineLock> {
+export async function acquireEngineLock(layout: Layout, processes: Processes, pid: number = process.pid, options: LockOptions = {}): Promise<EngineLock> {
 	const file = join(layout.state, "engine.lock");
+	const pidAlive = options.pidAlive ?? osPidAlive;
+	const grace = options.unreadableGraceMs ?? UNREADABLE_GRACE_MS;
 	mkdirSync(dirname(file), { recursive: true });
 	const mine = (await processes.inspect([pid]))[0]?.startTime ?? null;
-	const body = `${JSON.stringify({ pid, startTime: mine })}\n`;
-	for (let attempt = 0; attempt < 3; attempt++) {
+	const token = randomBytes(8).toString("hex");
+	const body = `${JSON.stringify({ pid, startTime: mine, token })}\n`;
+	for (let attempt = 0; attempt < 4; attempt++) {
 		try {
 			writeFileSync(file, body, { flag: "wx" });
 			return {
 				release() {
+					// Only the lock we wrote: a lock someone else took over is theirs.
 					try {
-						const held = readJsonFile(file);
-						if (isObject(held) && held.pid === pid) rmSync(file, { force: true });
+						if (readFileSync(file, "utf8") === body) rmSync(file, { force: true });
 					} catch {
 						// the lock is gone or unreadable: nothing of ours to release
 					}
@@ -258,23 +323,77 @@ export async function acquireEngineLock(layout: Layout, processes: Processes, pi
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
-		const owner = readOwner(file);
-		if (owner !== null && owner.pid !== pid) {
-			const info = (await processes.inspect([owner.pid]))[0];
-			const alive = info?.startTime != null && (owner.startTime === null || info.startTime === owner.startTime);
-			if (alive) throw new EngineLockedError(`another engine (pid ${owner.pid}) is running for ${layout.root}`);
+		const text = readText(file);
+		if (text === null) continue; // released between the failed create and the read
+		const owner = parseOwner(text);
+		if (owner === null) {
+			if (ageMs(file) < grace) throw new EngineLockedError(`another engine is writing ${file}`);
+		} else if (await ownerAlive(owner, processes, pid, mine, pidAlive)) {
+			throw new EngineLockedError(`another engine (pid ${owner.pid}) is running for ${layout.root}`);
 		}
-		rmSync(file, { force: true });
+		await takeOver(file, text);
 	}
 	throw new EngineLockedError(`could not take the engine lock at ${file}`);
 }
 
-function readOwner(file: string): { pid: number; startTime: string | null } | null {
+async function ownerAlive(owner: LockOwner, processes: Processes, pid: number, mine: string | null, pidAlive: (pid: number) => boolean): Promise<boolean> {
+	if (owner.pid === pid) {
+		// This process: held unless the pid was reused, which needs two known, different start tokens. Unknown fails closed.
+		return owner.startTime === null || mine === null || owner.startTime === mine;
+	}
+	const info = (await processes.inspect([owner.pid]))[0];
+	const seen = info?.startTime ?? null;
+	if (seen !== null) return owner.startTime === null || seen === owner.startTime;
+	return pidAlive(owner.pid);
+}
+
+/**
+ * Removes the stale lock whose text was `stale`: rename it away, check that the renamed file is that text, delete it. If it is something else (another
+ * contender took over first and wrote its own lock), it is put back, without replacing anything newer.
+ */
+async function takeOver(file: string, stale: string): Promise<void> {
+	const away = `${file}.stale-${process.pid}-${randomBytes(4).toString("hex")}`;
 	try {
-		const value = readJsonFile(file);
+		renameSync(file, away);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return; // someone else removed it first
+		throw error;
+	}
+	if (readText(away) === stale) {
+		rmSync(away, { force: true });
+		return;
+	}
+	try {
+		linkSync(away, file);
+	} catch {
+		// something newer is already there: the lock we moved cannot go back, and its owner will find the file is not its own
+	}
+	rmSync(away, { force: true });
+}
+
+function readText(file: string): string | null {
+	try {
+		return readFileSync(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+function ageMs(file: string): number {
+	try {
+		return Math.max(0, Date.now() - statSync(file).mtimeMs);
+	} catch {
+		return Number.POSITIVE_INFINITY;
+	}
+}
+
+function parseOwner(text: string): LockOwner | null {
+	try {
+		const value: unknown = JSON.parse(text);
 		if (isObject(value) && typeof value.pid === "number") return { pid: value.pid, startTime: typeof value.startTime === "string" ? value.startTime : null };
 	} catch {
-		// an unreadable lock is stale
+		// an unreadable lock is stale (once it is older than the grace period)
 	}
 	return null;
 }

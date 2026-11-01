@@ -9,7 +9,11 @@ import { removeTree, sha256File } from "../src/main/bootstrap/fsutil.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import type { Stage } from "../src/main/bootstrap/stage.ts";
 import { FixtureServer } from "./harness/fixture-server.ts";
-import { exeName, installsOf, leftovers, makeStack, publish, runEngine, scratchRoot, secretPatterns, testLayout, toolStage } from "./harness/engine-fixture.ts";
+import { exeName, installsOf, leftovers, makeStack, publish, runEngine, scratchRoot, secretPatterns, testEngine, testLayout, testPlatform, toolStage } from "./harness/engine-fixture.ts";
+import { EngineLockedError } from "../src/main/bootstrap/state.ts";
+import { detectFromRecord, fileKey, type StageContext } from "../src/main/bootstrap/stage.ts";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 
 // The task 4 anchor: the engine against a local HTTP fixture server (test code only).
 
@@ -166,10 +170,11 @@ describe("a failing verify of a new version", () => {
 		assert.equal(currentState().previous["alpha-r"], "1.0.0");
 		assert.equal(existsSync(join(root, "tools", "alpha-r", "1.0.0")), true, "the previous version stays beside the new one");
 
+		const { processes } = testPlatform();
 		const store = new StateStore(testLayout(root));
-		assert.equal(await store.rollbackTool("alpha-r"), "1.0.0");
+		assert.equal(await store.rollbackTool("alpha-r", processes), "1.0.0");
 		assert.equal(currentState().versions["alpha-r"], "1.0.0");
-		assert.equal(await new StateStore(testLayout(root)).rollbackTool("alpha-r"), null, "there is nothing older to go back to");
+		assert.equal(await new StateStore(testLayout(root)).rollbackTool("alpha-r", processes), null, "there is nothing older to go back to");
 
 		// The old stack is back: alpha-r is made active again from the cached archive without a request, and the dependent follows.
 		const hitsBefore = server.hits(v1.path);
@@ -180,7 +185,7 @@ describe("a failing verify of a new version", () => {
 		assert.deepEqual(installsOf(installsLog).slice(-2), ["alpha-r", "paths-r"]);
 
 		// Once a start succeeds, the folder of the version that is not active goes.
-		assert.deepEqual(await new StateStore(testLayout(root)).pruneInactive(testLayout(root), "alpha-r"), []);
+		assert.deepEqual(await new StateStore(testLayout(root)).pruneInactive("alpha-r", processes), []);
 		assert.equal(existsSync(join(root, "tools", "alpha-r", "2.0.0")), false);
 		assert.equal(existsSync(join(root, "tools", "alpha-r", "1.0.0")), true);
 	});
@@ -250,7 +255,10 @@ describe("redaction", () => {
 		const planted = [ghToken, guiToken, registered, sneaky, `43210/${guiToken}`];
 		const files: string[] = [];
 		const walk = (dir: string): void => {
-			for (const e of readdirSync(dir, { withFileTypes: true })) (e.isDirectory() ? walk(join(dir, e.name)) : files.push(join(dir, e.name)));
+			for (const e of readdirSync(dir, { withFileTypes: true })) {
+				if (e.isDirectory()) walk(join(dir, e.name));
+				else files.push(join(dir, e.name));
+			}
 		};
 		walk(join(root, "logs"));
 		walk(join(root, "state"));
@@ -265,5 +273,297 @@ describe("redaction", () => {
 		const detail = run.outcomes["leaky"]?.failure?.detail ?? "";
 		for (const secret of planted) assert.ok(!detail.includes(secret), `the failure detail holds ${secret}`);
 		assert.ok(detail.includes("install broke"));
+	});
+});
+
+/** Every file under logs/ and state/ of a root, with its text. */
+function filesUnder(...dirs: string[]): { file: string; text: string }[] {
+	const found: { file: string; text: string }[] = [];
+	const walk = (dir: string): void => {
+		for (const e of readdirSync(dir, { withFileTypes: true })) {
+			if (e.isDirectory()) walk(join(dir, e.name));
+			else found.push({ file: join(dir, e.name), text: readFileSync(join(dir, e.name), "utf8") });
+		}
+	};
+	for (const dir of dirs) walk(dir);
+	return found;
+}
+
+describe("secrets registered with one engine process (T4-F001)", () => {
+	it("keep masking in every later run, for a value registered before, between, or during runs, until it is dropped", async () => {
+		const first = "control-secret-from-server-json-0123";
+		const between = "registered-between-the-runs-98765";
+		let plant = "";
+		const stage: Stage = {
+			name: "leaky",
+			needs: [],
+			plannedVersion: () => "1.0.0",
+			detect: async () => null,
+			async install(ctx) {
+				if (plant === "") return;
+				await ctx.exec(process.execPath, ["-e", `console.log(${JSON.stringify(`tool said ${plant}`)})`]);
+				throw new Error(`install broke: ${plant}`);
+			},
+			verify: async () => ({ text: "ok", version: "1.0.0" }),
+			activate: async () => {},
+		};
+		const t = testEngine(root, () => [stage]);
+		const stack = makeStack({});
+		const leaks = (secret: string): string[] => [
+			...filesUnder(join(root, "logs"), join(root, "state")).filter((f) => f.text.includes(secret) || f.text.includes(encodeURIComponent(secret))).map((f) => f.file),
+			...(JSON.stringify(t.events).includes(secret) ? ["the events sent to main"] : []),
+		];
+
+		await t.engine.handle({ type: "secret", op: "add", value: first });
+		assert.equal((await t.run(stack)).outcomes["leaky"]?.status, "installed", "run 1 is clean");
+
+		plant = first;
+		const second = await t.run(stack);
+		assert.equal(second.outcomes["leaky"]?.status, "failed");
+		assert.ok(second.outcomes["leaky"]?.failure?.detail.includes("install broke"), "the failure is the planted one");
+		assert.deepEqual(leaks(first), [], "run 2: the value registered before run 1 is still masked everywhere");
+		assert.ok(!bootstrapState().stages["leaky"].lastFailure.message.includes(first));
+
+		await t.engine.handle({ type: "secret", op: "add", value: between });
+		plant = between;
+		assert.equal((await t.run(stack)).outcomes["leaky"]?.status, "failed");
+		assert.deepEqual(leaks(between), [], "run 3: a value registered between runs is masked");
+		assert.deepEqual(leaks(first), []);
+
+		await t.engine.handle({ type: "secret", op: "remove", value: between });
+		assert.equal((await t.run(stack)).outcomes["leaky"]?.status, "failed");
+		assert.notDeepEqual(leaks(between), [], "run 4: a dropped value is no longer masked (so the checks above were not vacuous)");
+		plant = first;
+		await t.run(stack);
+		assert.ok(!bootstrapState().stages["leaky"].lastFailure.message.includes(first), "and the others still are");
+	});
+
+	it("refuses a value shorter than 4 characters with a named error event instead of an unhandled rejection (T4-F011)", async () => {
+		const t = testEngine(root, () => []);
+		await t.engine.handle({ type: "secret", op: "add", value: "abc" });
+		const refusal = t.events.find((e) => e.type === "error");
+		assert.equal(refusal?.type === "error" && refusal.name, "SecretRefusedError");
+		assert.match(refusal?.type === "error" ? refusal.message : "", /at least 4/);
+		assert.ok(!JSON.stringify(t.events).includes('"abc"'), "the refused value is not echoed");
+		// The engine still works, and the short value was not kept.
+		assert.equal((await t.run(makeStack({}))).ok, true);
+		await t.engine.handle({ type: "secret", op: "remove", value: "abc" });
+	});
+
+	it("masks the registered values and the GUI URL in the error message main receives (T4-F011)", async () => {
+		const secret = "plant-in-the-stack-key-55555";
+		const t = testEngine(root, () => []);
+		await t.engine.handle({ type: "secret", op: "add", value: secret });
+		const bad = { schema: 1, generation: 1, minShell: "0.0.1", profile: { name: "p", version: "1", integrity: "i" }, tools: { x: { assets: { [`${secret} at http://127.0.0.1:4321/Qw3rTy9UiOp2AsDf5GhJk8Lz`]: {} } } } };
+		const run = await t.run(bad as never);
+		assert.equal(run.error?.name, "StackError");
+		assert.match(run.error?.message ?? "", /unknown platform key/);
+		assert.ok(!(run.error?.message ?? "").includes(secret), run.error?.message);
+		assert.ok(!(run.error?.message ?? "").includes("Qw3rTy9UiOp2AsDf5GhJk8Lz"), run.error?.message);
+		assert.ok(!JSON.stringify(run.error?.details).includes(secret));
+
+		// A run that fails before it has a logger (bad patterns) is masked too, with the registered values alone.
+		const early = testEngine(root, () => []);
+		await early.engine.handle({ type: "secret", op: "add", value: secret });
+		await early.engine.handle({ type: "run", config: { root, stack: {}, secretPatterns: { patterns: [{ id: secret, regex: "" }] } } });
+		const failure = early.events.find((e) => e.type === "error");
+		assert.match(failure?.type === "error" ? failure.message : "no error event", /secret pattern .* has no regex/);
+		assert.ok(!JSON.stringify(early.events).includes(secret), "the registered value is masked even before the run has patterns");
+	});
+});
+
+describe("one run at a time (T4-F002)", () => {
+	it("answers a second run with a named error while one is active, and leaves the first run's lock and staging alone", async () => {
+		const alpha = publish(server, "alpha-busy", { version: "1.0.0" });
+		const stack = makeStack({ "alpha-busy": alpha });
+		let open!: () => void;
+		const gate = new Promise<void>((resolve) => (open = resolve));
+		let parked!: () => void;
+		const atGate = new Promise<void>((resolve) => (parked = resolve));
+		const inner = toolStage("alpha-busy", { installsLog });
+		// Parked inside `install`, after the archive was extracted into the staging folder.
+		const parkedStage: Stage = {
+			...inner,
+			async install(ctx) {
+				await inner.install(ctx);
+				parked();
+				await gate;
+			},
+		};
+		const t = testEngine(root, () => [parkedStage]);
+		const first = t.run(stack);
+		await atGate;
+		const staging = join(root, "tools", "alpha-busy", "1.0.0.staging");
+		const lock = join(root, "state", "engine.lock");
+		assert.equal(existsSync(staging), true);
+		const lockText = readFileSync(lock, "utf8");
+
+		const second = await t.run(stack);
+		assert.equal(second.ok, false);
+		assert.equal(second.error?.name, "EngineBusyError");
+		assert.match(second.error?.message ?? "", /already active/);
+		assert.equal(existsSync(staging), true, "the second run did not sweep the first run's staging folder");
+		assert.equal(readFileSync(lock, "utf8"), lockText, "and did not release or replace its lock");
+		assert.ok(!logLines().some((l) => l.event === "swept"), "nothing was swept");
+
+		open();
+		const done = await first;
+		assert.equal(done.ok, true, JSON.stringify(done.events));
+		assert.equal(done.outcomes["alpha-busy"]?.status, "installed");
+		assert.equal(existsSync(lock), false, "the first run released its own lock");
+		assert.deepEqual(leftovers(root), []);
+		assert.deepEqual(installsOf(installsLog), ["alpha-busy"], "one install, not two");
+
+		// Once it is over, a run is accepted again.
+		assert.equal((await t.run(stack)).outcomes["alpha-busy"]?.status, "skipped-verified");
+	});
+});
+
+describe("files outside the data root (T4-F004)", () => {
+	/** A stage that writes `file` at install and names `key` as the file to hash. */
+	function writing(name: string, file: string, evidenceFile: (ctx: StageContext) => string, activated: { n: number }): Stage {
+		return {
+			name,
+			needs: [],
+			plannedVersion: () => "1.0.0",
+			detect: (ctx) => detectFromRecord(ctx, { version: "1.0.0" }),
+			async install() {
+				mkdirSync(dirname(file), { recursive: true });
+				writeFileSync(file, "the binary\n");
+			},
+			verify: async (ctx) => ({ text: "ok", version: "1.0.0", files: [evidenceFile(ctx)] }),
+			async activate() {
+				activated.n++;
+			},
+		};
+	}
+
+	it("hashes a file in an agent folder outside the root under an `agent:` key, and detects its corruption", async () => {
+		const base = join(root, "..");
+		const agentDir = join(base, "agent outside root");
+		const layout = testLayout(root, { agentDir });
+		const file = join(agentDir, "bin", "fd-tool");
+		const activated = { n: 0 };
+		const stage = (): Stage => writing("fd-like", file, (ctx) => fileKey(ctx.layout, file), activated);
+
+		const first = await runEngine(root, makeStack({}), [stage()], { layout });
+		assert.equal(first.outcomes["fd-like"]?.status, "installed", JSON.stringify(first.outcomes));
+		assert.deepEqual(Object.keys(bootstrapState().stages["fd-like"].hashes), ["agent:bin/fd-tool"], "keyed by the agent role, not by a path that climbs out of the root");
+		assert.equal((await runEngine(root, makeStack({}), [stage()], { layout })).outcomes["fd-like"]?.status, "skipped-verified");
+
+		writeFileSync(file, "a different binary\n");
+		const third = await runEngine(root, makeStack({}), [stage()], { layout });
+		assert.equal(third.outcomes["fd-like"]?.status, "installed", "the corrupted file fails detect");
+		assert.match(String(logLines().filter((l) => l.event === "detect-failed").at(-1)?.reason), /agent:bin\/fd-tool no longer has its recorded SHA-256/);
+	});
+
+	it("refuses a file that is under neither the root nor the agent folder, before anything is activated", async () => {
+		const elsewhere = join(root, "..", "elsewhere", "tool");
+		const activated = { n: 0 };
+		const run = await runEngine(root, makeStack({}), [writing("outside", elsewhere, (ctx) => fileKey(ctx.layout, elsewhere), activated)]);
+		assert.equal(run.outcomes["outside"]?.status, "failed");
+		assert.match(run.outcomes["outside"]?.failure?.detail ?? "", /under neither the data root/);
+		assert.equal(activated.n, 0, "activate never ran");
+		assert.equal(existsSync(join(root, "state", "current.json")), false);
+		assert.equal(bootstrapState().stages["outside"].status, "failed");
+	});
+
+	it("refuses an evidence key that climbs out or is absolute, before anything is activated", async () => {
+		for (const [i, key] of ["../escape", "tools/../../escape", "agent:../escape", "C:/Windows/x", "/etc/passwd", ""].entries()) {
+			const activated = { n: 0 };
+			const run = await runEngine(root, makeStack({}), [writing(`raw-key-${i}`, join(root, "tools", "x", "tool"), () => key, activated)]);
+			assert.equal(run.outcomes[`raw-key-${i}`]?.status, "failed", JSON.stringify(key));
+			assert.match(run.outcomes[`raw-key-${i}`]?.failure?.detail ?? "", /outside the data root/, JSON.stringify(key));
+			assert.equal(activated.n, 0, `${JSON.stringify(key)}: activate never ran`);
+		}
+	});
+});
+
+describe("the state store and the engine lock (T4-F005)", () => {
+	const hold = (pid: number, startTime: string) => {
+		mkdirSync(join(root, "state"), { recursive: true });
+		writeFileSync(join(root, "state", "engine.lock"), JSON.stringify({ pid, startTime }));
+		return { ...testPlatform().processes, inspect: async (asked: readonly number[]) => asked.map((p) => ({ pid: p, startTime: p === pid ? startTime : null, executable: null })) };
+	};
+
+	it("does not delete the version an update just activated when its copy of current.json is stale", async () => {
+		const v1 = publish(server, "alpha-s", { version: "1.0.0" });
+		const v2 = publish(server, "alpha-s", { version: "2.0.0" });
+		const { processes } = testPlatform();
+		await runEngine(root, makeStack({ "alpha-s": v1 }), [toolStage("alpha-s")]);
+
+		const main = new StateStore(testLayout(root));
+		assert.equal(main.version("alpha-s"), "1.0.0", "main read current.json before the update");
+		const update = await runEngine(root, makeStack({ "alpha-s": v2 }), [toolStage("alpha-s")]);
+		assert.equal(update.outcomes["alpha-s"]?.status, "installed");
+		assert.equal(main.version("alpha-s"), "1.0.0", "and its copy is stale now");
+
+		assert.deepEqual(await main.pruneInactive("alpha-s", processes), []);
+		assert.equal(currentState().versions["alpha-s"], "2.0.0", "the update was not undone");
+		assert.equal(existsSync(join(root, "tools", "alpha-s", "2.0.0")), true, "the new version's folder is still there");
+		assert.equal(existsSync(join(root, "tools", "alpha-s", "1.0.0")), false, "the old one went");
+		assert.equal(currentState().previous["alpha-s"], undefined);
+	});
+
+	it("rolls back from what is on disk, not from a stale copy", async () => {
+		const v1 = publish(server, "alpha-b", { version: "1.0.0" });
+		const v2 = publish(server, "alpha-b", { version: "2.0.0" });
+		const { processes } = testPlatform();
+		await runEngine(root, makeStack({ "alpha-b": v1 }), [toolStage("alpha-b")]);
+		const main = new StateStore(testLayout(root));
+		main.current();
+		await runEngine(root, makeStack({ "alpha-b": v2 }), [toolStage("alpha-b")]);
+		assert.equal(await main.rollbackTool("alpha-b", processes), "1.0.0", "the stale copy had no previous version; the file has");
+		assert.equal(currentState().versions["alpha-b"], "1.0.0");
+	});
+
+	it("keeps what another writer recorded when a store with a stale copy writes", async () => {
+		const layout = testLayout(root);
+		const stale = new StateStore(layout);
+		stale.current();
+		stale.bootstrap();
+		const other = new StateStore(layout);
+		await other.setVersion("a", "1.0.0");
+		await other.setRecord("a", { status: "ok", version: "1.0.0", evidence: "a", at: "t", hashes: {}, dependsOn: {} });
+		await stale.setVersion("b", "2.0.0");
+		await stale.setRecord("b", { status: "ok", version: "2.0.0", evidence: "b", at: "t", hashes: {}, dependsOn: {} });
+		assert.deepEqual(currentState().versions, { a: "1.0.0", b: "2.0.0" });
+		assert.deepEqual(Object.keys(bootstrapState().stages).sort(), ["a", "b"]);
+	});
+
+	it("rollback and prune take the engine lock: they refuse while an engine runs and change nothing", async () => {
+		const v1 = publish(server, "alpha-l", { version: "1.0.0" });
+		const v2 = publish(server, "alpha-l", { version: "2.0.0" });
+		await runEngine(root, makeStack({ "alpha-l": v1 }), [toolStage("alpha-l")]);
+		await runEngine(root, makeStack({ "alpha-l": v2 }), [toolStage("alpha-l")]);
+		const before = readFileSync(join(root, "state", "current.json"), "utf8");
+
+		const processes = hold(4242, "start-4242");
+		const store = new StateStore(testLayout(root));
+		await assert.rejects(store.rollbackTool("alpha-l", processes), EngineLockedError);
+		await assert.rejects(store.pruneInactive("alpha-l", processes), EngineLockedError);
+		assert.equal(readFileSync(join(root, "state", "current.json"), "utf8"), before);
+		assert.equal(existsSync(join(root, "tools", "alpha-l", "1.0.0")), true, "nothing was deleted");
+		assert.equal(readFileSync(join(root, "state", "engine.lock"), "utf8").includes("4242"), true, "and the engine's lock was not touched");
+
+		rmSync(join(root, "state", "engine.lock"));
+		assert.deepEqual(await store.pruneInactive("alpha-l", processes), []);
+		assert.equal(existsSync(join(root, "state", "engine.lock")), false, "the lock is released after the change");
+	});
+
+	it("is refused while a run in this very process is active", async () => {
+		const alpha = publish(server, "alpha-q", { version: "1.0.0" });
+		let open!: () => void;
+		const gate = new Promise<void>((resolve) => (open = resolve));
+		let parked!: () => void;
+		const atGate = new Promise<void>((resolve) => (parked = resolve));
+		const inner = toolStage("alpha-q");
+		const t = testEngine(root, () => [{ ...inner, async install(ctx) { await inner.install(ctx); parked(); await gate; } }]);
+		const running = t.run(makeStack({ "alpha-q": alpha }));
+		await atGate;
+		await assert.rejects(new StateStore(testLayout(root)).pruneInactive("alpha-q", testPlatform().processes), EngineLockedError);
+		assert.equal(existsSync(join(root, "tools", "alpha-q", "1.0.0.staging")), true, "the running install's staging folder was not deleted");
+		open();
+		assert.equal((await running).ok, true);
 	});
 });

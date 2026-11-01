@@ -7,14 +7,14 @@ export interface TarEntry {
 	name: string;
 	/** File content (default empty). */
 	data?: string | Buffer;
-	/** `file` (default), `dir`, `symlink`, or `hardlink`. */
-	type?: "file" | "dir" | "symlink" | "hardlink";
+	/** `file` (default), `dir`, `symlink`, `hardlink`, or `fifo`. */
+	type?: "file" | "dir" | "symlink" | "hardlink" | "fifo";
 	/** The link target of a symlink or hardlink. */
 	link?: string;
 	mode?: number;
 }
 
-const TYPEFLAG = { file: "0", dir: "5", symlink: "2", hardlink: "1" } as const;
+const TYPEFLAG = { file: "0", dir: "5", symlink: "2", hardlink: "1", fifo: "6" } as const;
 
 function field(text: string, length: number): Buffer {
 	const out = Buffer.alloc(length);

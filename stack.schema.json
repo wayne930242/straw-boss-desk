@@ -72,7 +72,7 @@
         "version": { "$ref": "#/$defs/exactVersion" },
         "url": { "type": "string", "pattern": "^https://[^\\s]+$" },
         "sha256": { "$ref": "#/$defs/sha256" },
-        "file": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "description": "The name the download is kept under; the last segment of url." }
+        "file": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\-][^/\\\\]*$", "description": "The name the download is kept under; the last segment of url. It does not start with `-`: tar would read `-` as stdin." }
       }
     },
     "tool": {

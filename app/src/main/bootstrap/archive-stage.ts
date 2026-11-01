@@ -1,7 +1,7 @@
 import { chmodSync, copyFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { StageError } from "./errors.ts";
-import { activateDir, detectFromRecord, installDir, relativeToRoot, type Evidence, type Lane, type Stage, type StageContext } from "./stage.ts";
+import { activateDir, detectFromRecord, fileKey, installDir, type Evidence, type Lane, type Stage, type StageContext } from "./stage.ts";
 import type { Asset } from "./stack.ts";
 
 // The stage every binary tool is made from (spec: Stage contract, Rollback): a pinned asset is downloaded and verified, extracted (or, for a bare
@@ -41,7 +41,7 @@ export function archiveStage(spec: ArchiveStageSpec): Stage {
 	const staging = (ctx: StageContext, asset: Asset): string => `${installDir(ctx.layout, spec.tool, asset.version)}.staging`;
 	const dependsOn = (ctx: StageContext): Record<string, string> => ctx.versionsOf(spec.dependsOn ?? []);
 	const files = (ctx: StageContext, asset: Asset): string[] =>
-		spec.executables.map((e) => relativeToRoot(ctx.layout, join(installDir(ctx.layout, spec.tool, asset.version), ...e.split("/"))));
+		spec.executables.map((e) => fileKey(ctx.layout, join(installDir(ctx.layout, spec.tool, asset.version), ...e.split("/"))));
 
 	return {
 		name: spec.name,

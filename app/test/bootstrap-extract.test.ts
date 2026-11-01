@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { delimiter, isAbsolute, join, win32 } from "node:path";
+import { delimiter, isAbsolute, join, posix, win32 } from "node:path";
 import { after, describe, it } from "node:test";
 import { execRunner } from "../src/main/platform/exec.ts";
 import { createPlatform, type CommandRunner } from "../src/main/platform/index.ts";
-import { ExtractRefused, extractArchive, unsafeEntryName } from "../src/main/bootstrap/extract.ts";
+import { ExtractRefused, archiveArgument, extractArchive, nameCollision, unsafeEntryName } from "../src/main/bootstrap/extract.ts";
 import { tarGz, zip, type TarEntry } from "./harness/archives.ts";
 import { scratchRoot } from "./harness/engine-fixture.ts";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -39,6 +39,38 @@ describe("unsafeEntryName", () => {
 	it("refuses absolute names, drive letters, and `..` segments with either slash, and allows dots inside a name", () => {
 		for (const bad of ["/etc/passwd", "\\windows\\x", "C:/x", "c:\\x", "../x", "a/../x", "a\\..\\x", "a/b/..", "x\0y"]) assert.notEqual(unsafeEntryName(bad), null, bad);
 		for (const good of ["a/b.c", "a..b/c", "..hidden/x", "a/...", "node-v24.22.1/bin/node", "名稱/檔案"]) assert.equal(unsafeEntryName(good), null, good);
+	});
+});
+
+describe("nameCollision", () => {
+	it("finds names, or folders on the way to them, that differ only in case or Unicode normalization, and lets an exact repeat through", () => {
+		assert.equal(nameCollision(["pkg/", "pkg/bin/", "pkg/bin/tool", "pkg/VERSION"]), null);
+		assert.equal(nameCollision(["pkg/bin/tool", "pkg/bin/tool"]), null, "the same name twice is not a case collision");
+		assert.match(nameCollision(["pkg/bin/tool", "pkg/bin/Tool"]) ?? "", /differ only in case/);
+		assert.match(nameCollision(["pkg/bin/tool", "pkg/BIN/other"]) ?? "", /differ only in case/, "two folders that are one folder on a case-insensitive disk");
+		assert.match(nameCollision(["a\\b\\c", "A/b/d"]) ?? "", /differ only in case/, "either slash");
+		assert.match(nameCollision(["caf\u00e9", "cafe\u0301"]) ?? "", /differ/, "one name in two normalization forms");
+	});
+});
+
+describe("archiveArgument", () => {
+	it("is the path from the destination to the archive, made of names the app chose", () => {
+		assert.equal(archiveArgument("C:\\r\\tools\\downloads\\a.zip", "C:\\r\\tools\\node\\1.0.0.staging", win32), "..\\..\\downloads\\a.zip");
+		assert.equal(archiveArgument("/r/tools/downloads/a.zip", "/r/tools/node/1.0.0.staging", posix), "../../downloads/a.zip");
+	});
+
+	it("refuses an archive on another drive, where `relative()` would answer with an absolute path (T4-F004)", () => {
+		assert.equal(win32.relative("C:\\r\\tools\\x", "D:\\dl\\a.zip"), "D:\\dl\\a.zip", "the premise: relative() gives an absolute path");
+		assert.throws(() => archiveArgument("D:\\dl\\a.zip", "C:\\r\\tools\\x", win32), (e: unknown) => e instanceof ExtractRefused && /no relative path/.test((e as Error).message));
+		assert.throws(() => archiveArgument("/r/a.zip", "/r/a.zip", posix), ExtractRefused);
+	});
+
+	it("refuses, for tar.exe, a relative path that carries a character outside ASCII (T4-F004)", () => {
+		const root = "C:\\Users\\\u738b\\AppData\\Local\\straw-boss-desk";
+		assert.throws(() => archiveArgument(`${root}\\tools\\\u4e0b\\a.zip`, `${root}\\tools\\git\\2.0.0.staging`, win32), ExtractRefused, "a name below the common folder");
+		// The root's own name is above the common folder, so it never appears in the argument.
+		assert.equal(archiveArgument(`${root}\\tools\\downloads\\a.zip`, `${root}\\tools\\git`, win32), "..\\downloads\\a.zip");
+		assert.equal(archiveArgument("/r/\u738b/a.zip", "/r/\u738b/x", posix), "../a.zip", "macOS tar reads UTF-8");
 	});
 });
 
@@ -114,16 +146,41 @@ describe("extractArchive", () => {
 		for (const entries of cases) {
 			const t = fresh();
 			const archive = t.archive("link.tar.gz", tarGz(entries));
-			try {
-				await extractArchive({ archive, dest: t.dest, locate, run: execRunner() });
-				assert.fail("the extraction should be refused");
-			} catch (error) {
-				// bsdtar on Windows may refuse to create the link itself (no privilege): a failed extraction is also a refusal. Either way nothing stays.
+			await assert.rejects(extractArchive({ archive, dest: t.dest, locate, run: execRunner() }), (error: unknown) => {
+				// bsdtar on Windows may refuse to create the link itself (no privilege): a failed extraction is also a refusal there. Elsewhere the link is
+				// created and it is this program's own check that refuses it.
 				assert.ok(error instanceof Error);
-				if (error instanceof ExtractRefused) assert.match(error.message, /link/);
-			}
+				if (process.platform !== "win32") assert.ok(error instanceof ExtractRefused && /link/.test(error.message), String(error));
+				return true;
+			});
 			assert.deepEqual(readdirSync(t.dest), [], "nothing stays in the destination");
 		}
+	});
+
+	it("refuses a FIFO or other special file in the archive, and removes what was extracted (T4-F007)", async () => {
+		const t = fresh();
+		const archive = t.archive("fifo.tar.gz", tarGz([{ name: "pkg/ok.txt", data: "ok" }, { name: "pkg/bin/tool", type: "fifo" }]));
+		await assert.rejects(extractArchive({ archive, dest: t.dest, locate, run: execRunner() }), (error: unknown) => {
+			// bsdtar on Windows cannot make a FIFO and fails on its own; elsewhere it makes one, and the walk of the tree refuses it.
+			assert.ok(error instanceof Error);
+			if (process.platform !== "win32") assert.ok(error instanceof ExtractRefused && /special file/.test(error.message), String(error));
+			return true;
+		});
+		assert.deepEqual(readdirSync(t.dest), [], "no FIFO stays in the destination");
+	});
+
+	it("refuses two entries whose names differ only in case before writing anything (T4-F007)", async () => {
+		const t = fresh();
+		const archive = t.archive("case.tar.gz", tarGz([{ name: "pkg/bin/tool", data: "one" }, { name: "pkg/BIN/tool", data: "two" }]));
+		await assert.rejects(extractArchive({ archive, dest: t.dest, locate, run: execRunner() }), (e: unknown) => e instanceof ExtractRefused && /differ only in case/.test((e as Error).message));
+		assert.deepEqual(readdirSync(t.dest), [], "nothing was extracted");
+	});
+
+	it("refuses an archive whose file name starts with `-`, which tar would take for an option or stdin (T4-F008)", async () => {
+		const t = fresh();
+		const archive = t.archive("-evil.tar.gz", tarGz([{ name: "pkg/ok.txt", data: "ok" }]));
+		await assert.rejects(extractArchive({ archive, dest: t.dest, locate, run: execRunner() }), (e: unknown) => e instanceof ExtractRefused && /starts with `-`/.test((e as Error).message));
+		assert.deepEqual(readdirSync(t.dest), []);
 	});
 
 	it("allows a link that stays inside, as the Node tarball's `bin/npm` does", async () => {

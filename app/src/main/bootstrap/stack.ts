@@ -66,6 +66,8 @@ function parseAsset(where: string, value: unknown): Asset {
 	if (typeof version !== "string" || !EXACT_VERSION.test(version)) throw new StackError(`${where}.version must be an exact version`);
 	if (typeof sha256 !== "string" || !SHA256.test(sha256)) throw new StackError(`${where}.sha256 must be 64 lowercase hex digits`);
 	if (typeof file !== "string" || file === "" || /[\\/]/.test(file) || file === "." || file === "..") throw new StackError(`${where}.file must be a plain file name`);
+	// `-` is stdin to tar (it would wait for input), and a leading `-` can read as an option.
+	if (file.startsWith("-")) throw new StackError(`${where}.file must not start with \`-\``);
 	if (typeof url !== "string") throw new StackError(`${where}.url must be a string`);
 	const problem = downloadUrlProblem(url);
 	if (problem !== null) throw new StackError(`${where}.url ${problem}`);

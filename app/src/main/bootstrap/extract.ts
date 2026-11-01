@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname, basename, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
+import path, { dirname, basename, isAbsolute, join, posix, resolve, win32 } from "node:path";
 import type { CommandRunner, Locate } from "../platform/index.ts";
 import { StageError } from "./errors.ts";
 import { removeTree } from "./fsutil.ts";
@@ -18,6 +18,37 @@ export function unsafeEntryName(name: string): string | null {
 	if (name.startsWith("/") || name.startsWith("\\") || /^[A-Za-z]:/.test(name)) return "is an absolute path";
 	if (name.split(/[\\/]/).includes("..")) return "has a `..` segment";
 	return null;
+}
+
+/**
+ * Two names in one archive that differ only in case (or in Unicode normalization) are one file on Windows and macOS, so which one wins depends on the
+ * machine. Returns a description of the first such pair, or null. A name repeated exactly is not a collision, and every folder of a path counts.
+ */
+export function nameCollision(names: readonly string[]): string | null {
+	const seen = new Map<string, string>();
+	for (const name of names) {
+		const parts = name.split(/[\\/]/).filter((part) => part !== "");
+		for (let i = 1; i <= parts.length; i++) {
+			const spelled = parts.slice(0, i).join("/");
+			const folded = spelled.normalize("NFC").toLowerCase();
+			const first = seen.get(folded);
+			if (first === undefined) seen.set(folded, spelled);
+			else if (first !== spelled) return `${JSON.stringify(first)} and ${JSON.stringify(spelled)} differ only in case`;
+		}
+	}
+	return null;
+}
+
+/**
+ * The archive's path as `tar` is given it: relative to `dest`, which is its working directory, so that the program (`tar.exe` reads its arguments in the
+ * ANSI code page) only ever sees names the app chose. Throws `ExtractRefused` when there is no such path (another drive: `relative()` answers with an
+ * absolute path), or, for Windows, when it would carry a character outside ASCII.
+ */
+export function archiveArgument(archive: string, dest: string, P: typeof posix = path): string {
+	const rel = P.relative(dest, archive);
+	if (P.isAbsolute(rel) || rel === "") throw new ExtractRefused(archive, `there is no relative path from ${dest} to the archive (another drive?)`);
+	if (P === win32 && /[^\x20-\x7e]/.test(rel)) throw new ExtractRefused(archive, `the relative path ${JSON.stringify(rel)} has characters tar.exe cannot read in its arguments`);
+	return rel;
 }
 
 export class ExtractRefused extends StageError {
@@ -64,15 +95,19 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 	// `tar.exe` on Windows reads its arguments in the ANSI code page, so a user name outside it (CJK on a machine whose code page is not CJK, or a character
 	// outside Big5 on zh-TW) turns into `?` and the archive "cannot be opened". The working directory is passed as UTF-16, so the program runs in the
 	// folder it works on and gets only names the app chose: the archive's file name, and the relative path between two folders of the data root.
+	// A file name `-` is stdin to tar, and one that starts with `-` reads as an option in some tars: the stack parser refuses both, and so does this.
+	if (basename(archive).startsWith("-")) throw new ExtractRefused(archive, "the archive's file name starts with `-`");
 	const names = (await tar(request, tarPath, ["-tf", basename(archive)], dirname(archive))).split(/\r?\n/).filter((n) => n !== "");
 	for (const name of names) {
 		const problem = unsafeEntryName(name);
 		if (problem !== null) throw new ExtractRefused(archive, `the entry ${JSON.stringify(name)} ${problem}`);
 	}
+	const collision = nameCollision(names);
+	if (collision !== null) throw new ExtractRefused(archive, `${collision}, which one file system keeps apart and another does not`);
 
 	const strip = request.stripComponents ? ["--strip-components", String(request.stripComponents)] : [];
 	try {
-		await tar(request, tarPath, ["-xf", relative(dest, archive), ...strip], dest);
+		await tar(request, tarPath, ["-xf", archiveArgument(archive, dest), ...strip], dest);
 		checkLinks(archive, dest);
 	} catch (error) {
 		removeTree(dest);
@@ -82,7 +117,7 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 	return { entries: names.length, tar: tarPath };
 }
 
-/** Every link of the extracted tree must stay inside it, lexically and after resolving the links already there. */
+/** Every link of the extracted tree must stay inside it, lexically and after resolving the links already there, and nothing but files, folders, and links may be in it. */
 function checkLinks(archive: string, dest: string): void {
 	const realDest = realpathSync.native(dest);
 	const P = process.platform === "win32" ? win32 : posix;
@@ -107,6 +142,9 @@ function checkLinks(archive: string, dest: string): void {
 				if (real !== null && !isInside(realDest, real, P)) throw new ExtractRefused(archive, `the link ${full} resolves outside the archive's folder (${real})`);
 			} else if (stat.isDirectory()) {
 				walk(full);
+			} else if (!stat.isFile()) {
+				// A FIFO would block the first program that opens it (`sha256File` in `detect`); a device node needs root, but is no more welcome.
+				throw new ExtractRefused(archive, `${full} is a special file (a FIFO, socket, or device), not a file, folder, or link`);
 			}
 		}
 	};
