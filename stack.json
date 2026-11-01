@@ -1,0 +1,109 @@
+{
+  "$schema": "./stack.schema.json",
+  "schema": 1,
+  "generation": 1,
+  "minShell": "0.0.1",
+  "tools": {
+    "node": {
+      "assets": {
+        "win32-x64": { "version": "24.22.1", "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip", "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5", "file": "node-v24.22.1-win-x64.zip" },
+        "darwin-arm64": { "version": "24.22.1", "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz", "sha256": "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7", "file": "node-v24.22.1-darwin-arm64.tar.gz" },
+        "darwin-x64": { "version": "24.22.1", "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-darwin-x64.tar.gz", "sha256": "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035", "file": "node-v24.22.1-darwin-x64.tar.gz" }
+      }
+    },
+    "git": {
+      "note": "Windows: PortableGit, because pi needs its bash.exe. macOS: dugite-native, the relocatable Git GitHub Desktop ships, because /usr/bin/git on a bare Mac is a stub that asks to install the Xcode tools. The version strings differ by platform; both carry Git 2.56.0.",
+      "assets": {
+        "win32-x64": { "version": "2.56.0.3", "url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.3/PortableGit-2.56.0.3-64-bit.7z.exe", "sha256": "4fc27b779829a36df77911e3f4dea09c66c790dd6c5f7dfa3b6a5479f1fe354f", "file": "PortableGit-2.56.0.3-64-bit.7z.exe" },
+        "darwin-arm64": { "version": "2.56.0-2", "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.0-2/dugite-native-v2.56.0-a44aeca-macOS-arm64.tar.gz", "sha256": "1110de343de11cc6f469b782b60f36217b9199b5e06875dd65baa26dd60563c7", "file": "dugite-native-v2.56.0-a44aeca-macOS-arm64.tar.gz" },
+        "darwin-x64": { "version": "2.56.0-2", "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.0-2/dugite-native-v2.56.0-a44aeca-macOS-x64.tar.gz", "sha256": "52cc663281e1ec2f1d76ba781193ca4847e62dbbf767f6c99ec9ec5b978a7659", "file": "dugite-native-v2.56.0-a44aeca-macOS-x64.tar.gz" }
+      }
+    },
+    "herdr": {
+      "note": "Only an x86_64 Windows build exists; it runs under x64 emulation on Windows ARM64. SHA256 values match herdr.dev/latest.json and the GitHub release asset digests.",
+      "assets": {
+        "win32-x64": { "version": "0.9.5", "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-windows-x86_64.zip", "sha256": "d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf", "file": "herdr-windows-x86_64.zip" },
+        "darwin-arm64": { "version": "0.9.5", "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-aarch64", "sha256": "fb77c2232a05a8035421382c894392f4174e4e38a18e48af3dd0290157c3a7e2", "file": "herdr-macos-aarch64" },
+        "darwin-x64": { "version": "0.9.5", "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-x86_64", "sha256": "5fb0a908ec7f6745e3e245738b06bfad56c46391c391ab3c0955fbead01f1369", "file": "herdr-macos-x86_64" }
+      }
+    },
+    "gh": {
+      "note": "SHA256 from gh_2.103.3_checksums.txt of the release. The Windows and macOS zips hold bin/gh(.exe) or gh_2.103.3_macOS_<arch>/bin/gh.",
+      "assets": {
+        "win32-x64": { "version": "2.103.3", "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_amd64.zip", "sha256": "98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0", "file": "gh_2.103.3_windows_amd64.zip" },
+        "darwin-arm64": { "version": "2.103.3", "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_arm64.zip", "sha256": "d700207eae9ae98fe2b89535c2c087c07823d4628c56364695a5a07ef311c062", "file": "gh_2.103.3_macOS_arm64.zip" },
+        "darwin-x64": { "version": "2.103.3", "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_amd64.zip", "sha256": "a2f86418f4350ae6e9ec60d5000bdf7665728436946a97fc27fe50e6ae752682", "file": "gh_2.103.3_macOS_amd64.zip" }
+      }
+    },
+    "glab": {
+      "note": "SHA256 from the release's checksums.txt (gitlab-org/cli). The Windows zip holds bin/glab.exe; the macOS tarball holds bin/glab.",
+      "assets": {
+        "win32-x64": { "version": "1.124.0", "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_windows_amd64.zip", "sha256": "9b58b54cf841b43215ef01ba90793d8a845e81ddb7b3dfa2b5a238cde4b77b34", "file": "glab_1.124.0_windows_amd64.zip" },
+        "darwin-arm64": { "version": "1.124.0", "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_darwin_arm64.tar.gz", "sha256": "04aad4d989d98cb030318e09359f02e0ba2637ede682ec0dee1f5974dedd44c1", "file": "glab_1.124.0_darwin_arm64.tar.gz" },
+        "darwin-x64": { "version": "1.124.0", "url": "https://gitlab.com/gitlab-org/cli/-/releases/v1.124.0/downloads/glab_1.124.0_darwin_amd64.tar.gz", "sha256": "6adb7155566bedd6272d8f286e6c75b080d0050a349de4bed79661226d10d954", "file": "glab_1.124.0_darwin_amd64.tar.gz" }
+      }
+    },
+    "fd": {
+      "note": "pi downloads the latest fd on first start without a pin; this entry is provisioned into pi's bin folder first. The release ships no checksum file; SHA256 is the GitHub release asset digest, which scripts/check-stack.mjs compares against the downloaded bytes.",
+      "assets": {
+        "win32-x64": { "version": "10.5.0", "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-pc-windows-msvc.zip", "sha256": "a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7", "file": "fd-v10.5.0-x86_64-pc-windows-msvc.zip" },
+        "darwin-arm64": { "version": "10.5.0", "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz", "sha256": "b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12", "file": "fd-v10.5.0-aarch64-apple-darwin.tar.gz" },
+        "darwin-x64": { "version": "10.5.0", "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-apple-darwin.tar.gz", "sha256": "7e31028c62c6955877735d0406807aa484c2a5e6f86235a59e26c29c301da590", "file": "fd-v10.5.0-x86_64-apple-darwin.tar.gz" }
+      }
+    },
+    "rg": {
+      "note": "ripgrep, provisioned like fd. SHA256 from the release's per-asset .sha256 files.",
+      "assets": {
+        "win32-x64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip", "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5", "file": "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip" },
+        "darwin-arm64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz", "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4", "file": "ripgrep-15.2.0-aarch64-apple-darwin.tar.gz" },
+        "darwin-x64": { "version": "15.2.0", "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz", "sha256": "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1", "file": "ripgrep-15.2.0-x86_64-apple-darwin.tar.gz" }
+      }
+    }
+  },
+  "npmGlobal": [
+    { "name": "@earendil-works/pi-coding-agent", "version": "1.4.0", "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==", "bin": "pi" },
+    {
+      "name": "team-toon-tack",
+      "version": "3.12.0",
+      "integrity": "sha512-rEtvEZhtX1hL+GZZQpYu938xYiKdEffkYBRj3JDNzPpwgDxI+OKKz0kPtmECwu9AopNT3TltPi0SaiDPJ9EL7A==",
+      "bin": "ttt",
+      "optional": true,
+      "note": "Installed when the PM saves a Linear key, not in the first install."
+    }
+  ],
+  "profile": {
+    "name": "straw-boss-desk-profile",
+    "version": "0.1.0",
+    "integrity": "sha512-wDsiOrkxIB1HNU8XmQ3jvjGQ1cKaqH6GarwEgsIq3eYVoN4SpEJ4i4UIPGUK2sdnb3pb26ULiJnAqBFTiClpBA=="
+  },
+  "piPackages": [
+    { "name": "pi-straw-boss", "version": "0.51.0", "integrity": "sha512-b+eI26J1QudJwpmlWKMSx8SegMom+La8F9WyH4RvgyyvRA4xy+cJ8g8qzRbzKQi5fqdri0/VwLuUj7hEZW+i2g==" },
+    { "name": "pi-intercom", "version": "0.18.1", "integrity": "sha512-hY3y+vF6CrkpV0N/55pEsl3DSVjGerlTCQDY2mt37o0jQj8SLW+GmQoKyAEgCyfcxrqJb+Tx4hp4eXqM2hLYgg==" },
+    {
+      "name": "pi-herdr-agents",
+      "version": "3.6.1",
+      "integrity": "sha512-66uBavTDkfRbg8BLyhkecuqzgKOd7KxuuPOUG/llDJxTBQFNeVLwzL8gK1FkJf2P8C2ccYkG5ORztWDZa99Vkg==",
+      "note": "PMs run the newest npm release by the PM's decision (the author runs a git fork: upstream 3.3.1 + PRs #84, #95, #99, the solutionSpace change of closed PR #87, and the fork-only exit hold). Checked against 3.6.1 on 2026-10-30. Still missing: PR #84 is open upstream, so Escape in a running auto-exit child still closes it and the parent reports a failed run instead of leaving the pane open for the person; the exit-hold event channel (pi-herdr-agents:exit-hold, closed PR #89) does not exist, which matters only to an extension that waits out a quota reset (the author's quota-resume), not to a PM; there is no solutionSpace parameter on subagent (closed PR #87). Now carried upstream: #99 (a child without auto-exit is asked once whether it is done), #94 (an auto-exit child waits for the children it launched), and the /reload stale-context fix of #95 (session_shutdown clears the parent context)."
+    },
+    { "name": "pi-herdr-roles", "version": "0.1.0", "integrity": "sha512-6pJqj6wiph06mpn6hvRFoAd4tyc/RmvAnZA7+E9GLcILY9zKsaTZH59wEOhTqgnCQkzbg2l4SoH+HGjAp8efMg==" },
+    { "name": "@juicesharp/rpiv-ask-user-question", "version": "2.15.0", "integrity": "sha512-Gm6de5IZF52BaSeh9dnDqJBn821Z5XfJkCmhkCmqTzvNv3SCpSv1mA4Gj5VBcfrSe+xTtWSVQzJwIqJFQHH3Lg==" },
+    { "name": "@juicesharp/rpiv-todo", "version": "2.15.0", "integrity": "sha512-8WfYssdgQgSWzFNsRzdw5Z6ZJIjO2ecM/YqEzYpR/ore+Hh5aNmafGVy94uFbIofAv2wGGitx5e3J/ucRrViXQ==" },
+    {
+      "name": "pi-lens",
+      "version": "4.4.7",
+      "integrity": "sha512-COx1wM3BlFHOzWBAEhvBUO6N8lKGliuiztowR7E5SOqd0JbmDI6+fxQWQGonfksjkV1eKY5KWg+q6Bef+CfNlw==",
+      "note": "The author pins a git fork (wayne930242/pi-lens@1cdd03e: upstream master plus dispatch.disabledRunners, apmantza/pi-lens PR #5011, still open) to keep the dotnet-build runner off. npm 4.4.7 has no dispatch.disabledRunners key, so dotnet-build cannot be switched off. The profile ships no pi-lens config that uses it and PM repositories are not expected to hold .NET projects."
+    },
+    { "name": "cc-safety-net", "version": "2.7.0", "integrity": "sha512-c1ZkyjbpTmiMIXBYNU07kk1Pd4SHoFtOeViVrscz1T5uFOL8t+Sz9RvvfTDbjhreRlIabe7cCRt41Ua+BHLccg==" },
+    { "name": "@pify/memory", "version": "0.14.0", "integrity": "sha512-TtrdIYpJpA5+5ONzBibmmcHWRftpUMIRz9WpdyLHPRmxKWYIa8AHTZY0SpbfYLNDGUWD2MRrk7nXN0seJal0jw==" },
+    { "name": "pi-anchorloop", "version": "2.2.3", "integrity": "sha512-YkEUBo0JgtDdHMt3jpS9cbosVBiXJRneewSCSQtGUOkZKPtDyRlbYHASC6BHkGwlfSRKVO+UtVmFvcv2VEy3/Q==" },
+    {
+      "name": "pi-claude-bridge",
+      "version": "0.9.3",
+      "integrity": "sha512-5OM3X6QLX7Xsv86bD+yiWvQEHdlGdXnaY9DgZg6jG4jpnKiHQ2FZKYVRFHYmDAEccDPfeFwW+NFHnkb+BUM+6Q==",
+      "note": "PMs run the newest npm release by the PM's decision. Checked 2026-10-30: npm latest is still 0.9.3. The author's git fork (wayne930242/pi-claude-bridge@9822631) is that plus 33 unreleased upstream main commits and its own fixes, so what the fork has and 0.9.3 lacks includes: no Claude Code setting sources on the provider path (0.9.3 loads every source there), a pi 1.2.0+ requirement (0.9.3 accepts pi 0.86.1+), parallel tool calls lost after a non-streaming fallback (PR 225, open upstream), and a tool call pi never received keeping an MCP handler waiting (PR 226, open upstream)."
+    },
+    { "name": "pi-robot-hand", "version": "0.3.2", "integrity": "sha512-pyDozYcL9EGug1nbguVAOgEk96YUmmfisHmQRrZFdxlZV+7Dov5FVuSJNnMiiRBnrmxE0pGIZveArc7ar2DnPw==" },
+    { "name": "pi-herdr-doc-review", "version": "0.11.2", "integrity": "sha512-u+7uq079+W+e41nmcgIi1rnFGpsUvHfs7bWiuhzyVyEgM52Fv2yxWyUDwLRVqfZBos1mQ/h7dEr863rjHWw0gQ==" }
+  ]
+}

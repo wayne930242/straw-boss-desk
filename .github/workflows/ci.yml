@@ -40,6 +40,12 @@ jobs:
             app/package-lock.json
             profile/package-lock.json
 
+      # stack.json against stack.schema.json, and the checker's own tests; the downloads are checked by stack-check.yml.
+      - name: Stack tests
+        run: |
+          node --test "scripts/test/*.test.mjs"
+          node scripts/check-stack.mjs --offline
+
       - name: Recipe tests
         working-directory: recipe
         run: npm test

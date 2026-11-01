@@ -1,0 +1,57 @@
+name: stack-check
+
+# stack.json carries every SHA256 and registry integrity pin. This job
+# downloads every asset for every platform key and compares its SHA256, and
+# asks the registry for every package's integrity. A mistyped pin, a replaced
+# release asset, or an unpublished version shows up here and not on a PM's
+# machine. It runs on both required runners.
+
+on:
+  push:
+    paths:
+      - stack.json
+      - stack.schema.json
+      - scripts/**
+      - .github/workflows/stack-check.yml
+  pull_request:
+    paths:
+      - stack.json
+      - stack.schema.json
+      - scripts/**
+      - .github/workflows/stack-check.yml
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stack-check-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  stack-check:
+    name: stack-check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Schema tests and the checker's own tests
+        run: node --test "scripts/test/*.test.mjs"
+
+      - name: Check downloads (SHA256) and packages (integrity)
+        run: node scripts/check-stack.mjs

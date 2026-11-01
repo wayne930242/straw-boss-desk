@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "straw-boss-desk stack.json",
+  "description": "The tool and package pins of the stack. Every download has a URL and a SHA256 per platform; every npm package has an exact version and its registry integrity. A candidate stack.json is signed as a detached Ed25519 signature over its exact bytes (stack.json.sig), so nothing in this file carries the signature.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generation", "minShell", "tools", "npmGlobal", "profile", "piPackages"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": 1, "description": "The format version of this file. An app that does not know it refuses the file." },
+    "generation": { "type": "integer", "minimum": 1, "description": "Increases with every published stack.json; the app applies a candidate only when it is higher than the active one." },
+    "minShell": { "$ref": "#/$defs/semver", "description": "The lowest shell version that can apply this stack." },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "git", "herdr", "gh", "glab", "fd", "rg"],
+      "properties": {
+        "node": { "$ref": "#/$defs/tool" },
+        "git": { "$ref": "#/$defs/tool" },
+        "herdr": { "$ref": "#/$defs/tool" },
+        "gh": { "$ref": "#/$defs/tool" },
+        "glab": { "$ref": "#/$defs/tool" },
+        "fd": { "$ref": "#/$defs/tool" },
+        "rg": { "$ref": "#/$defs/tool" }
+      }
+    },
+    "npmGlobal": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/npmGlobal" },
+      "description": "Packages installed into the private npm prefix, with their bin name. An optional one is installed later, not in the first install."
+    },
+    "profile": { "$ref": "#/$defs/npmPackage", "description": "The team profile package. A recipe's profile pin wins over this entry." },
+    "piPackages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/npmPackage" }
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$"
+    },
+    "exactVersion": {
+      "type": "string",
+      "description": "One exact version: three or four numeric parts, an optional pre-release or build suffix. No range, tag, or wildcard.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?(-[0-9A-Za-z.]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "integrity": {
+      "type": "string",
+      "description": "The registry's dist.integrity: sha512- and the base64 of the 64-byte digest.",
+      "pattern": "^sha512-[A-Za-z0-9+/]{86}==$"
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "url", "sha256", "file"],
+      "properties": {
+        "version": { "$ref": "#/$defs/exactVersion" },
+        "url": { "type": "string", "pattern": "^https://[^\\s]+$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "file": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "description": "The name the download is kept under; the last segment of url." }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assets"],
+      "properties": {
+        "note": { "type": "string" },
+        "assets": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["win32-x64", "darwin-arm64", "darwin-x64"],
+          "properties": {
+            "win32-x64": { "$ref": "#/$defs/asset" },
+            "darwin-arm64": { "$ref": "#/$defs/asset" },
+            "darwin-x64": { "$ref": "#/$defs/asset" }
+          }
+        }
+      }
+    },
+    "npmPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "integrity"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+        "version": { "$ref": "#/$defs/npmVersion" },
+        "integrity": { "$ref": "#/$defs/integrity" },
+        "note": { "type": "string" }
+      }
+    },
+    "npmVersion": {
+      "type": "string",
+      "description": "One exact semver version of a registry package.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$"
+    },
+    "npmGlobal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "integrity", "bin"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+        "version": { "$ref": "#/$defs/npmVersion" },
+        "integrity": { "$ref": "#/$defs/integrity" },
+        "bin": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "optional": { "type": "boolean" },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}
