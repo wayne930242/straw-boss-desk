@@ -12,7 +12,9 @@ import type { Fetch } from "../../src/main/bootstrap/download.ts";
 import { removeTree } from "../../src/main/bootstrap/fsutil.ts";
 import { toolStages, type StageOptions } from "../../src/main/bootstrap/stages/index.ts";
 import type { StageOutcome } from "../../src/main/bootstrap/stage.ts";
-import type { RunResult } from "../../src/main/platform/types.ts";
+import type { RunResult, UserPath, UserPathValue } from "../../src/main/platform/types.ts";
+import { planEnsureFirst, planRemove } from "../../src/main/platform/win.ts";
+import { hostedCase } from "./hosted.ts";
 import { platformKey } from "../../src/main/bootstrap/stack.ts";
 import { ALT_BUN, ALT_GH } from "./alt-pins.ts";
 import { tarGz } from "./archives.ts";
@@ -37,6 +39,37 @@ export interface World {
 	requests: string[];
 	/** The folder the CI cache holds downloads in, when the workflow sets one. */
 	cache: string | null;
+	/**
+	 * The user PATH the `pi-shim` stage writes to (Windows). On a GitHub-hosted runner it is the real one (`HKCU\Environment`, a guarded fixture: all six
+	 * signals of the guard); anywhere else it is an in-memory stand-in, so a run on a developer's Windows machine never writes the registry.
+	 */
+	userPath: UserPath;
+	/** True when `userPath` is the real one. */
+	realUserPath: boolean;
+	/** The real user PATH as it was when the world was made (hosted Windows only), for the byte-for-byte check at the end. */
+	userPathBefore: UserPathValue | null | undefined;
+}
+
+/** A user PATH that lives in memory: the rules of `UserPath` (type kept, only the exact entry changed) without a registry. */
+export function memoryUserPath(initial: UserPathValue | null = null): UserPath & { value: UserPathValue | null } {
+	const self: UserPath & { value: UserPathValue | null } = {
+		supported: true,
+		value: initial,
+		async read() {
+			return self.value;
+		},
+		async ensureFirst(entry) {
+			const plan = planEnsureFirst(self.value, entry);
+			self.value = plan.next;
+			return { changed: plan.changed };
+		},
+		async remove(entry) {
+			const plan = planRemove(self.value, entry);
+			self.value = plan.next;
+			return { changed: plan.changed };
+		},
+	};
+	return self;
 }
 
 /** A short scratch folder: the macOS socket path of Herdr is limited to 100 bytes, so the base is under /tmp there. */
@@ -57,7 +90,15 @@ export function createWorld(label: string, appEnvExtra: Record<string, string> =
 		? { ...pick(process.env, ["SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS"]), USERPROFILE: home, HOME: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), TEMP: join(base, "tmp"), TMP: join(base, "tmp"), USERNAME: "runner", PATH: process.env.PATH ?? process.env.Path ?? "" }
 		: { HOME: home, USER: "runner", LOGNAME: "runner", SHELL: "/bin/bash", TMPDIR: join(base, "tmp"), LANG: "en_US.UTF-8" };
 	mkdirSync(join(base, "tmp"), { recursive: true });
-	return { base, home, root, layout, appEnv: { ...appEnv, ...appEnvExtra }, requests: [], cache: process.env.SBD_E2E_DOWNLOADS || null };
+	// The user PATH entry is a registry write: the real one only where the guard says this is a GitHub-hosted runner.
+	const real = platformOfHost === "win32" && hostedCase("pi-shim user PATH entry").run;
+	const userPath = real ? createPlatform().userPath : platformOfHost === "win32" ? memoryUserPath() : createPlatform().userPath;
+	return { base, home, root, layout, appEnv: { ...appEnv, ...appEnvExtra }, requests: [], cache: process.env.SBD_E2E_DOWNLOADS || null, userPath, realUserPath: real, userPathBefore: undefined };
+}
+
+/** Reads the real user PATH before the first run, so the end of the suite can compare it. Hosted Windows only; otherwise a no-op. */
+export async function noteUserPath(world: World): Promise<void> {
+	if (world.realUserPath) world.userPathBefore = await world.userPath.read();
 }
 
 function pick(env: NodeJS.ProcessEnv, names: string[]): Record<string, string> {
@@ -69,8 +110,13 @@ function pick(env: NodeJS.ProcessEnv, names: string[]): Record<string, string> {
 	return out;
 }
 
-export function disposeWorld(world: World): void {
-	removeTree(world.base);
+/** Takes the world's entry off the user PATH (the real one on a hosted runner) and deletes the scratch folder. */
+export async function disposeWorld(world: World): Promise<void> {
+	try {
+		if (world.realUserPath) await world.userPath.remove(world.layout.tools.shims);
+	} finally {
+		removeTree(world.base);
+	}
 }
 
 // ---- downloads ---------------------------------------------------------------------------------------------------------
@@ -132,6 +178,10 @@ export interface RunOptions {
 	recipe?: unknown;
 	force?: boolean;
 	preflight?: StageOptions["preflight"];
+	/** The OS proxy setting as main resolved it (`resolveOsProxy`'s `env`): handed to every child the engine starts. */
+	proxyEnv?: Record<string, string>;
+	/** Run only these stages (they must lead to each other: `["preflight", "node", "git", "herdr", "pi"]`). */
+	only?: readonly string[];
 }
 
 const countingFetch = (world: World, sink: string[]): Fetch => (url, init) => {
@@ -151,13 +201,13 @@ export async function runWorld(world: World, options: RunOptions = {}): Promise<
 		layout: world.layout,
 		// The process table is the stand-in of `testPlatform` (no PowerShell for the engine lock), except `listUnder`: the self-extractor's "nothing still runs
 		// from the staging folder" check (T5-F005) is the real one, so a PortableGit whose post-install outlived the installer would fail the run.
-		platform: { ...testPlatform(), processes: { ...testPlatform().processes, listUnder: createPlatform().processes.listUnder } },
+		platform: { ...testPlatform(), processes: { ...testPlatform().processes, listUnder: createPlatform().processes.listUnder }, userPath: world.userPath },
 		appEnv: world.appEnv,
 		retryDelayMs: 1000,
-		stages: (stack, recipe, platform) => toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}),
+		stages: (stack, recipe, platform) => toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}).filter((stage) => options.only === undefined || options.only.includes(stage.name)),
 	});
 	const started = Date.now();
-	await engine.handle({ type: "run", config: { root: world.root, home: world.home, platform: platformOfHost, stack: options.stack ?? realStack, secretPatterns, ...(options.recipe !== undefined ? { recipe: options.recipe } : {}), ...(options.force ? { force: true } : {}) } });
+	await engine.handle({ type: "run", config: { root: world.root, home: world.home, platform: platformOfHost, stack: options.stack ?? realStack, secretPatterns, ...(options.recipe !== undefined ? { recipe: options.recipe } : {}), ...(options.force ? { force: true } : {}), ...(options.proxyEnv ? { proxyEnv: options.proxyEnv } : {}) } });
 	const ms = Date.now() - started;
 	harvestDownloads(world);
 	const done = events.find((e) => e.type === "done");

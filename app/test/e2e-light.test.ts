@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -10,6 +11,7 @@ import {
 	childEnvOf,
 	createWorld,
 	disposeWorld,
+	noteUserPath,
 	isWindows,
 	plantShellStartupDecoy,
 	zdotdirFiles,
@@ -28,7 +30,12 @@ import { testPlatform } from "./harness/engine-fixture.ts";
 import { createPlatform } from "../src/main/platform/index.ts";
 import { hostedCase, type FixtureIO } from "./harness/hosted.ts";
 import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
-import { systemEnv } from "../src/main/env.ts";
+import { nodeBinaryPath, npmCliPath } from "../src/main/bootstrap/npm.ts";
+import { resolveOsProxy, systemEnv } from "../src/main/env.ts";
+import { toolDir } from "../src/main/paths.ts";
+import { connectProxy } from "./harness/connect-proxy.ts";
+import { probeNoProxy, routeOf, VARIANTS, type ProbeContext } from "./harness/proxy-probe.ts";
+import { sha256Hex } from "./harness/hash.ts";
 
 // The task 5 anchor (spec: Tasks 5). These tests download the real releases of stack.json into a scratch root and run them, so they run only where the
 // workflow asks (SBD_E2E_LIGHT=1: a CI step, or a local run on purpose). Everything lives in a scratch folder: its own home, data root, and Herdr socket.
@@ -87,6 +94,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 
 	before(async () => {
 		world = createWorld("a");
+		await noteUserPath(world);
 		if (aside.state === "refused") throw new Error(aside.reason);
 		if (aside.state === "active") await aside.enter(ioForSudo);
 		first = await runWorld(world, { recipe: GITHUB_RECIPE });
@@ -95,14 +103,14 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	after(async () => {
 		await herdr?.stop();
 		if (aside.state === "active") await aside.leave(ioForSudo);
-		disposeWorld(world);
+		await disposeWorld(world);
 	});
 
 	it("runs every stage from an empty root: all verified, none failed", () => {
 		assert.equal(first.error, null);
 		const failures = Object.values(first.outcomes).filter((o) => o.failure !== undefined).map((o) => `${o.stage}: ${o.failure?.sentence} | ${o.failure?.detail}`);
 		assert.ok(first.ok, failures.length > 0 ? failures.join("\n") : JSON.stringify(first.outcomes, null, 1).slice(0, 2000));
-		const expected = ["preflight", "node", "git", "herdr", "fd-rg", "gh", "glab", "opt:bun", "tool-paths", "launchers", "git-helpers"].sort();
+		const expected = ["preflight", "node", "git", "herdr", "fd-rg", "gh", "glab", "opt:bun", "tool-paths", "launchers", "git-helpers", "pi", ...(isWindows ? ["pi-shim"] : [])].sort();
 		assert.deepEqual(stagesOf(first), expected);
 		// The preflight checks and records its result without installing anything, so it is skipped-verified even on a first run.
 		for (const [name, status] of Object.entries(statusOf(first))) assert.equal(status, name === "preflight" ? "skipped-verified" : "installed", `${name} is ${status}`);
@@ -426,7 +434,7 @@ describe("a recipe with no optional tool and a private forge host (e2e-light)", 
 
 	after(async () => {
 		await herdr?.stop();
-		disposeWorld(world);
+		await disposeWorld(world);
 	});
 
 	it("completes with every stage verified, and the preflight names the unreachable host as a warning within 10 s", () => {
@@ -434,7 +442,8 @@ describe("a recipe with no optional tool and a private forge host (e2e-light)", 
 		assert.ok(summary.ok, JSON.stringify(summary.outcomes).slice(0, 1500));
 		const record = (stateOf(world, "bootstrap").stages as Record<string, { status: string; warnings?: Array<{ kind: string; host?: string; sentence: string }> }>).preflight;
 		assert.equal(record?.status, "ok");
-		assert.deepEqual(record?.warnings, [{ kind: "forge-host-unreachable", host: "gitlab.corp.invalid", sentence: privateHostSentence("gitlab.corp.invalid") }]);
+		// A runner image may have WSL's bash.exe or another pi on the machine PATH: those are warnings of their own (task 6), not what this case is about.
+		assert.deepEqual(record?.warnings?.filter((w) => w.kind === "forge-host-unreachable"), [{ kind: "forge-host-unreachable", host: "gitlab.corp.invalid", sentence: privateHostSentence("gitlab.corp.invalid") }]);
 		assert.ok((summary.outcomes.preflight?.ms ?? 99_999) < 10_000, `the preflight took ${summary.outcomes.preflight?.ms} ms`);
 		for (const [name, status] of Object.entries(statusOf(summary))) assert.equal(status, name === "preflight" ? "skipped-verified" : "installed", name);
 	});
@@ -463,7 +472,7 @@ describe("an unreachable download host (e2e-light)", { skip: off }, () => {
 	before(() => {
 		world = createWorld("c");
 	});
-	after(() => disposeWorld(world));
+	after(async () => disposeWorld(world));
 
 	it("is named within 10 s and installs nothing", async () => {
 		// 192.0.2.1 is TEST-NET-1 (RFC 5737): never routed, so a connection is blackholed or refused, and either way is a path failure.
