@@ -57,9 +57,17 @@ export interface LayoutInput {
 	realpath?: (path: string) => string;
 }
 
+/**
+ * The version of the rules `computeLayout` applies. A record written under another version is computed again on load (T5-F010): task 3's socket rule
+ * measured `herdr.sock`, task 5's measures `herdr-client.sock`, so a record from task 3 can name a config home Herdr cannot bind in.
+ */
+export const LAYOUT_RULE = 2;
+
 /** What `state/layout.json` holds: the decisions, each with the reason it was taken. Paths only; no secrets. */
 export interface LayoutRecord {
 	schema: 1;
+	/** `LAYOUT_RULE` at the time of writing. */
+	rule: number;
 	platform: AppPlatform;
 	root: string;
 	realRoot: string;
@@ -188,6 +196,7 @@ export function computeLayout(input: LayoutInput): Layout {
 	const sidecarSocketBytes = platform === "darwin" ? byteLength(P.join(agentDir, "straw-boss", "agents", SIDECAR_SOCKET_NAME)) : null;
 	const record: LayoutRecord = {
 		schema: 1,
+		rule: LAYOUT_RULE,
 		platform,
 		root,
 		realRoot,
@@ -242,6 +251,16 @@ export function layoutFromRecord(record: LayoutRecord): Layout {
 	};
 }
 
+/**
+ * True when the recorded decisions still satisfy the rules in force: the rule version is current and, on macOS, Herdr's longest socket under the
+ * recorded config home fits `sun_path` (checked again, so a record edited by hand or written by a build with another measurement cannot pass).
+ */
+export function recordIsCurrent(record: LayoutRecord): boolean {
+	if (record.rule !== LAYOUT_RULE) return false;
+	if (record.platform !== "darwin") return true;
+	return byteLength(posix.join(record.configHome, "herdr", HERDR_CLIENT_SOCKET_NAME)) <= MAX_SOCKET_BYTES;
+}
+
 function readRecord(file: string): LayoutRecord | null {
 	let text: string;
 	try {
@@ -255,7 +274,7 @@ function readRecord(file: string): LayoutRecord | null {
 		if (typeof parsed !== "object" || parsed === null) return null;
 		const r = parsed as Partial<LayoutRecord>;
 		const strings = [r.root, r.realRoot, r.home, r.id, r.agentDir, r.configHome, r.herdrSocket];
-		if (r.schema !== 1 || !strings.every((s) => typeof s === "string" && s.length > 0)) return null;
+		if (r.schema !== 1 || typeof r.rule !== "number" || !strings.every((s) => typeof s === "string" && s.length > 0)) return null;
 		if (r.platform !== "win32" && r.platform !== "darwin") return null;
 		if (typeof r.herdrSocketBytes !== "number" || !Array.isArray(r.reasons)) return null;
 		return r as LayoutRecord;
@@ -273,7 +292,7 @@ export function loadLayout(input: LayoutInput): Layout {
 	const P = pathModule(input.platform);
 	const file = P.join(input.root, "state", "layout.json");
 	const recorded = readRecord(file);
-	if (recorded && recorded.root === input.root && recorded.home === input.home && recorded.platform === input.platform) {
+	if (recorded && recorded.root === input.root && recorded.home === input.home && recorded.platform === input.platform && recordIsCurrent(recorded)) {
 		return layoutFromRecord(recorded);
 	}
 	const layout = computeLayout(input);

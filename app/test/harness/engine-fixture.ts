@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { layoutFromRecord, type AppPlatform, type Layout } from "../../src/main/paths.ts";
+import { LAYOUT_RULE, layoutFromRecord, type AppPlatform, type Layout } from "../../src/main/paths.ts";
 import { createPlatform, type Platform } from "../../src/main/platform/index.ts";
 import { archiveStage } from "../../src/main/bootstrap/archive-stage.ts";
 import { createEngine, type Engine, type EngineDeps, type EngineEvent } from "../../src/main/bootstrap/engine.ts";
@@ -30,6 +30,7 @@ export function testLayout(root: string, options: { agentDir?: string } = {}): L
 	const platform: AppPlatform = process.platform === "win32" ? "win32" : "darwin";
 	return layoutFromRecord({
 		schema: 1,
+		rule: LAYOUT_RULE,
 		platform,
 		root,
 		realRoot: root,

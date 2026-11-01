@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { after, describe, it } from "node:test";
-import { computeLayout, loadLayout, LayoutError, toolPathEntries, type AppPlatform, type CurrentTools } from "../src/main/paths.ts";
+import { computeLayout, loadLayout, LayoutError, LAYOUT_RULE, recordIsCurrent, toolPathEntries, type AppPlatform, type CurrentTools, type LayoutRecord } from "../src/main/paths.ts";
 
 /** A file system of known folders: `table` maps a path to its real path (a junction maps to another place); everything else does not exist. */
 function fakeFs(table: Record<string, string>): (path: string) => string {
@@ -134,6 +134,61 @@ describe("layout: macOS", () => {
 		const home = `/Users/${"x".repeat(60)}`;
 		const root = `${home}/Library/Application Support/straw-boss-desk`;
 		assert.throws(() => computeLayout({ root, home, platform: "darwin", realpath: identity(home) }), (e: unknown) => e instanceof LayoutError && e.code === "socket-too-long");
+	});
+});
+
+describe("layout: the user-name boundaries of the socket rule (T5-F010)", () => {
+	const identity = (...paths: string[]) => fakeFs(Object.fromEntries(paths.map((p) => [p, p])));
+	const layoutFor = (userBytes: number) => {
+		const home = `/Users/${"u".repeat(userBytes)}`;
+		const root = `${home}/Library/Application Support/straw-boss-desk`;
+		return { home, root, layout: () => computeLayout({ root, home, platform: "darwin", realpath: identity(home, `${home}/Library`) }) };
+	};
+
+	it("the default root holds for a user name of 18 bytes (client socket 100) and falls back at 19 (101)", () => {
+		const eighteen = layoutFor(18);
+		assert.equal(bytes(`${eighteen.root}/config/herdr/herdr-client.sock`), 100);
+		assert.equal(eighteen.layout().configHome, `${eighteen.root}/config`);
+		const nineteen = layoutFor(19);
+		assert.equal(bytes(`${nineteen.root}/config/herdr/herdr-client.sock`), 101);
+		assert.equal(nineteen.layout().configHome, `${nineteen.home}/.straw-boss-desk/${idOf(nineteen.root)}/config`);
+	});
+
+	it("the fallback holds for a user name of 36 bytes (client socket 100) and fails with socket-too-long at 37 (101)", () => {
+		const thirtySix = layoutFor(36);
+		const kept = thirtySix.layout();
+		assert.equal(kept.configHome, `${thirtySix.home}/.straw-boss-desk/${idOf(thirtySix.root)}/config`);
+		assert.equal(bytes(`${kept.configHome}/herdr/herdr-client.sock`), 100);
+		assert.throws(() => layoutFor(37).layout(), (e: unknown) => e instanceof LayoutError && e.code === "socket-too-long");
+	});
+
+	it("a record from an older rule is not current, and neither is a darwin record whose config home passes the limit", () => {
+		const record: LayoutRecord = layoutFor(19).layout().record;
+		const taskThree = { ...record, rule: 1, configHome: `${layoutFor(19).root}/config` };
+		assert.equal(recordIsCurrent(record), true);
+		assert.equal(recordIsCurrent({ ...taskThree, rule: LAYOUT_RULE }), false, "the config home is too long for the client socket");
+		assert.equal(recordIsCurrent(taskThree), false, "an older rule");
+		const { rule: _dropped, ...legacy } = taskThree;
+		assert.equal(recordIsCurrent(legacy as unknown as LayoutRecord), false, "a record with no rule at all");
+	});
+
+	it("loads a record written under the old rule by computing the layout again and writing the new record", { skip: process.platform !== "darwin" && "the record is written on this machine's file system with macOS paths" }, () => {
+		const parent = realpathSync.native(mkdtempSync(join("/tmp", "sbdl-")));
+		try {
+			const user = "u".repeat(8); // the scratch parent is long, so the default root already passes the limit
+			const home = join(parent, user);
+			const root = join(home, "Library", "Application Support", "straw-boss-desk");
+			mkdirSync(join(root, "state"), { recursive: true });
+			const fresh = computeLayout({ root, home, platform: "darwin" });
+			const old = { ...fresh.record, rule: undefined, configHome: join(root, "config"), herdrSocket: join(root, "config", "herdr", "herdr.sock") };
+			writeFileSync(join(root, "state", "layout.json"), JSON.stringify(old));
+			const loaded = loadLayout({ root, home, platform: "darwin" });
+			assert.equal(loaded.record.rule, LAYOUT_RULE);
+			assert.notEqual(loaded.configHome, join(root, "config"), "the old record's config home was not reused");
+			assert.equal(JSON.parse(readFileSync(join(root, "state", "layout.json"), "utf8")).rule, LAYOUT_RULE);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
 import { describe, it } from "node:test";
-import { layoutFromRecord } from "../src/main/paths.ts";
+import { LAYOUT_RULE, layoutFromRecord } from "../src/main/paths.ts";
 import { fileKey, OutsideRootError, pathOfKey, relativeToRoot } from "../src/main/bootstrap/stage.ts";
 
 // How hashes and evidence name an installed file (T4-F004). The Windows layout is built on any OS: it is only strings and `win32` path rules.
@@ -11,6 +11,7 @@ const root = "C:\\Users\\王小明\\AppData\\Local\\straw-boss-desk";
 const agent = "C:\\Users\\王小明\\.straw-boss-desk\\ab12cd34\\agent";
 const layout = layoutFromRecord({
 	schema: 1,
+	rule: LAYOUT_RULE,
 	platform: "win32",
 	root,
 	realRoot: root,
