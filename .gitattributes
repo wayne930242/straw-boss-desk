@@ -1,0 +1,2 @@
+# Tests compare files byte for byte (profile spec sync) and the build reads them as written: never convert line endings on a Windows checkout.
+* text=auto eol=lf

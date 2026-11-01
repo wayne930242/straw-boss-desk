@@ -44,7 +44,7 @@ const launch = (root: string, args: string[] = []) => electron.launch({
 	executablePath: packaged?.executable,
 	args,
 	env: cleanEnv({ STRAW_BOSS_DESK_ROOT: root }),
-	timeout: 90_000,
+	timeout: 60_000,
 });
 
 const shot = async (page: Page, name: string) => {

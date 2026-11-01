@@ -44,6 +44,8 @@ function createWindow(): void {
 			],
 		},
 	});
+	// Blank until the supervisor loads the GUI (task 8a); a view that never navigates has no renderer, which a CDP client such as Playwright waits on forever.
+	void guiView.webContents.loadURL("about:blank");
 	window.contentView.addChildView(guiView);
 	window.contentView.addChildView(shellView);
 	layout();
