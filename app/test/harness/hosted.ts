@@ -102,6 +102,19 @@ export function gate(fixture: Fixture, ctx: GateContext = currentContext()): Gat
 export const requireHosted = (env: EnvLike): boolean => lookup(env, "SBD_REQUIRE_HOSTED_FIXTURES") === "1";
 
 /**
+ * The gate of a test that changes nothing but reads the OS credential store (gh's and glab's credential helpers, task 5): the guard's six signals, not
+ * one (nektos/act sets GITHUB_ACTIONS on a developer's machine). `run`: go ahead. Otherwise `reason` names the failing signal, and `fail` is true under
+ * SBD_REQUIRE_HOSTED_FIXTURES=1, where a skip must not pass unseen.
+ */
+export type HostedCase = { run: true } | { run: false; reason: string; fail: boolean };
+
+export function hostedCase(name: string, ctx: GateContext = currentContext()): HostedCase {
+	const verdict = hostedRunner(ctx.env, ctx.userInfo, ctx.platform);
+	if (verdict.hosted) return { run: true };
+	return { run: false, reason: `${name} runs only on a GitHub-hosted runner: ${verdict.reason}`, fail: requireHosted(ctx.env) };
+}
+
+/**
  * Runs the fixture when the gate allows it. A refusal makes no call on `io`; under SBD_REQUIRE_HOSTED_FIXTURES=1 a hosted-runner refusal throws,
  * so a skip can never pass the anchor unseen.
  */

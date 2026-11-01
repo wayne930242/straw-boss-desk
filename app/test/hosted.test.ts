@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import "./harness/fixtures.ts";
 import {
-	defineFixture, gate, hostedRunner, registeredFixtures, runFixture,
+	defineFixture, gate, hostedCase, hostedRunner, registeredFixtures, runFixture,
 	type EnvLike, type FixtureIO, type GateContext,
 } from "./harness/hosted.ts";
 
@@ -127,5 +127,32 @@ describe("registered fixtures", () => {
 		const [first] = registeredFixtures();
 		assert.ok(first);
 		assert.throws(() => defineFixture({ ...first }), /registered twice/);
+	});
+});
+
+describe("hostedCase (the gate of the credential-helper cases, T5-F008)", () => {
+	const ctx = (env: EnvLike, username: string, platform: NodeJS.Platform): GateContext => ({ env, userInfo: { username }, platform });
+
+	it("does not run on GITHUB_ACTIONS=true alone, as a local act run sets it", () => {
+		const v = hostedCase("credential helper", ctx({ GITHUB_ACTIONS: "true" }, "someone", "darwin"));
+		assert.equal(v.run, false);
+		assert.equal(v.run === false && v.fail, false, "a skip when the flag is not set");
+		assert.match(v.run === false ? v.reason : "", /credential helper runs only on a GitHub-hosted runner: CI is not true/);
+	});
+
+	it("does not run with every hosted variable and a developer's user name", () => {
+		const v = hostedCase("credential helper", ctx(macRunner, "someone", "darwin"));
+		assert.equal(v.run, false);
+		assert.match(v.run === false ? v.reason : "", /the user name is not runner/);
+	});
+
+	it("fails instead of skipping under SBD_REQUIRE_HOSTED_FIXTURES=1", () => {
+		const v = hostedCase("credential helper", ctx({ ...developerMac, SBD_REQUIRE_HOSTED_FIXTURES: "1" }, "someone", "darwin"));
+		assert.equal(v.run === false && v.fail, true);
+	});
+
+	it("runs on the full hosted set of both platforms", () => {
+		assert.deepEqual(hostedCase("x", ctx(macRunner, "runner", "darwin")), { run: true });
+		assert.deepEqual(hostedCase("x", ctx(winRunner, "runneradmin", "win32")), { run: true });
 	});
 });

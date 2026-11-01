@@ -361,3 +361,13 @@ describe("T5-F011 b: the CI cache of downloads holds only what the e2e uses", ()
 		assert.deepEqual(readdirSync(cache).sort(), [wanted[0], wanted[1]].sort());
 	});
 });
+
+describe("T5-F008: the credential-helper cases never print what a helper answered", () => {
+	it("no assertion of e2e-light.test.ts takes a helper's stdout or stderr as its message", () => {
+		const source = readFileSync(new URL("./e2e-light.test.ts", import.meta.url), "utf8");
+		const echoing = source.split("\n").map((text, i) => ({ text, line: i + 1 })).filter(({ text }) => /assert\.\w+\(.*\b(filled|credential)\w*\.(stdout|stderr)\s*\)\s*;?\s*$/.test(text));
+		assert.deepEqual(echoing, []);
+		assert.ok(source.includes("hosted(\"credential helper\")"), "the case is gated by hostedCase");
+		assert.ok(!/GITHUB_ACTIONS === "true"/.test(source), "one signal alone is not a gate");
+	});
+});

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { StateStore } from "../src/main/bootstrap/state.ts";
@@ -27,7 +26,7 @@ import {
 } from "./harness/e2e-light.ts";
 import { testPlatform } from "./harness/engine-fixture.ts";
 import { createPlatform } from "../src/main/platform/index.ts";
-import { hostedRunner, requireHosted, type FixtureIO } from "./harness/hosted.ts";
+import { hostedCase, type FixtureIO } from "./harness/hosted.ts";
 import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { systemEnv } from "../src/main/env.ts";
 
@@ -36,7 +35,7 @@ import { systemEnv } from "../src/main/env.ts";
 const ON = process.env.SBD_E2E_LIGHT === "1";
 const off = ON ? false : "SBD_E2E_LIGHT=1 is not set: this test downloads the real releases of stack.json";
 // The credential-helper cases let gh and glab read the OS credential store, so they run on a GitHub-hosted runner only: all six signals of the guard, not one.
-const HOSTED = hostedRunner(process.env, userInfo());
+const hosted = (name: string) => hostedCase(name);
 const GH_VERSION = realStack.tools.gh.assets["darwin-arm64"].version as string;
 const BUN_VERSION = realStack.optionalTools.bun.assets["darwin-arm64"].version as string;
 
@@ -169,10 +168,10 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	 * never passes the anchor unseen. The assertions never print what the helper answered: a local run that got past the gate could hold a real token.
 	 */
 	it("runs each credential helper through Git's sh (hosted runners: gh and glab read the OS credential store there)", async (t) => {
-		if (!HOSTED.hosted) {
-			const reason = `credential helper runs only on a GitHub-hosted runner: ${HOSTED.reason}`;
-			if (requireHosted(process.env)) assert.fail(`${reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
-			t.skip(reason);
+		const gate = hosted("credential helper");
+		if (!gate.run) {
+			if (gate.fail) assert.fail(`${gate.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
+			t.skip(gate.reason);
 			return;
 		}
 		const env = { ...childEnvOf(world, ["bun"]) };
@@ -188,10 +187,10 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	});
 
 	it("runs the glab helper for a GitLab host (hosted runners only), T5-F011 d", async (t) => {
-		if (!HOSTED.hosted) {
-			const reason = `glab credential helper runs only on a GitHub-hosted runner: ${HOSTED.reason}`;
-			if (requireHosted(process.env)) assert.fail(`${reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
-			t.skip(reason);
+		const gate = hosted("glab credential helper");
+		if (!gate.run) {
+			if (gate.fail) assert.fail(`${gate.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
+			t.skip(gate.reason);
 			return;
 		}
 		const env = { ...childEnvOf(world, ["bun"]) };
