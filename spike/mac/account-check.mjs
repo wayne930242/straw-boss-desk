@@ -548,7 +548,8 @@ async function glabAll(opts) {
     const left = itemsFor(["glab:"]).filter((i) => i.svce.startsWith("glab:gitlab.moldplan.app"));
     add("C1:glab-keychain-item-gone", ok(left.length === 0), `glab items for ${f.host} left in the scratch keychain after logout: ${left.length}`);
     rmSync(f.cfg, { recursive: true, force: true });
-    // U2: the same token with no keychain at all.
+    // U2: the same token with no keychain at all. Held (--skip-u2): the store-unavailable keychain may raise a SecurityAgent dialog.
+    if (!opts.skipU2) {
     assertScratch("ro");
     const roBefore = roSnapshot();
     const u2 = await glabLogin("ro", tok, "U2");
@@ -562,6 +563,7 @@ async function glabAll(opts) {
     add("U2:store-unchanged", ok(roSnapshot() === roBefore), "the read-only keychain file is byte-for-byte what it was before the login");
     tokenSearch("glab-U2-token", tok);
     rmSync(f.cfg, { recursive: true, force: true });
+    }
   } finally {
     // C1: revoke the token with itself, whatever happened above.
     try {
@@ -640,6 +642,7 @@ function parse(argv) {
     const a = argv[i];
     if (a === "--login") o.login = true;
     else if (a === "--reuse-login") o.reuseLogin = true;
+    else if (a === "--skip-u2") o.skipU2 = true;
     else if (a === "--skip-push") o.skipPush = true;
     else if (a === "--skip-search") o.skipSearch = true;
     else if (a === "--no-keychain") o.noKeychain = true;
