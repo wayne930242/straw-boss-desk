@@ -57,7 +57,7 @@ const under = (root: string, path: string): boolean => path.replace(/\\/g, "/").
 function paneScript(out: string, names: readonly string[], extra: readonly string[] = []): string {
 	if (isWindows) {
 		const where = names.map((n) => `echo ${n}: & where ${n} 2^>^&1`).join(" & ");
-		return `cmd /d /c "(${where}${extra.map((e) => ` & ${e}`).join("")} & echo PATH=%PATH%) > ${out} 2>&1"`;
+		return `cmd /d /c "(${where}${extra.map((e) => ` & ${e}`).join("")} & echo PATH=%PATH:)=]%) > ${out} 2>&1"`;
 	}
 	const resolves = names.map((n) => `echo "${n}=$(command -v ${n} || echo none)"`).join("; ");
 	return `{ echo "zsh=$ZSH_VERSION"; echo "GH_TOKEN=\${GH_TOKEN-unset}"; ${resolves}; ${extra.join("; ")}; } > '${out}' 2>&1`;
@@ -266,7 +266,9 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			const installed = await viaLauncher(world, "bun", ["install"], env, join(project, "app"));
 			assert.equal(installed.code, 0, installed.stderr || installed.stdout);
 			assert.deepEqual(readdirSync(probeHome), [], "nothing in the scratch home");
-			assert.ok(readdirSync(join(world.layout.tools.root, "bun-home")).length > 0, "bun-home is filled");
+			const where = await viaLauncher(world, "bun", ["pm", "cache"], env, join(project, "app"));
+			const home = join(world.layout.tools.root, "bun-home");
+			assert.ok(existsSync(home) && readdirSync(home).length > 0, `bun-home is filled; bun pm cache says ${where.stdout.trim()} ${where.stderr.trim()}`);
 		});
 
 		it("drop, a full start, re-add: the folder stays, no download, the launcher works; then a new pin installs beside it", async () => {
