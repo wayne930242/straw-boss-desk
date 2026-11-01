@@ -160,7 +160,7 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 	try {
 		assertNoLinks(root, path, "write path");
 		hooks.beforeTemp?.();
-		assertNoLinks(root, path, "write path");
+		assertNoLinks(root, path, "write path (checked again before its temp file is created)");
 		const fd = openSync(tmp, "wx");
 		created = true;
 		try {
@@ -169,7 +169,7 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 			closeSync(fd);
 		}
 		hooks.beforeRename?.();
-		assertNoLinks(root, path, "write path");
+		assertNoLinks(root, path, "write path (checked again before the rename)");
 		renameSync(tmp, path);
 	} catch (error) {
 		if (created) rmSync(tmp, { force: true });

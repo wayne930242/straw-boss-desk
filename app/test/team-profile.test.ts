@@ -726,7 +726,8 @@ describe("RC-F003: the temp file and the links of a write", () => {
 				dirLink(dir, join(agentDir, "rules"));
 			},
 		};
-		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /symbolic link or junction/);
+		// The message names the check that caught it: a link that appears here must be stopped before the temp file exists, not only before the rename.
+		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /before its temp file is created.*symbolic link or junction/);
 		assert.deepEqual(readdirSync(dir), [], "the temp file was not created through the link");
 	});
 
@@ -741,7 +742,7 @@ describe("RC-F003: the temp file and the links of a write", () => {
 				dirLink(dir, join(agentDir, "rules"));
 			},
 		};
-		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /symbolic link or junction/);
+		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /before the rename.*symbolic link or junction/);
 		assert.equal(readFileSync(join(dir, "a.md"), "utf8"), "outside original", "the file outside was not replaced");
 		assert.deepEqual(readdirSync(dir), ["a.md"], "no temp file landed outside");
 	});
