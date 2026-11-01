@@ -52,7 +52,7 @@ describe("the WSL check's walk", () => {
 	});
 
 	it("reads no bash at all as null, and a SystemRoot elsewhere as that folder", () => {
-		assert.deepEqual(walkPanePath({ machine: null, user: null, exists: () => false, env: ENV }), { firstBash: null, wslBash: false, machinePi: null });
+		assert.deepEqual(walkPanePath({ machine: null, user: null, exists: () => false, env: ENV }), { firstBash: null, wslBash: false, machinePi: null, machineBun: null, machineBunx: null });
 		const moved = walkPanePath({ machine: "D:\\Win\\System32", user: null, exists: exists("D:\\Win\\System32\\bash.exe"), env: { SystemRoot: "D:\\Win" } });
 		assert.equal(moved.wslBash, true);
 	});
@@ -62,6 +62,17 @@ describe("the WSL check's walk", () => {
 		assert.equal(machine.machinePi, "C:\\Program Files\\nodejs\\pi.cmd");
 		const user = walkPanePath({ machine: "C:\\x", user: `${SHIMS};C:\\Users\\測試PM\\AppData\\Roaming\\npm`, exists: exists("C:\\Users\\測試PM\\AppData\\Roaming\\npm\\pi.cmd"), env: ENV });
 		assert.equal(user.machinePi, null);
+	});
+});
+
+describe("a bun on the machine PATH (T6-F009)", () => {
+	it("finds bun and bunx on the machine PATH only, with .exe before .cmd in a folder", () => {
+		const machine = walkPanePath({ machine: "C:\\Program Files\\Bun;C:\\x", user: null, exists: exists("C:\\Program Files\\Bun\\bun.exe", "C:\\Program Files\\Bun\\bun.cmd", "C:\\x\\bunx.cmd"), env: ENV });
+		assert.equal(machine.machineBun, "C:\\Program Files\\Bun\\bun.exe");
+		assert.equal(machine.machineBunx, "C:\\x\\bunx.cmd");
+		const user = walkPanePath({ machine: "C:\\x", user: `${SHIMS};C:\\Users\\測試PM\\.bun\\bin`, exists: exists(`${SHIMS}\\bun.cmd`, "C:\\Users\\測試PM\\.bun\\bin\\bun.exe"), env: ENV });
+		assert.equal(user.machineBun, null, "a bun on the user PATH comes after the shims entry, which is first there");
+		assert.equal(user.machineBunx, null);
 	});
 });
 

@@ -9,7 +9,7 @@ import { assetFor, type PlatformKey, type Stack } from "../stack.ts";
 import type { EngineRecipe } from "../recipe-config.ts";
 import type { StageWarning } from "../state.ts";
 import type { Evidence, Stage, StageContext } from "../stage.ts";
-import { checkPaneLookups, MACHINE_PI_SENTENCE, WSL_SENTENCE, type PaneFindings } from "../../pane-path.ts";
+import { checkPaneLookups, MACHINE_BUN_SENTENCE, MACHINE_PI_SENTENCE, WSL_SENTENCE, type PaneFindings } from "../../pane-path.ts";
 
 // The preflight stage (spec: Stages, `preflight`; Network): what must hold before anything is downloaded. It checks the machine (the Windows build that
 // ships `tar.exe`, free space, the layout's decisions, Smart App Control), then that every host a download needs answers. A host the recipe names as a code
@@ -35,7 +35,7 @@ export interface PreflightOptions {
 	release?: () => string;
 	/** One host's limit (default 8 s); the hosts are checked at once, so the whole check takes about this long when one is blackholed. */
 	reachTimeoutMs?: number;
-	/** Windows: what a pane's lookup of `bash` and `pi` finds (default: the registry's `Path` values, read with `reg.exe`). A test passes its own. */
+	/** Windows: what a pane's lookup of `bash`, `pi`, and `bun` finds (default: the registry's `Path` values, read with `reg.exe`). A test passes its own. */
 	panePath?: (ctx: StageContext) => Promise<PaneFindings>;
 }
 
@@ -181,6 +181,10 @@ export function preflightStage(options: PreflightOptions): Stage {
 				facts.push(`a pane runs bash from ${pane.firstBash ?? "nowhere"}`);
 				if (pane.wslBash && pane.firstBash !== null) warnings.push({ kind: "wsl-bash", path: pane.firstBash, sentence: WSL_SENTENCE });
 				if (pane.machinePi !== null) warnings.push({ kind: "machine-pi", path: pane.machinePi, sentence: MACHINE_PI_SENTENCE });
+				// The shims hold `bun.cmd` and `bunx.cmd` only for a recipe that names bun; without one a machine bun is the PM's own business.
+				if (ctx.recipe.tools.includes("bun")) {
+					for (const path of [pane.machineBun, pane.machineBunx]) if (path !== null) warnings.push({ kind: "machine-bun", path, sentence: MACHINE_BUN_SENTENCE });
+				}
 			}
 		}
 		for (const r of results) {

@@ -17,6 +17,7 @@ import { gitHelpersStage, helperCommand, helpersBody, launchersStage, toolPathsS
 import { enabledTools, toolStages } from "../src/main/bootstrap/stages/index.ts";
 import { GIT_BASE_BLOCK, OPTIONAL_TOOLS, ZDOTDIR_TEXT, dugiteEnv, expectedGitVersion, herdrConfigText, optionalToolStage } from "../src/main/bootstrap/stages/tools.ts";
 import { MIN_FREE_BYTES, downloadHosts, preflightStage, privateHostSentence, reachKindOf } from "../src/main/bootstrap/stages/preflight.ts";
+import { MACHINE_BUN_SENTENCE, type PaneFindings } from "../src/main/pane-path.ts";
 import { leftovers, makeStack, runEngine, scratchRoot, testEngine, testLayout, testPlatform } from "./harness/engine-fixture.ts";
 import { validateRecipe } from "../../recipe/validate.mjs";
 import { liftSingleFolder } from "../src/main/bootstrap/archive-stage.ts";
@@ -487,6 +488,37 @@ describe("the preflight", () => {
 	it("a host that is both a download host and a recipe forge host is a failure (github.com), not a warning", async () => {
 		const { result } = await run(new Map([["github.com", "dns"]]), { forges: [{ kind: "github", host: "github.com" }], tools: [] });
 		assert.equal(result.outcomes.preflight?.status, "failed");
+	});
+
+	// T6-F009. On Windows a pane's PATH is the machine's first, so a bun there wins over tools\\shims\\bun.cmd; the shims hold bun.cmd only for a recipe that names it.
+	describe("a bun on the machine PATH shadows the shim's bun.cmd (T6-F009)", () => {
+		const finding = (over: Partial<PaneFindings>): PaneFindings => ({ firstBash: "C:\\Program Files\\Git\\bin\\bash.exe", wslBash: false, machinePi: null, machineBun: null, machineBunx: null, ...over });
+		const preflightWith = async (panePath: PaneFindings, tools: string[]) => {
+			const { root } = fresh();
+			const stage = preflightStage({ platform: "win32", release: () => "10.0.26100", freeBytes: plenty, reachTimeoutMs: 200, panePath: async () => panePath });
+			const engine = testEngine(root, () => [stage], { fetch: answering(new Map()) });
+			await engine.engine.handle({ type: "run", config: { root, stack: realStack, secretPatterns: patterns, recipe: { forges: [], tools } } });
+			const done = engine.events.find((e) => e.type === "done");
+			assert.ok(done?.type === "done" && done.ok, JSON.stringify(engine.events.at(-1)));
+			return done.outcomes.find((o) => o.stage === "preflight")?.warnings ?? [];
+		};
+
+		it("warns with the path of the bun and of the bunx when the recipe names bun", async () => {
+			const warnings = await preflightWith(finding({ machineBun: "C:\\Program Files\\Bun\\bun.exe", machineBunx: "C:\\Program Files\\Bun\\bunx.exe" }), ["bun"]);
+			assert.deepEqual(warnings.filter((w) => w.kind === "machine-bun").map((w) => w.path), ["C:\\Program Files\\Bun\\bun.exe", "C:\\Program Files\\Bun\\bunx.exe"]);
+			assert.ok(warnings.every((w) => w.kind !== "machine-bun" || w.sentence === MACHINE_BUN_SENTENCE));
+		});
+
+		it("warns for a bunx alone, and not at all when the recipe names no bun or no machine bun exists", async () => {
+			assert.deepEqual((await preflightWith(finding({ machineBunx: "C:\\x\\bunx.cmd" }), ["bun"])).map((w) => [w.kind, w.path]), [["machine-bun", "C:\\x\\bunx.cmd"]]);
+			assert.deepEqual(await preflightWith(finding({ machineBun: "C:\\Program Files\\Bun\\bun.exe" }), []), [], "no bun in the recipe, no shim, nothing to shadow");
+			assert.deepEqual(await preflightWith(finding({}), ["bun"]), []);
+		});
+
+		it("keeps the warnings of the other findings beside it", async () => {
+			const warnings = await preflightWith(finding({ wslBash: true, firstBash: "C:\\Windows\\System32\\bash.exe", machinePi: "C:\\n\\pi.cmd", machineBun: "C:\\b\\bun.exe" }), ["bun"]);
+			assert.deepEqual(warnings.map((w) => w.kind).filter((k) => k !== "smart-app-control"), ["wsl-bash", "machine-pi", "machine-bun"]);
+		});
 	});
 
 	it("fails with the disk category below 3 GB, and with other on a Windows older than 1803", async () => {

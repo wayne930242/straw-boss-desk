@@ -23,7 +23,7 @@ export interface StageWarning {
 	/** `forge-host-unreachable`, ... */
 	kind: string;
 	host?: string;
-	/** A file the finding is about (`wsl-bash`: the `bash.exe` a pane would run; `machine-pi`: the `pi` it would run). */
+	/** A file the finding is about (`wsl-bash`: the `bash.exe` a pane would run; `machine-pi`: the `pi` it would run; `machine-bun`: the `bun` or `bunx` it would run). */
 	path?: string;
 	sentence: string;
 }

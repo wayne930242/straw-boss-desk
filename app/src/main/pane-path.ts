@@ -5,7 +5,7 @@ import type { CommandRunner, Locate } from "./platform/types.ts";
 // What a Windows pane's shell finds by name (spec: Panes on Windows, the WSL check). Herdr rebuilds a pane's `PATH` from the registry: the machine
 // `Path`, then the user `Path`. Windows puts the machine entries first, so a `bash.exe` on the machine PATH wins over the shim's `bash.cmd`, and
 // WSL's `System32\bash.exe` would run a pi-herdr-agents script in Linux, where `pi` does not exist (seam U10). A `pi` on the machine PATH wins over
-// the shim's `pi` as well. This module reads the two registry values and walks them as a pane does: files only, nothing is run.
+// the shim's `pi` as well, and so does a `bun` (or `bunx`) there over the shim's `bun.cmd`. This module reads the two registry values and walks them as a pane does: files only, nothing is run.
 //
 // Three inputs decide the walk, and the unit tests pass all three in: the machine value, the user value, and a file-exists check.
 
@@ -68,6 +68,10 @@ export interface PaneFindings {
 	wslBash: boolean;
 	/** The first `pi` on the machine PATH, which wins over the shim, or null. */
 	machinePi: string | null;
+	/** The first `bun` on the machine PATH (winget or choco machine scope, say), which wins over the shim's `bun.cmd`, or null (T6-F009). */
+	machineBun: string | null;
+	/** The first `bunx` on the machine PATH, which wins over the shim's `bunx.cmd`, or null. */
+	machineBunx: string | null;
 }
 
 const sameFile = (a: string, b: string): boolean => win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase();
@@ -80,7 +84,8 @@ export function walkPanePath(input: PaneWalkInput): PaneFindings {
 	const all = [...machine, ...pathEntries(input.user, input.env)];
 	const firstBash = locate.onPath("bash", all.join(";"));
 	const wslBash = firstBash !== null && sameFile(firstBash, win32.join(systemRoot, "System32", "bash.exe"));
-	return { firstBash, wslBash, machinePi: locate.onPath("pi", machine.join(";")) };
+	const machinePath = machine.join(";");
+	return { firstBash, wslBash, machinePi: locate.onPath("pi", machinePath), machineBun: locate.onPath("bun", machinePath), machineBunx: locate.onPath("bunx", machinePath) };
 }
 
 /** Reads both `Path` values with `reg.exe` (two short processes, no PowerShell, so it never delays the window). A key or value that is missing reads as null. */
@@ -104,3 +109,6 @@ export const WSL_SENTENCE = "On this computer, agents cannot hand work to helper
 
 /** The preflight's note for a `pi` on the machine PATH, which a pane finds before the shim. */
 export const MACHINE_PI_SENTENCE = "Another pi is installed for every user of this computer, and a pane starts it instead of the one Straw Boss installed.";
+
+/** The preflight's note for a `bun` or `bunx` on the machine PATH, which a pane finds before the shim, for a recipe that names bun (T6-F009). */
+export const MACHINE_BUN_SENTENCE = "Another bun is installed for every user of this computer, and a pane starts it instead of the one Straw Boss installed, without the app's cache folder.";
