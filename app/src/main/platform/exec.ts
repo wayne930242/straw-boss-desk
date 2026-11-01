@@ -11,7 +11,7 @@ export function execRunner(base: Readonly<Record<string, string | undefined>> = 
 			const child = execFile(
 				file,
 				[...args],
-				{ env, timeout: options?.timeoutMs ?? 0, killSignal: "SIGKILL", windowsHide: true, maxBuffer: MAX_BUFFER, encoding: "utf8" },
+				{ env, ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}), timeout: options?.timeoutMs ?? 0, killSignal: "SIGKILL", windowsHide: true, maxBuffer: MAX_BUFFER, encoding: "utf8" },
 				(error, stdout, stderr) => {
 					if (!error) return resolve({ code: 0, stdout, stderr });
 					const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };

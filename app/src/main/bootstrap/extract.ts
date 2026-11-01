@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { isAbsolute, join, posix, resolve, win32 } from "node:path";
+import { dirname, basename, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import type { CommandRunner, Locate } from "../platform/index.ts";
 import { StageError } from "./errors.ts";
 import { removeTree } from "./fsutil.ts";
@@ -43,8 +43,8 @@ export interface Extracted {
 	tar: string;
 }
 
-async function tar(request: ExtractRequest, tarPath: string, args: string[]): Promise<string> {
-	const result = await request.run(tarPath, args, { timeoutMs: TAR_LIMIT_MS });
+async function tar(request: ExtractRequest, tarPath: string, args: string[], cwd: string): Promise<string> {
+	const result = await request.run(tarPath, args, { timeoutMs: TAR_LIMIT_MS, cwd });
 	if (result.code !== 0) {
 		const why = result.timedOut ? "timed out" : `exit ${result.code}`;
 		throw new StageError("other", { stage: "extract" }, `tar ${args[0]} ${request.archive} failed (${why}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
@@ -61,8 +61,10 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 	mkdirSync(dest, { recursive: true });
 	if (readdirSync(dest).length > 0) throw new ExtractRefused(archive, `the destination ${dest} is not empty`);
 
-	// The names first, before a byte is written.
-	const names = (await tar(request, tarPath, ["-tf", archive])).split(/\r?\n/).filter((n) => n !== "");
+	// `tar.exe` on Windows reads its arguments in the ANSI code page, so a user name outside it (CJK on a machine whose code page is not CJK, or a character
+	// outside Big5 on zh-TW) turns into `?` and the archive "cannot be opened". The working directory is passed as UTF-16, so the program runs in the
+	// folder it works on and gets only names the app chose: the archive's file name, and the relative path between two folders of the data root.
+	const names = (await tar(request, tarPath, ["-tf", basename(archive)], dirname(archive))).split(/\r?\n/).filter((n) => n !== "");
 	for (const name of names) {
 		const problem = unsafeEntryName(name);
 		if (problem !== null) throw new ExtractRefused(archive, `the entry ${JSON.stringify(name)} ${problem}`);
@@ -70,7 +72,7 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 
 	const strip = request.stripComponents ? ["--strip-components", String(request.stripComponents)] : [];
 	try {
-		await tar(request, tarPath, ["-xf", archive, "-C", dest, ...strip]);
+		await tar(request, tarPath, ["-xf", relative(dest, archive), ...strip], dest);
 		checkLinks(archive, dest);
 	} catch (error) {
 		removeTree(dest);

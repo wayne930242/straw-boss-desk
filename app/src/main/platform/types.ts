@@ -6,6 +6,8 @@ export interface RunOptions {
 	stdin?: string;
 	/** The child is killed after this long and the result reports `timedOut`. */
 	timeoutMs?: number;
+	/** The child's working directory. Unlike an argument, it reaches a Windows program as UTF-16, so it may hold characters outside the ANSI code page. */
+	cwd?: string;
 	/** Added to the runner's base environment for this call. */
 	env?: Readonly<Record<string, string>>;
 }
