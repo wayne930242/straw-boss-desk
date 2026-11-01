@@ -98,6 +98,15 @@ jobs:
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: node --test --test-timeout=900000 test/e2e-light.test.ts
 
+      # The task 7 anchor: the profile, every pi package of stack.json, a recipe package, and claude, installed through pi from the real registry, then
+      # `pi --mode rpc --no-session --offline` must list skill:pm-workflow with nothing on stderr. It uses the same download cache as the step above.
+      - name: Profile and package stages, e2e-light
+        working-directory: app
+        env:
+          SBD_E2E_LIGHT: "1"
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-timeout=1500000 test/e2e-light-profile.test.ts
+
       - name: Playwright, development build
         working-directory: app
         env:

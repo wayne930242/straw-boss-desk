@@ -11,6 +11,7 @@ import { createEngine, type EngineEvent } from "../../src/main/bootstrap/engine.
 import type { Fetch } from "../../src/main/bootstrap/download.ts";
 import { removeTree } from "../../src/main/bootstrap/fsutil.ts";
 import { toolStages, type StageOptions } from "../../src/main/bootstrap/stages/index.ts";
+import { profileStages } from "../../src/main/bootstrap/stages/profile.ts";
 import type { StageOutcome } from "../../src/main/bootstrap/stage.ts";
 import type { RunResult, UserPath, UserPathValue } from "../../src/main/platform/types.ts";
 import { planEnsureFirst, planRemove } from "../../src/main/platform/win.ts";
@@ -182,6 +183,8 @@ export interface RunOptions {
 	proxyEnv?: Record<string, string>;
 	/** Run only these stages (they must lead to each other: `["preflight", "node", "git", "herdr", "pi"]`). */
 	only?: readonly string[];
+	/** Add the profile and package stages (`profile`, `pkg:*`, `team-pkg:*`, `claude`, and `pi-settings` on Windows) to the tool stages (task 7). */
+	profile?: boolean;
 }
 
 const countingFetch = (world: World, sink: string[]): Fetch => (url, init) => {
@@ -204,7 +207,10 @@ export async function runWorld(world: World, options: RunOptions = {}): Promise<
 		platform: { ...testPlatform(), processes: { ...testPlatform().processes, listUnder: createPlatform().processes.listUnder }, userPath: world.userPath },
 		appEnv: world.appEnv,
 		retryDelayMs: 1000,
-		stages: (stack, recipe, platform) => toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}).filter((stage) => options.only === undefined || options.only.includes(stage.name)),
+		stages: (stack, recipe, platform) =>
+			[...toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}), ...(options.profile ? profileStages(stack, recipe, platform) : [])].filter(
+				(stage) => options.only === undefined || options.only.includes(stage.name),
+			),
 	});
 	const started = Date.now();
 	await engine.handle({ type: "run", config: { root: world.root, home: world.home, platform: platformOfHost, stack: options.stack ?? realStack, secretPatterns, ...(options.recipe !== undefined ? { recipe: options.recipe } : {}), ...(options.force ? { force: true } : {}), ...(options.proxyEnv ? { proxyEnv: options.proxyEnv } : {}) } });
