@@ -1,6 +1,7 @@
-import { chmodSync, copyFileSync, existsSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readdirSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { StageError } from "./errors.ts";
+import { removeTree } from "./fsutil.ts";
 import { activateDir, detectFromRecord, fileKey, installDir, type Evidence, type Lane, type Stage, type StageContext } from "./stage.ts";
 import type { Asset } from "./stack.ts";
 
@@ -15,8 +16,11 @@ export interface ArchiveStageSpec {
 	tool: string;
 	/** The stack key of the pinned asset when it differs from `tool` (`fd`, `rg` are provisioned into pi's own folder, but their pins are named so). */
 	stackTool?: string;
-	/** A zip or tarball: extracted with the system `tar`. A `file` asset is a bare binary and is copied to `placeAs`. */
-	kind: "archive" | "file";
+	/**
+	 * A zip or tarball: extracted with the system `tar`. A `file` asset is a bare binary and is copied to `placeAs`. An `sfx` asset is a 7-Zip
+	 * self-extracting executable (PortableGit), run on its verified bytes.
+	 */
+	kind: "archive" | "file" | "sfx";
 	stripComponents?: number;
 	/** For `kind: "file"`: the name the binary gets inside the folder. */
 	placeAs?: string;
@@ -65,11 +69,18 @@ export function archiveStage(spec: ArchiveStageSpec): Stage {
 			if (spec.kind === "archive") {
 				const extracted = await ctx.extract(downloaded.path, dir, spec.stripComponents);
 				ctx.log.event({ event: "extracted", entries: extracted.entries, tar: extracted.tar });
+			} else if (spec.kind === "sfx") {
+				const extracted = await ctx.extractSelfExtractor(downloaded.path, asset.sha256, dir);
+				ctx.log.event({ event: "extracted", entries: extracted.entries, sfx: true });
 			} else {
 				const target = join(dir, spec.placeAs ?? asset.file);
 				copyFileSync(downloaded.path, target);
 				chmodSync(target, 0o755);
 			}
+			// Some archives hold one top folder (`gh_2.103.3_macOS_arm64/bin/gh`, `bun-darwin-aarch64/bun`): its contents move up, so the layout the
+			// path files name is the same on every platform.
+			const first = spec.executables[0];
+			if (spec.kind === "archive" && first !== undefined && !existsSync(join(dir, ...first.split("/")))) liftSingleFolder(dir, first);
 			await spec.afterExtract?.(ctx, dir, asset);
 		},
 		async verify(ctx) {
@@ -79,7 +90,13 @@ export function archiveStage(spec: ArchiveStageSpec): Stage {
 				if (!existsSync(join(dir, ...exe.split("/")))) throw new StageError("other", { stage: spec.name }, `${spec.tool} ${asset.version} has no ${exe} after extraction`);
 			}
 			const text = spec.check ? await spec.check(ctx, dir, asset) : `${spec.tool} ${asset.version}`;
-			const evidence: Evidence = { text, version: asset.version, files: files(ctx, asset) };
+			const finals = files(ctx, asset);
+			const evidence: Evidence = {
+				text,
+				version: asset.version,
+				files: finals,
+				stagedFiles: Object.fromEntries(spec.executables.map((e, i) => [finals[i] as string, join(dir, ...e.split("/"))])),
+			};
 			const deps = dependsOn(ctx);
 			if (Object.keys(deps).length > 0) evidence.dependsOn = deps;
 			return evidence;
@@ -89,4 +106,20 @@ export function archiveStage(spec: ArchiveStageSpec): Stage {
 			await activateDir(ctx, { tool: spec.tool, version: evidence.version, staging: staging(ctx, asset) });
 		},
 	};
+}
+
+/**
+ * When `dir` holds one folder and nothing else, and `probe` (a path relative to `dir`) is inside that folder, moves the folder's contents up and
+ * removes the folder. Anything else is left as it is: the caller's `verify` then names the file that is missing.
+ */
+export function liftSingleFolder(dir: string, probe: string): void {
+	const entries = readdirSync(dir);
+	const only = entries.length === 1 ? entries[0] : undefined;
+	if (only === undefined || !statSync(join(dir, only)).isDirectory()) return;
+	if (!existsSync(join(dir, only, ...probe.split("/")))) return;
+	// Out of the way first, so a child with the folder's own name cannot collide with it.
+	const aside = join(dir, `${only}.lifting`);
+	renameSync(join(dir, only), aside);
+	for (const child of readdirSync(aside)) renameSync(join(aside, child), join(dir, child));
+	removeTree(aside);
 }

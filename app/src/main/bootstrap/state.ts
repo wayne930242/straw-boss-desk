@@ -18,6 +18,14 @@ export interface FailureNote {
 	at: string;
 }
 
+/** Something a stage found that does not fail it. `sentence` is the plain English line; the catalog carries zh-TW from `kind` and `host`. */
+export interface StageWarning {
+	/** `forge-host-unreachable`, ... */
+	kind: string;
+	host?: string;
+	sentence: string;
+}
+
 export interface StageRecord {
 	status: StageStatus;
 	/** The version this stage made active, or the one it was installing while `running`. */
@@ -31,6 +39,8 @@ export interface StageRecord {
 	dependsOn: Record<string, string>;
 	/** Set when a later attempt failed while this record's version stayed active. */
 	lastFailure?: FailureNote;
+	/** What the stage found that does not fail it (the preflight's unreachable recipe forge host). */
+	warnings?: StageWarning[];
 }
 
 export interface BootstrapState {
@@ -63,7 +73,12 @@ function asRecord(value: unknown): StageRecord | null {
 		isObject(failure) && typeof failure.category === "string" && typeof failure.message === "string" && typeof failure.at === "string"
 			? { category: failure.category, version: typeof failure.version === "string" ? failure.version : null, message: failure.message, at: failure.at }
 			: undefined;
-	return { status, version, evidence, at, hashes, dependsOn, ...(lastFailure ? { lastFailure } : {}) };
+	const warnings = Array.isArray(value.warnings)
+		? value.warnings.flatMap((w): StageWarning[] =>
+				isObject(w) && typeof w.kind === "string" && typeof w.sentence === "string" ? [{ kind: w.kind, ...(typeof w.host === "string" ? { host: w.host } : {}), sentence: w.sentence }] : [],
+			)
+		: [];
+	return { status, version, evidence, at, hashes, dependsOn, ...(lastFailure ? { lastFailure } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function asBootstrap(value: JsonValue): BootstrapState | null {

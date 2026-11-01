@@ -93,13 +93,14 @@ export function publish(server: FixtureServer, tool: string, pkg: ToolPackage, p
 	return { version: pkg.version, url: server.serve(path, bytes), sha256: pinOf ?? sha256Hex(bytes), file, path };
 }
 
-export function makeStack(tools: Record<string, { version: string; url: string; sha256: string; file: string }>): Stack {
+export function makeStack(tools: Record<string, { version: string; url: string; sha256: string; file: string }>, optionalTools: Record<string, { version: string; url: string; sha256: string; file: string }> = {}): Stack {
 	const key = currentKey();
 	return {
 		schema: 1,
 		generation: 1,
 		minShell: "0.0.1",
 		tools: Object.fromEntries(Object.entries(tools).map(([tool, asset]) => [tool, { assets: { [key]: asset } }])),
+		optionalTools: Object.fromEntries(Object.entries(optionalTools).map(([tool, asset]) => [tool, { assets: { [key]: asset } }])),
 		npmGlobal: [],
 		profile: { name: "p", version: "0.0.1", integrity: "sha512-x" },
 		piPackages: [],

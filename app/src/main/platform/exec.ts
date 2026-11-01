@@ -7,7 +7,7 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 export function execRunner(base: Readonly<Record<string, string | undefined>> = process.env): CommandRunner {
 	return (file, args, options) =>
 		new Promise((resolve) => {
-			const env: Record<string, string | undefined> = { ...base, ...options?.env };
+			const env: Record<string, string | undefined> = options?.replaceEnv && options.env ? { ...options.env } : { ...base, ...options?.env };
 			const child = execFile(
 				file,
 				[...args],

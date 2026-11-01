@@ -10,6 +10,8 @@ export interface RunOptions {
 	cwd?: string;
 	/** Added to the runner's base environment for this call. */
 	env?: Readonly<Record<string, string>>;
+	/** With `env`: the child gets `env` and nothing else, not the runner's base environment merged with it. */
+	replaceEnv?: boolean;
 }
 
 export interface RunResult {

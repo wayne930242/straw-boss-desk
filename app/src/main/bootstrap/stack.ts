@@ -18,11 +18,17 @@ export interface NpmPin {
 	optional?: boolean;
 }
 
+export interface ToolEntry {
+	assets: Partial<Record<PlatformKey, Asset>>;
+}
+
 export interface Stack {
 	schema: 1;
 	generation: number;
 	minShell: string;
-	tools: Record<string, { assets: Partial<Record<PlatformKey, Asset>> }>;
+	tools: Record<string, ToolEntry>;
+	/** Tools a recipe's `tools` list turns on (spec: Decisions, Optional tools). Empty when the stack names none. */
+	optionalTools: Record<string, ToolEntry>;
 	npmGlobal: NpmPin[];
 	profile: { name: string; version: string; integrity: string };
 	piPackages: NpmPin[];
@@ -44,6 +50,10 @@ export function platformKey(platform: NodeJS.Platform, arch: string): PlatformKe
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
+/** The same rule as `recipe/validate.mjs` (a name becomes an `SBD_<TOOL>` variable) and `scripts/lib/stack.mjs`. */
+const OPTIONAL_TOOL_NAME = /^[a-z][a-z0-9]{0,31}$/;
+/** Folders under `tools/` that are not tools: an optional tool of that name would share their folder (FE2R-F008). */
+const RESERVED_TOOL_FOLDERS = ["bin", "shims", "downloads", "bun-home", "staging"];
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?$/;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -74,6 +84,21 @@ function parseAsset(where: string, value: unknown): Asset {
 	return { version, url, sha256, file };
 }
 
+function parseToolEntries(where: string, value: unknown): Record<string, ToolEntry> {
+	if (!isObject(value)) throw new StackError(`the stack's ${where} must be an object`);
+	const out: Record<string, ToolEntry> = {};
+	for (const [tool, entry] of Object.entries(value)) {
+		if (!isObject(entry) || !isObject(entry.assets)) throw new StackError(`${where}.${tool}.assets must be an object`);
+		const assets: Partial<Record<PlatformKey, Asset>> = {};
+		for (const [key, asset] of Object.entries(entry.assets)) {
+			if (key !== "win32-x64" && key !== "darwin-arm64" && key !== "darwin-x64") throw new StackError(`${where}.${tool}.assets has an unknown platform key ${key}`);
+			assets[key] = parseAsset(`${where}.${tool}.assets.${key}`, asset);
+		}
+		out[tool] = { assets };
+	}
+	return out;
+}
+
 /** Checks the shape the engine uses and returns it typed. Throws `StackError` naming the first bad field. */
 export function parseStack(value: unknown): Stack {
 	if (!isObject(value)) throw new StackError("the stack is not an object");
@@ -81,15 +106,12 @@ export function parseStack(value: unknown): Stack {
 	if (typeof value.generation !== "number" || !Number.isInteger(value.generation) || value.generation < 1) throw new StackError("the stack's generation must be a positive integer");
 	if (typeof value.minShell !== "string") throw new StackError("the stack's minShell must be a string");
 	if (!isObject(value.tools)) throw new StackError("the stack's tools must be an object");
-	const tools: Stack["tools"] = {};
-	for (const [tool, entry] of Object.entries(value.tools)) {
-		if (!isObject(entry) || !isObject(entry.assets)) throw new StackError(`tools.${tool}.assets must be an object`);
-		const assets: Partial<Record<PlatformKey, Asset>> = {};
-		for (const [key, asset] of Object.entries(entry.assets)) {
-			if (key !== "win32-x64" && key !== "darwin-arm64" && key !== "darwin-x64") throw new StackError(`tools.${tool}.assets has an unknown platform key ${key}`);
-			assets[key] = parseAsset(`tools.${tool}.assets.${key}`, asset);
-		}
-		tools[tool] = { assets };
+	const tools = parseToolEntries("tools", value.tools);
+	const optionalTools = value.optionalTools === undefined ? {} : parseToolEntries("optionalTools", value.optionalTools);
+	for (const name of Object.keys(optionalTools)) {
+		if (!OPTIONAL_TOOL_NAME.test(name)) throw new StackError(`optionalTools.${name}: a tool name is lowercase letters and digits, starting with a letter, at most 32 characters`);
+		if (name in tools) throw new StackError(`optionalTools.${name}: ${name} is also a required tool`);
+		if (RESERVED_TOOL_FOLDERS.includes(name)) throw new StackError(`optionalTools.${name}: ${name} is a folder under tools/ that is not a tool`);
 	}
 	const pins = (where: string, list: unknown): NpmPin[] => {
 		if (!Array.isArray(list)) throw new StackError(`${where} must be a list`);
@@ -108,6 +130,7 @@ export function parseStack(value: unknown): Stack {
 		generation: value.generation,
 		minShell: value.minShell,
 		tools,
+		optionalTools,
 		npmGlobal: pins("npmGlobal", value.npmGlobal),
 		profile: { name: profile.name, version: profile.version, integrity: profile.integrity },
 		piPackages: pins("piPackages", value.piPackages),
@@ -116,7 +139,10 @@ export function parseStack(value: unknown): Stack {
 
 /** The pinned download of `tool` for this machine. Throws `StackError` when the stack has none, so a stage never guesses. */
 export function assetFor(stack: Stack, tool: string, key: PlatformKey): Asset {
-	const asset = stack.tools[tool]?.assets[key];
+	const asset = (stack.tools[tool] ?? stack.optionalTools[tool])?.assets[key];
 	if (asset === undefined) throw new StackError(`the stack has no ${tool} for ${key}`);
 	return asset;
 }
+
+/** The names under `optionalTools`: what `validateRecipe` takes as `knownTools`, and the only tools a recipe may turn on. */
+export const optionalToolNames = (stack: Stack): string[] => Object.keys(stack.optionalTools);

@@ -1,14 +1,16 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join, posix, win32 } from "node:path";
-import { isInside, type Layout } from "../paths.ts";
+import { dirname, join, posix, win32 } from "node:path";
+import { buildEnv, systemEnv, type EnvLike, type EnvMap, type OsProxy } from "../env.ts";
+import { isInside, type CurrentTools, type Layout } from "../paths.ts";
 import type { CommandRunner, Platform, RunOptions, RunResult } from "../platform/index.ts";
 import { classifyError, RETRIED_ONCE, StageError, type FailureCategory, type FailureParams } from "./errors.ts";
 import { downloadVerified, type Downloaded, type Fetch } from "./download.ts";
-import { extractArchive, type Extracted } from "./extract.ts";
+import { extractArchive, extractSelfExtractor, type Extracted } from "./extract.ts";
 import { removeTree, renameRetry, sha256File } from "./fsutil.ts";
 import type { StageLog } from "./log.ts";
+import type { EngineRecipe } from "./recipe-config.ts";
 import type { Asset, PlatformKey, Stack } from "./stack.ts";
-import type { StageRecord, StateStore } from "./state.ts";
+import type { StageRecord, StateStore, StageWarning } from "./state.ts";
 
 // The stage contract and the one function that runs a stage through it (spec: Bootstrap engine, Stage contract).
 //
@@ -28,6 +30,14 @@ export interface Evidence {
 	dependsOn?: Record<string, string>;
 	/** Installed files to hash, as `fileKey` writes them: relative to the data root with `/` separators, or `agent:` and a path relative to the agent folder. */
 	files?: string[];
+	/**
+	 * Where each of `files` is now, when it is not yet at its final place: the final key mapped to the absolute path of the staged copy. The engine
+	 * hashes the staged copy before `activate` renames anything and records the hash under the final key (T4-F010 b), so a file that cannot be read
+	 * fails the stage while the old version is still the active one. A key without an entry is hashed where it is.
+	 */
+	stagedFiles?: Record<string, string>;
+	/** Things the PM should know that do not fail the stage (an unreachable recipe forge host); kept in the stage's record in `state/bootstrap.json`. */
+	warnings?: StageWarning[];
 }
 
 export interface Stage {
@@ -35,6 +45,10 @@ export interface Stage {
 	needs: readonly string[];
 	/** `download` stages run three at a time, `npm` stages one at a time; the rest are unlimited. */
 	lane?: Lane;
+	/** Write the stage's record (status `ok`, with its evidence and warnings) when `detect` finds evidence too: for a stage that checks the machine on every run. */
+	recordDetect?: boolean;
+	/** No automatic retry of a network, registry, or locked failure: the check itself waited long enough (the preflight's reachability). */
+	noRetry?: boolean;
 	/** The version this stage is about to install, for the record that marks it running. */
 	plannedVersion?(ctx: StageContext): string;
 	detect(ctx: StageContext): Promise<Evidence | null>;
@@ -53,14 +67,28 @@ export interface StageContext {
 	readonly signal: AbortSignal;
 	/** The stage's record when it began; null on a first install. */
 	readonly record: StageRecord | null;
+	/** The active recipe's forges and optional tool names (empty lists when there is no recipe yet). */
+	readonly recipe: EngineRecipe;
+	/** The engine's `fetch` (Electron's `net.fetch`), for the preflight's reachability checks. */
+	readonly fetch: Fetch;
+	/** The environment children are built from, and the OS proxy variables main resolved for this run. */
+	readonly appEnv: EnvLike;
+	readonly proxy: OsProxy | undefined;
 	readonly log: StageLog;
 	/** Non-fatal file system trouble (a locked old folder that stayed behind), reported in the result line as `fsErrors`. */
 	readonly fsErrors: string[];
-	/** Runs a program by absolute path; the command and its output go to the stage's log. */
+	/**
+	 * Runs a program by absolute path; the command and its output go to the stage's log. The child gets `options.env` and nothing of the app's own
+	 * environment; without it, only the system essentials (`systemEnv`).
+	 */
 	exec(file: string, args: readonly string[], options?: RunOptions): Promise<RunResult>;
+	/** The constructed environment of the active tool versions (spec: Environment), for a stage that runs the app's tools as a PM's shell would. Throws when node, git, or herdr is not active. */
+	childEnv(extra?: Readonly<Record<string, string>>): EnvMap;
 	/** Downloads and verifies a pinned asset into `tools/downloads`. */
 	download(tool: string, asset: Asset): Promise<Downloaded>;
 	extract(archive: string, dest: string, stripComponents?: number): Promise<Extracted>;
+	/** Runs a self-extracting installer (`.7z.exe`) on its verified bytes into `dest`; the same link and special-file walk as `extract` follows. */
+	extractSelfExtractor(installer: string, sha256: string, dest: string): Promise<Extracted>;
 	/** An empty folder at `path`: whatever was there is deleted first. It is removed again if the stage fails. */
 	freshStaging(path: string): string;
 	/** The active versions of `tools`, or throws when one is not active. */
@@ -89,6 +117,8 @@ export interface StageOutcome {
 	failure?: StageFailure;
 	/** For `blocked`: the stage that did not complete. */
 	blockedBy?: string;
+	/** What the stage found that does not fail it (**Network**, **A private code host**). */
+	warnings?: StageWarning[];
 }
 
 export interface RunDeps {
@@ -111,6 +141,12 @@ export interface RunDeps {
 	now?: () => Date;
 	/** Ignore `detect` and install everything (a repair). */
 	force?: boolean;
+	/** The active recipe's forges and optional tools. */
+	recipe: EngineRecipe;
+	/** The environment the constructed child environment starts from (the engine process's own). */
+	appEnv: EnvLike;
+	/** The OS proxy variables main resolved before this run; they go to every child. */
+	proxy?: OsProxy;
 }
 
 /** `tools/<tool>/<version>`, the folder a binary stage activates. */
@@ -164,9 +200,26 @@ export function pathOfKey(layout: Layout, key: string): string {
 	return pathModule(layout).join(agent ? layout.agent : layout.root, ...segments);
 }
 
-async function hashFiles(layout: Layout, files: readonly string[]): Promise<Record<string, string>> {
+/**
+ * SHA-256 of each file in `evidence.files`, keyed by the final key. A file that is still in a staging place (`evidence.stagedFiles`) is read there:
+ * this runs before `activate`, so a file that cannot be read fails the stage while the old version is still the active one (T4-F010 b).
+ */
+async function hashFiles(layout: Layout, evidence: Evidence): Promise<Record<string, string>> {
 	const hashes: Record<string, string> = {};
-	for (const key of files) hashes[key] = await sha256File(pathOfKey(layout, key));
+	for (const key of evidence.files ?? []) {
+		const final = pathOfKey(layout, key);
+		const staged = evidence.stagedFiles?.[key];
+		if (staged !== undefined) {
+			// The staged copy must lie under the data root or the agent folder, like every final file.
+			fileKey(layout, staged);
+			hashes[key] = await sha256File(staged);
+		} else {
+			hashes[key] = await sha256File(final);
+		}
+	}
+	for (const key of Object.keys(evidence.stagedFiles ?? {})) {
+		if (!(evidence.files ?? []).includes(key)) throw new OutsideRootError(`evidence stages ${key}, which it does not list in its files`);
+	}
 	return hashes;
 }
 
@@ -235,6 +288,55 @@ export async function activateDir(ctx: StageContext, spec: { tool: string; versi
 	}
 }
 
+/**
+ * `activate` for a stage whose output is a set of single files that replace files already in place (`fd-rg` into `<agent>/bin`, a launcher set into
+ * `tools/bin`): each target that exists is moved aside to `<target>.replaced`, then the staged file is renamed to the target. If any step fails, the
+ * files already replaced are put back, so the set is replaced whole or not at all; what a kill leaves behind, `sweepLeftovers` puts back or deletes.
+ * `remove` lists targets that must be gone afterwards (a launcher for a tool the recipe dropped): they are moved aside with the rest and deleted last.
+ */
+export function activateFiles(ctx: StageContext, pairs: ReadonlyArray<{ from: string; to: string }>, remove: readonly string[] = []): void {
+	const done: Array<{ from: string; to: string; aside: string | null }> = [];
+	const gone: Array<{ target: string; aside: string }> = [];
+	try {
+		for (const { from, to } of pairs) {
+			mkdirSync(dirname(to), { recursive: true });
+			const aside = `${to}.replaced`;
+			removeTree(aside);
+			const had = existsSync(to);
+			if (had) renameRetry(to, aside);
+			try {
+				renameRetry(from, to);
+			} catch (error) {
+				if (had) renameRetry(aside, to);
+				throw error;
+			}
+			done.push({ from, to, aside: had ? aside : null });
+		}
+		for (const target of remove) {
+			if (!existsSync(target)) continue;
+			const aside = `${target}.replaced`;
+			removeTree(aside);
+			renameRetry(target, aside);
+			gone.push({ target, aside });
+		}
+	} catch (error) {
+		for (const g of gone.toReversed()) renameRetry(g.aside, g.target);
+		for (const d of done.toReversed()) {
+			removeTree(d.to);
+			if (d.aside !== null) renameRetry(d.aside, d.to);
+		}
+		throw error;
+	}
+	for (const aside of [...done.map((d) => d.aside), ...gone.map((g) => g.aside)]) {
+		if (aside === null) continue;
+		try {
+			removeTree(aside);
+		} catch (error) {
+			ctx.fsErrors.push(`${aside}: ${(error as Error).message}`);
+		}
+	}
+}
+
 const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 	new Promise((resolve) => {
 		if (signal.aborted) return resolve();
@@ -260,12 +362,17 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 		platform: deps.platform,
 		signal: deps.signal,
 		record,
+		recipe: deps.recipe,
+		fetch: deps.fetch,
+		appEnv: deps.appEnv,
+		proxy: deps.proxy,
 		log,
 		fsErrors,
 		async exec(file, args, options) {
 			const started = Date.now();
 			log.event({ event: "exec", file, args: [...args] });
-			const result = await deps.run(file, args, options);
+			// The child never inherits the engine's own environment: what the stage gives it, or the system essentials.
+			const result = await deps.run(file, args, { ...options, env: options?.env ?? systemEnv(deps.layout.platform, deps.appEnv), replaceEnv: true });
 			log.raw(`$ ${file} ${args.join(" ")}\n${result.stdout}${result.stdout.endsWith("\n") || result.stdout === "" ? "" : "\n"}${result.stderr}\n`);
 			log.flush();
 			log.event({ event: "exec-result", file, code: result.code, timedOut: result.timedOut === true, ms: Date.now() - started });
@@ -281,6 +388,25 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 				...(deps.downloadIdleMs !== undefined ? { idleTimeoutMs: deps.downloadIdleMs } : {}),
 				log: (event) => log.event(event),
 			});
+		},
+		childEnv(extra) {
+			const need = (tool: string): string => {
+				const version = deps.state.version(tool);
+				if (version === null) throw new StageError("other", { stage: stage.name }, `${tool} is not active, and ${stage.name} needs it`);
+				return version;
+			};
+			const current: CurrentTools = { node: need("node"), git: need("git"), herdr: need("herdr") };
+			const gh = deps.state.version("gh");
+			const glab = deps.state.version("glab");
+			if (gh !== null) current.gh = gh;
+			if (glab !== null) current.glab = glab;
+			return {
+				...buildEnv({ layout: deps.layout, current, appEnv: deps.appEnv, optionalTools: deps.recipe.tools, ...(deps.proxy ? { proxy: deps.proxy } : {}) }),
+				...extra,
+			};
+		},
+		extractSelfExtractor(installer, sha256, dest) {
+			return extractSelfExtractor({ installer, sha256, dest, run: deps.run });
 		},
 		extract(archive, dest, stripComponents) {
 			return extractArchive({
@@ -357,7 +483,20 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 		} catch (error) {
 			log.event({ event: "detect-error", detail: (error as Error).message });
 		}
-		if (found !== null) return done({ status: "skipped-verified", attempts: 0, evidence: found.text, version: found.version });
+		if (found !== null) {
+			if (stage.recordDetect) {
+				await deps.state.setRecord(stage.name, {
+					status: "ok",
+					version: found.version,
+					evidence: deps.redact(found.text),
+					at: now().toISOString(),
+					hashes: record?.hashes ?? {},
+					dependsOn: found.dependsOn ?? {},
+					...(found.warnings !== undefined && found.warnings.length > 0 ? { warnings: found.warnings } : {}),
+				});
+			}
+			return done({ status: "skipped-verified", attempts: 0, evidence: found.text, version: found.version, ...(found.warnings ? { warnings: found.warnings } : {}) });
+		}
 	}
 
 	let planned: string | null = null;
@@ -382,10 +521,10 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			if (deps.signal.aborted) throw new StageError("other", { stage: stage.name }, "cancelled");
 			const evidence = await stage.verify(ctx);
 			log.event({ event: "verified", evidence: evidence.text });
-			// A key outside the data root is refused here, before anything is renamed into place.
-			for (const key of evidence.files ?? []) pathOfKey(deps.layout, key);
+			// A key outside the data root is refused here, and the files are hashed where they are now (the staged copies), before anything is renamed
+			// into place: a file that cannot be read fails the stage while the old version is still the active one (T4-F010 b).
+			const hashes = await hashFiles(deps.layout, evidence);
 			await stage.activate(ctx, evidence);
-			const hashes = await hashFiles(deps.layout, evidence.files ?? []);
 			cleanup(staging, fsErrors);
 			await deps.state.setRecord(stage.name, {
 				status: "ok",
@@ -394,12 +533,13 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 				at: now().toISOString(),
 				hashes,
 				dependsOn: evidence.dependsOn ?? {},
+				...(evidence.warnings !== undefined && evidence.warnings.length > 0 ? { warnings: evidence.warnings } : {}),
 			});
-			return done({ status: "installed", attempts: attempt, evidence: evidence.text, version: evidence.version });
+			return done({ status: "installed", attempts: attempt, evidence: evidence.text, version: evidence.version, ...(evidence.warnings ? { warnings: evidence.warnings } : {}) });
 		} catch (thrown) {
 			cleanup(staging, fsErrors);
 			const error = deps.signal.aborted ? new StageError("other", { stage: stage.name }, "cancelled") : classifyError(thrown, stage.name);
-			if (!deps.signal.aborted && attempt === 1 && RETRIED_ONCE[error.category]) {
+			if (!deps.signal.aborted && attempt === 1 && !stage.noRetry && RETRIED_ONCE[error.category]) {
 				log.event({ event: "retry", category: error.category, detail: error.message, afterMs: deps.retryDelayMs });
 				await sleep(deps.retryDelayMs, deps.signal);
 				continue;

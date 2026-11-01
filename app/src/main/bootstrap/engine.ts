@@ -6,6 +6,8 @@ import { netFetch, type Fetch } from "./download.ts";
 import { runGraph, sweepLeftovers, type GraphResult } from "./graph.ts";
 import { Logger, Redactor, SecretRefusedError, loadSecretPatterns, MIN_SECRET_LENGTH, type RotationOptions } from "./log.ts";
 import { parseStack, platformKey, type Stack } from "./stack.ts";
+import { engineRecipeOf, type EngineRecipe } from "./recipe-config.ts";
+import type { EnvLike } from "../env.ts";
 import { runStage, type Stage, type StageOutcome } from "./stage.ts";
 import { acquireEngineLock, StateStore } from "./state.ts";
 import { allStages } from "./stages/index.ts";
@@ -35,6 +37,13 @@ export interface EngineConfig {
 	secretPatterns: unknown;
 	/** Ignore `detect` and install everything (Repair). */
 	force?: boolean;
+	/**
+	 * The active recipe, validated by main with `validateRecipe(text, recipeValidationOptions(stack))`: its forges decide which code-host CLIs are
+	 * installed, its `tools` which optional tools (bun). Absent means no recipe yet (the welcome screen's preflight): no forge and no optional tool.
+	 */
+	recipe?: unknown;
+	/** The variables main resolved from the OS proxy setting (`resolveOsProxy`), handed to every child the engine starts. */
+	proxyEnv?: Record<string, string>;
 }
 
 /** Engine to main. */
@@ -61,7 +70,9 @@ export interface EngineDeps {
 	platform?: Platform;
 	run?: CommandRunner;
 	/** Default: the stages of `./stages`. */
-	stages?: (stack: Stack) => Stage[];
+	stages?: (stack: Stack, recipe: EngineRecipe, platform: AppPlatform) => Stage[];
+	/** The environment the constructed child environment starts from. Default: the engine process's own. */
+	appEnv?: EnvLike;
 	/** Default: the layout recorded in `state/layout.json`, computed once. */
 	layout?: Layout;
 	retryDelayMs?: number;
@@ -130,10 +141,11 @@ export function createEngine(deps: EngineDeps): Engine {
 			const stack = parseStack(config.stack);
 			const key = platformKey(process.platform, process.arch);
 			const state = new StateStore(layout, { onQuarantine: (file, moved) => logger.event({ event: "state-quarantined", file, moved }) });
-			const stages = (deps.stages ?? allStages)(stack);
-			logger.event({ event: "run-begin", stages: stages.map((s) => s.name), generation: stack.generation, force: config.force === true });
-			const removed = sweepLeftovers(layout);
-			if (removed.length > 0) logger.event({ event: "swept", removed });
+			const recipe = engineRecipeOf(config.recipe, stack);
+			const stages = (deps.stages ?? allStages)(stack, recipe, layout.platform);
+			logger.event({ event: "run-begin", stages: stages.map((s) => s.name), generation: stack.generation, force: config.force === true, forges: recipe.forges.map((f) => `${f.kind}:${f.host}`), tools: recipe.tools });
+			const swept = sweepLeftovers(layout);
+			if (swept.removed.length > 0 || swept.restored.length > 0) logger.event({ event: "swept", removed: swept.removed, restored: swept.restored });
 
 			const retryDelayMs = deps.retryDelayMs ?? 5000;
 			const result: GraphResult = await runGraph({
@@ -152,6 +164,9 @@ export function createEngine(deps: EngineDeps): Engine {
 						logFor: (name) => logger.stage(name),
 						redact: (text) => logger.redactor.redact(text),
 						retryDelayMs,
+						recipe,
+						appEnv: deps.appEnv ?? process.env,
+						...(config.proxyEnv ? { proxy: { env: config.proxyEnv, log: [] } } : {}),
 						...(deps.downloadIdleMs !== undefined ? { downloadIdleMs: deps.downloadIdleMs } : {}),
 						...(config.force ? { force: true } : {}),
 					}),

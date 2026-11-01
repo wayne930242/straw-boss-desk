@@ -296,7 +296,21 @@ export interface CurrentTools {
 	glab?: string;
 }
 
-export const toolDir = (layout: Layout, tool: "node" | "git" | "herdr" | "gh" | "glab", version: string): string =>
+/** The executable of a versioned tool inside its folder, relative to it, with `/` separators: where the stages put it and the path files name it. */
+export function toolExecutable(platform: AppPlatform, tool: string): string {
+	const exe = platform === "win32" ? ".exe" : "";
+	switch (tool) {
+		case "node": return platform === "win32" ? "node.exe" : "bin/node";
+		case "git": return `bin/git${exe}`;
+		case "herdr": return `herdr${exe}`;
+		case "gh":
+		case "glab": return `bin/${tool}${exe}`;
+		default: return `${tool}${exe}`;
+	}
+}
+
+/** `tools/<tool>/<version>`; `tool` is one of the five required tools or an optional tool's name (`bun`). */
+export const toolDir = (layout: Layout, tool: string, version: string): string =>
 	pathModule(layout.platform).join(layout.tools.root, tool, version);
 
 /**

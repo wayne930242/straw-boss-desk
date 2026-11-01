@@ -1,5 +1,5 @@
 import { posix, win32 } from "node:path";
-import { herdrBinary, toolPathEntries, type CurrentTools, type Layout } from "./paths.ts";
+import { herdrBinary, toolDir, toolPathEntries, type CurrentTools, type Layout } from "./paths.ts";
 
 // The constructed environment for every child (spec: Runtime supervisor, Environment). It starts from an allow-list of system essentials, never from
 // the app's own environment, so a PI_SUBAGENT_ID, a HERDR_* pane id, an SSH_AUTH_SOCK, or a GH_TOKEN of the author's shell cannot reach a child.
@@ -46,12 +46,34 @@ export const LOOPBACK = "127.0.0.1,localhost,::1";
 
 const MAC_BASE_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
+/**
+ * The system essentials alone (`SystemRoot`, `HOME`, `TEMP`, ...), taken from `appEnv` by name: what a child needs to start and nothing of the
+ * app's own variables. Stages that run a staged tool before it is active use it, since the constructed environment needs the active versions.
+ */
+export function systemEnv(platform: "win32" | "darwin", appEnv: EnvLike): EnvMap {
+	const win = platform === "win32";
+	const out: EnvMap = {};
+	for (const name of win ? WIN_ESSENTIALS : MAC_ESSENTIALS) {
+		const found = lookup(appEnv, name, win);
+		if (found) out[found[0]] = found[1];
+	}
+	return out;
+}
+
+/** The variables a launched optional tool needs beyond the PATH: where bun keeps its cache and global packages (spec: Tool paths). */
+export const optionalToolEnv = (layout: Layout, tool: string): EnvMap => (tool === "bun" ? { BUN_INSTALL: bunHome(layout) } : {});
+
+/** `<root>/tools/bun-home`: bun's `BUN_INSTALL`, so its cache and global packages stay under the app's `tools/` and not in the PM's `~/.bun`. */
+export const bunHome = (layout: Layout): string => (layout.platform === "win32" ? win32 : posix).join(layout.tools.root, "bun-home");
+
 export interface BuildEnvInput {
 	layout: Layout;
 	/** The active tool versions of `state/current.json`. */
 	current: CurrentTools;
 	/** The app's own environment: read for the allow-listed names only. */
 	appEnv: EnvLike;
+	/** The optional tools the active recipe names: each adds its own variables (bun: `BUN_INSTALL`). */
+	optionalTools?: readonly string[];
 	/** The OS proxy setting resolved by `resolveOsProxy`; variables the app's environment sets win over it. */
 	proxy?: OsProxy;
 	/** Decrypted from `secrets/linear.bin`. Pass it only for the Herdr server's environment, so panes and `ttt` see it and no file holds it. */
@@ -67,7 +89,7 @@ function lookup(env: EnvLike, name: string, fold: boolean): [string, string] | u
 	return undefined;
 }
 
-export function buildEnv({ layout, current, appEnv, proxy, linearApiKey }: BuildEnvInput): EnvMap {
+export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optionalTools }: BuildEnvInput): EnvMap {
 	const win = layout.platform === "win32";
 	const P = win ? win32 : posix;
 	const out: EnvMap = {};
@@ -119,7 +141,14 @@ export function buildEnv({ layout, current, appEnv, proxy, linearApiKey }: Build
 		// npm and pi trust the OS certificate store as well as Node's bundled one (supported by the pinned Node 24).
 		NODE_USE_SYSTEM_CA: "1",
 	});
-	if (!win) out.ZDOTDIR = layout.zdotdir;
+	if (!win) {
+		out.ZDOTDIR = layout.zdotdir;
+		// dugite-native's git is not relocatable on macOS: without these it looks for its helpers in `//libexec/git-core` and its templates in
+		// `//share/git-core/templates` ("remote-https is not a git command"). dugite's own JavaScript wrapper sets both (task 5 finding).
+		out.GIT_EXEC_PATH = posix.join(toolDir(layout, "git", current.git), "libexec", "git-core");
+		out.GIT_TEMPLATE_DIR = posix.join(toolDir(layout, "git", current.git), "share", "git-core", "templates");
+	}
+	for (const tool of optionalTools ?? []) Object.assign(out, optionalToolEnv(layout, tool));
 	if (linearApiKey !== undefined && linearApiKey !== "") out.LINEAR_API_KEY = linearApiKey;
 
 	for (const name of Object.keys(out)) {

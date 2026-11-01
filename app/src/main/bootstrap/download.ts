@@ -11,7 +11,7 @@ import { downloadUrlProblem, type Asset } from "./stack.ts";
 // and rollback read. A mismatch deletes the part, activates nothing, and is never retried.
 
 /** The part of `fetch` the engine uses. In the engine process it is Electron's `net.fetch` (OS proxy and certificate store); tests pass a plain `fetch`. */
-export type Fetch = (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+export type Fetch = (url: string, init?: { signal?: AbortSignal; method?: string }) => Promise<Response>;
 
 /** Electron's `net.fetch`, loaded when first used so Node-only tests never import `electron`. */
 export function netFetch(): Fetch {

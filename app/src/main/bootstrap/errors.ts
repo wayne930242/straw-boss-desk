@@ -12,6 +12,8 @@ export interface FailureParams {
 	what?: string;
 	/** other: the stage that failed. */
 	stage?: string;
+	/** network: why the host cannot be reached, when the check could tell: `path` (a VPN, a proxy, a firewall on the way) or `tls` (a certificate this computer does not trust: a proxy or certificate inspection). */
+	cause?: "path" | "tls";
 }
 
 /** Whether the engine tries a category again by itself, once, after the retry delay. Integrity is never retried: the bytes will not change. */
@@ -27,6 +29,8 @@ export const RETRIED_ONCE: Readonly<Record<FailureCategory, boolean>> = {
 export function failureSentence(category: FailureCategory, params: FailureParams): string {
 	switch (category) {
 		case "network":
+			if (params.cause === "path") return `Could not reach ${params.host ?? "the server"}: something on the network path (a VPN, a proxy, or a firewall) may be blocking it. Check the network and try again.`;
+			if (params.cause === "tls") return `The connection to ${params.host ?? "the server"} was refused because a proxy or certificate inspection on this network presents a certificate this computer does not trust. Ask whoever runs the network for its certificate, or use another network.`;
 			return `Could not reach ${params.host ?? "the server"}. Check the network and try again.`;
 		case "integrity":
 			return `The download of ${params.tool ?? "a tool"} did not match its published checksum, so nothing was installed.`;

@@ -12,6 +12,8 @@ export const DEFAULT_KEEP = 10;
 /** A registered value shorter than this would blank ordinary text; registering one is a programming error, not a secret. */
 export const MIN_SECRET_LENGTH = 4;
 const MAX_PENDING_LINE = 1024 * 1024;
+/** A PEM block that never closes drops at most this many lines after its BEGIN line, so a stray marker cannot swallow the rest of a stage's output (R4-F001). */
+export const MAX_PEM_LINES = 64;
 
 /**
  * `http://127.0.0.1:<port>/<token>`: the pi-straw-boss page URL carries its token as the first path segment. A segment of 16 or more URL-safe
@@ -172,6 +174,8 @@ export class StageLog {
 	#pending = "";
 	/** True between the line that opens a PEM block and the line that closes it: the lines in between are never written. */
 	#inBlock = false;
+	/** Lines dropped since the BEGIN line of the open block. */
+	#dropped = 0;
 
 	constructor(redactor: Redactor, file: RotatingFile, events: (fields: Record<string, LogValue>) => void) {
 		this.#redactor = redactor;
@@ -200,6 +204,7 @@ export class StageLog {
 	flush(): void {
 		this.#flushPending();
 		this.#inBlock = false;
+		this.#dropped = 0;
 	}
 
 	#flushPending(): void {
@@ -210,15 +215,30 @@ export class StageLog {
 
 	/**
 	 * One line of output. A PEM block spans lines, which a per-line redactor cannot see whole: the line that opens it is written with everything from
-	 * `-----BEGIN` on masked, and the lines up to the closing `-----END` are dropped.
+	 * `-----BEGIN` on masked, and the lines up to the closing `-----END` are dropped. The dropping ends at the END marker or after `MAX_PEM_LINES`
+	 * lines, whichever comes first, and any text after the END marker on its line is kept (R4-F001).
 	 */
 	#line(line: string): void {
 		if (this.#inBlock) {
-			if (PEM_END.test(line)) this.#inBlock = false;
+			const end = PEM_END.exec(line);
+			if (end !== null) {
+				this.#inBlock = false;
+				this.#dropped = 0;
+				const rest = line.slice(end.index + end[0].length);
+				if (rest.trim() !== "") this.#line(rest);
+				return;
+			}
+			if (++this.#dropped >= MAX_PEM_LINES) {
+				this.#inBlock = false;
+				this.#dropped = 0;
+			}
 			return;
 		}
 		const begin = PEM_BEGIN.exec(line);
-		if (begin !== null && !PEM_END.test(line.slice(begin.index + begin[0].length))) this.#inBlock = true;
+		if (begin !== null && !PEM_END.test(line.slice(begin.index + begin[0].length))) {
+			this.#inBlock = true;
+			this.#dropped = 0;
+		}
 		this.#file.append(`${this.#redactor.redact(line)}\n`);
 	}
 }

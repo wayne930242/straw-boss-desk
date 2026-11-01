@@ -1,8 +1,8 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import path, { dirname, basename, isAbsolute, join, posix, resolve, win32 } from "node:path";
+import path, { dirname, basename, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import type { CommandRunner, Locate } from "../platform/index.ts";
 import { StageError } from "./errors.ts";
-import { removeTree } from "./fsutil.ts";
+import { removeTree, sha256File } from "./fsutil.ts";
 import { isInside } from "../paths.ts";
 
 // Archive extraction (spec: Decisions, Archive extraction). The system `tar` (bsdtar, which reads tar, gzip, and zip) is called by absolute path:
@@ -74,11 +74,17 @@ export interface Extracted {
 	tar: string;
 }
 
+/** What bsdtar says when the disk is full: libarchive's strerror on macOS ("No space left on device") and the Windows message on `tar.exe` (T4-F013). */
+const DISK_FULL = /No space left on device|not enough space on the disk|There is not enough space|disk is full|ENOSPC/i;
+
 async function tar(request: ExtractRequest, tarPath: string, args: string[], cwd: string): Promise<string> {
 	const result = await request.run(tarPath, args, { timeoutMs: TAR_LIMIT_MS, cwd });
 	if (result.code !== 0) {
 		const why = result.timedOut ? "timed out" : `exit ${result.code}`;
-		throw new StageError("other", { stage: "extract" }, `tar ${args[0]} ${request.archive} failed (${why}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
+		const detail = `tar ${args[0]} ${request.archive} failed (${why}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`;
+		// The category decides whether the engine tries again and what the PM reads: a full disk is not "tar failed".
+		if (DISK_FULL.test(result.stderr)) throw new StageError("disk", {}, detail);
+		throw new StageError("other", { stage: "extract" }, detail);
 	}
 	return result.stdout;
 }
@@ -108,7 +114,7 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 	const strip = request.stripComponents ? ["--strip-components", String(request.stripComponents)] : [];
 	try {
 		await tar(request, tarPath, ["-xf", archiveArgument(archive, dest), ...strip], dest);
-		checkLinks(archive, dest);
+		checkExtractedTree(archive, dest);
 	} catch (error) {
 		removeTree(dest);
 		mkdirSync(dest, { recursive: true });
@@ -117,8 +123,60 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 	return { entries: names.length, tar: tarPath };
 }
 
+// ---- self-extracting installers --------------------------------------------------------------------------------------
+
+/** A self-extractor (PortableGit's `.7z.exe`) gets this long; it unpacks about 400 MB. */
+const SFX_LIMIT_MS = 15 * 60 * 1000;
+
+export interface SelfExtractRequest {
+	/** The downloaded installer, `tools/downloads/<file>`. */
+	installer: string;
+	/** Its pinned SHA-256: the bytes are hashed again right before they run, so nothing but the verified download is ever executed. */
+	sha256: string;
+	/** A new or empty folder; the self-extractor's output lands under it. */
+	dest: string;
+	run: CommandRunner;
+}
+
+/**
+ * Runs a 7-Zip self-extracting executable (`<installer> -o<dest> -y`) and checks what it wrote. Three rules, each from the tar findings of task 4:
+ * the program runs only on bytes whose SHA-256 equals the pin at this moment (it is code, not data); it gets only ASCII arguments, since a Windows
+ * program may read its command line in the ANSI code page (`-o` names `dest` relative to the working directory, which Windows passes as UTF-16); and
+ * what it extracted passes the same link and special-file walk as a tar extraction.
+ */
+export async function extractSelfExtractor(request: SelfExtractRequest): Promise<Extracted> {
+	const { installer, sha256, dest } = request;
+	mkdirSync(dest, { recursive: true });
+	if (readdirSync(dest).length > 0) throw new ExtractRefused(installer, `the destination ${dest} is not empty`);
+	const got = await sha256File(installer);
+	if (got !== sha256) throw new StageError("integrity", { tool: basename(installer) }, `${installer} no longer matches its pin just before it runs: SHA256 is ${got}, the pin says ${sha256}`);
+	const out = relative(dirname(dest), dest);
+	if (!/^[\x21-\x7e]+$/.test(out) || out.startsWith("-")) throw new ExtractRefused(installer, `the destination name ${JSON.stringify(out)} has characters the extractor cannot read in its arguments`);
+	try {
+		const result = await request.run(installer, [`-o${out}`, "-y"], { timeoutMs: SFX_LIMIT_MS, cwd: dirname(dest) });
+		if (result.code !== 0) {
+			const why = result.timedOut ? "timed out" : `exit ${result.code}`;
+			const detail = `${basename(installer)} failed (${why}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`;
+			if (DISK_FULL.test(`${result.stderr}${result.stdout}`)) throw new StageError("disk", {}, detail);
+			throw new StageError("other", { stage: "extract" }, detail);
+		}
+		checkExtractedTree(installer, dest);
+	} catch (error) {
+		removeTree(dest);
+		mkdirSync(dest, { recursive: true });
+		throw error;
+	}
+	return { entries: countFiles(dest), tar: installer };
+}
+
+function countFiles(dir: string): number {
+	let n = 0;
+	for (const entry of readdirSync(dir, { withFileTypes: true })) n += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1;
+	return n;
+}
+
 /** Every link of the extracted tree must stay inside it, lexically and after resolving the links already there, and nothing but files, folders, and links may be in it. */
-function checkLinks(archive: string, dest: string): void {
+export function checkExtractedTree(archive: string, dest: string): void {
 	const realDest = realpathSync.native(dest);
 	const P = process.platform === "win32" ? win32 : posix;
 	const walk = (dir: string): void => {

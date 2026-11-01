@@ -1,7 +1,7 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Layout } from "../paths.ts";
-import { removeTree } from "./fsutil.ts";
+import { removeTree, renameRetry } from "./fsutil.ts";
 import type { Lane, Stage, StageOutcome } from "./stage.ts";
 
 // The stage graph (spec: Bootstrap engine): stages whose `needs` are done run; independent downloads three at a time, npm steps one at a time.
@@ -113,15 +113,30 @@ export async function runGraph(options: GraphOptions): Promise<GraphResult> {
 
 // ---- leftovers of an interrupted run ---------------------------------------------------------------------------------
 
-const LEFTOVER = /\.(staging|replaced)$/;
+const STAGING = /\.staging$/;
+const REPLACED = /\.replaced$/;
+
+export interface SweepResult {
+	/** Paths deleted: staging folders, files, and stale `.replaced` copies. */
+	removed: string[];
+	/** Paths put back: a `<v>.replaced` whose `<v>` was missing (T4-F010), so `current.json` names a folder that exists again. */
+	restored: string[];
+}
 
 /**
- * Deletes what a run that was killed mid-stage leaves: `tools/<tool>/<version>.staging`, a `.replaced` folder that was moved aside, and unfinished
- * `.part` downloads. Called when an engine run starts, under the engine lock, so no other run can own them. Returns the paths it removed.
+ * Cleans up after a run that was killed mid-stage, under the engine lock (no other run can own what it finds):
+ *
+ * - `tools/<tool>/<version>.staging`, `tools/<name>.staging`, and the `.staging` files of `tools/bin` are deleted;
+ * - `<x>.replaced` is the previous copy that `activateDir` and `activateFiles` move aside before the new one is renamed into place. When `<x>` is
+ *   there, the new copy won and the old one is deleted; when `<x>` is missing the run was killed between the two renames, `current.json` still
+ *   names `<x>`, and the old copy is moved back (T4-F010 a);
+ * - unfinished `.part` downloads are deleted.
+ *
+ * It looks under `tools/`, one level down, and in the agent's `bin` folder (where `fd-rg` replaces files).
  */
-export function sweepLeftovers(layout: Layout): string[] {
-	const removed: string[] = [];
-	const sweep = (dir: string, match: (name: string) => boolean): void => {
+export function sweepLeftovers(layout: Layout): SweepResult {
+	const result: SweepResult = { removed: [], restored: [] };
+	const sweep = (dir: string): void => {
 		let names: string[];
 		try {
 			names = readdirSync(dir);
@@ -129,15 +144,26 @@ export function sweepLeftovers(layout: Layout): string[] {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
 			throw error;
 		}
+		const present = new Set(names);
 		for (const name of names) {
-			if (!match(name)) continue;
 			const path = join(dir, name);
-			removeTree(path);
-			removed.push(path);
+			if (STAGING.test(name)) {
+				removeTree(path);
+				result.removed.push(path);
+			} else if (REPLACED.test(name)) {
+				const original = name.replace(REPLACED, "");
+				if (present.has(original)) {
+					removeTree(path);
+					result.removed.push(path);
+				} else {
+					renameRetry(path, join(dir, original));
+					result.restored.push(path);
+				}
+			}
 		}
 	};
 	const tools = layout.tools.root;
-	sweep(tools, (n) => LEFTOVER.test(n));
+	sweep(tools);
 	let toolDirs: string[] = [];
 	try {
 		toolDirs = readdirSync(tools);
@@ -146,8 +172,24 @@ export function sweepLeftovers(layout: Layout): string[] {
 	}
 	for (const name of toolDirs) {
 		if (name === "downloads") continue;
-		sweep(join(tools, name), (n) => LEFTOVER.test(n));
+		sweep(join(tools, name));
 	}
-	sweep(layout.tools.downloads, (n) => n.endsWith(".part"));
-	return removed;
+	sweep(join(layout.agent, "bin"));
+	// The private gitconfig is edited through a staging copy beside it.
+	const gitconfigStaging = `${layout.gitconfig}.staging`;
+	if (existsSync(gitconfigStaging)) {
+		removeTree(gitconfigStaging);
+		result.removed.push(gitconfigStaging);
+	}
+	try {
+		for (const name of readdirSync(layout.tools.downloads)) {
+			if (!name.endsWith(".part")) continue;
+			const path = join(layout.tools.downloads, name);
+			removeTree(path);
+			result.removed.push(path);
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	return result;
 }
