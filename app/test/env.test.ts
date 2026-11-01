@@ -236,11 +236,51 @@ describe("the OS proxy setting", () => {
 		assert.deepEqual((await resolveOsProxy({ resolve, forgeHosts: [], appEnv: { http_proxy: "http://mine:1" } })).env, {});
 	});
 
-	it("keeps the app's own NO_PROXY when the app names none of the proxies", async () => {
-		const proxy = await resolveOsProxy({ resolve: async () => "PROXY p:8080", forgeHosts: [], appEnv: { NO_PROXY: "mine.example" } });
+	it("joins the app's own bypass list with the resolved one when the app names none of the proxies", async () => {
+		const proxy = await resolveOsProxy({ resolve: async (url) => (url.includes("gitlab.corp.example") ? "DIRECT" : "PROXY p:8080"), forgeHosts: ["gitlab.corp.example"], appEnv: { NO_PROXY: "mine.example" } });
 		const env = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: { NO_PROXY: "mine.example" }, proxy });
-		assert.equal(env.NO_PROXY, "mine.example");
+		assert.equal(env.NO_PROXY, `${LOOPBACK},gitlab.corp.example,mine.example`);
+		assert.equal(env.no_proxy, env.NO_PROXY, "both spellings hold the same list on macOS");
 		assert.equal(env.HTTPS_PROXY, "http://p:8080");
+	});
+
+	// T6-F003: Git (curl) reads the lowercase name first, so a PM's own lowercase `no_proxy` used to hide the resolved NO_PROXY from it.
+	it("makes no_proxy and NO_PROXY the same union when the PM set only the lowercase one, so a DIRECT forge host bypasses the proxy for a client that reads it first", async () => {
+		const resolve = async (url: string) => (url.includes("gitlab.corp.example") ? "DIRECT" : "PROXY p:8080");
+		const appEnv = { no_proxy: "corp.example,LOCALHOST" };
+		const proxy = await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv });
+		const env = buildEnv({ layout: fakeLayout("darwin"), current, appEnv, proxy });
+		assert.equal(env.no_proxy, `${LOOPBACK},gitlab.corp.example,corp.example`, "localhost is not repeated; the PM's entries follow the resolved ones");
+		assert.equal(env.NO_PROXY, env.no_proxy);
+		// With both spellings set and different, the union goes to both.
+		const both = { no_proxy: "a.example", NO_PROXY: "b.example" };
+		const env2 = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: both, proxy: await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv: both }) });
+		assert.equal(env2.no_proxy, `${LOOPBACK},gitlab.corp.example,b.example,a.example`);
+		assert.equal(env2.NO_PROXY, env2.no_proxy);
+	});
+
+	it("keeps one variable on Windows, under the name the PM gave it, holding the union", async () => {
+		const resolve = async (url: string) => (url.includes("gitlab.corp.example") ? "DIRECT" : "PROXY p:8080");
+		for (const [name, expected] of [["no_proxy", "no_proxy"], ["NO_PROXY", "NO_PROXY"], [null, "NO_PROXY"]] as const) {
+			const appEnv = name === null ? {} : { [name]: "corp.example" };
+			const proxy = await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv });
+			const env = buildEnv({ layout: fakeLayout("win32"), current, appEnv, proxy });
+			const keys = Object.keys(env).filter((k) => k.toLowerCase() === "no_proxy");
+			assert.deepEqual(keys, [expected], String(name));
+			assert.equal(env[expected], name === null ? `${LOOPBACK},gitlab.corp.example` : `${LOOPBACK},gitlab.corp.example,corp.example`);
+		}
+	});
+
+	it("sets both spellings on macOS when the PM set neither, and leaves a PM's list alone when the OS proxy supplies none", async () => {
+		const resolve = async () => "PROXY p:8080";
+		const none = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: {}, proxy: await resolveOsProxy({ resolve, forgeHosts: [], appEnv: {} }) });
+		assert.equal(none.NO_PROXY, LOOPBACK);
+		assert.equal(none.no_proxy, LOOPBACK);
+		// A proxy the app's environment names: the OS setting is not used, so the PM's lists pass through unchanged, each spelling as it was.
+		const own = { HTTPS_PROXY: "http://mine:1", no_proxy: "a.example" };
+		const env = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: own, proxy: await resolveOsProxy({ resolve, forgeHosts: [], appEnv: own }) });
+		assert.equal(env.no_proxy, "a.example");
+		assert.equal(env.NO_PROXY, undefined);
 	});
 
 	it("rejects a forge host that is not a host name", async () => {

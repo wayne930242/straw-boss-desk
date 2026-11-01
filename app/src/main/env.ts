@@ -97,6 +97,32 @@ function lookup(env: EnvLike, name: string, fold: boolean): [string, string] | u
 	return undefined;
 }
 
+/**
+ * Puts the resolved bypass list into `out`, joined with whatever list the PM's own environment set (T6-F003). The resolved list carries the loopback names and
+ * the forge hosts the PAC file sends DIRECT; a lowercase `no_proxy` of the PM's would hide the upper-case one from clients that read the lowercase name first
+ * (curl, so Git), and the PM's list alone would send the loopback calls and those hosts through the proxy. So both spellings hold the same union on macOS,
+ * where names are case-sensitive; on Windows there is one variable, kept under the name the PM gave it.
+ */
+function mergeNoProxy(out: EnvMap, resolved: string, win: boolean): void {
+	const spellings = Object.keys(out).filter((k) => k.toLowerCase() === "no_proxy");
+	const seen = new Set<string>();
+	const entries: string[] = [];
+	for (const entry of [resolved, ...spellings.map((k) => out[k] as string)].flatMap((list) => list.split(","))) {
+		const trimmed = entry.trim();
+		if (trimmed !== "" && !seen.has(trimmed.toLowerCase())) {
+			seen.add(trimmed.toLowerCase());
+			entries.push(trimmed);
+		}
+	}
+	const value = entries.join(",");
+	if (win) {
+		out[spellings[0] ?? "NO_PROXY"] = value;
+		return;
+	}
+	out.NO_PROXY = value;
+	out.no_proxy = value;
+}
+
 export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optionalTools }: BuildEnvInput): EnvMap {
 	const win = layout.platform === "win32";
 	const P = win ? win32 : posix;
@@ -115,7 +141,8 @@ export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optiona
 			if (key !== undefined && value !== undefined && value !== "") out[key] = value;
 		}
 	}
-	for (const [name, value] of Object.entries(proxy?.env ?? {})) if (!taken(name)) out[name] = value;
+	for (const [name, value] of Object.entries(proxy?.env ?? {})) if (name !== "NO_PROXY" && !taken(name)) out[name] = value;
+	if (proxy?.env.NO_PROXY !== undefined) mergeNoProxy(out, proxy.env.NO_PROXY, win);
 
 	const own = P.delimiter;
 	const entries = toolPathEntries(layout, current);
