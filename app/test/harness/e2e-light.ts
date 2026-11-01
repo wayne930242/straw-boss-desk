@@ -17,6 +17,7 @@ import { platformKey } from "../../src/main/bootstrap/stack.ts";
 import { ALT_BUN, ALT_GH } from "./alt-pins.ts";
 import { tarGz } from "./archives.ts";
 import { testPlatform, secretPatterns } from "./engine-fixture.ts";
+import { createPlatform } from "../../src/main/platform/index.ts";
 
 export const platformOfHost: AppPlatform = process.platform === "win32" ? "win32" : "darwin";
 export const isWindows = process.platform === "win32";
@@ -148,7 +149,9 @@ export async function runWorld(world: World, options: RunOptions = {}): Promise<
 		emit: (event) => events.push(event),
 		fetch: countingFetch(world, requests),
 		layout: world.layout,
-		platform: testPlatform(),
+		// The process table is the stand-in of `testPlatform` (no PowerShell for the engine lock), except `listUnder`: the self-extractor's "nothing still runs
+		// from the staging folder" check (T5-F005) is the real one, so a PortableGit whose post-install outlived the installer would fail the run.
+		platform: { ...testPlatform(), processes: { ...testPlatform().processes, listUnder: createPlatform().processes.listUnder } },
 		appEnv: world.appEnv,
 		retryDelayMs: 1000,
 		stages: (stack, recipe, platform) => toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}),
