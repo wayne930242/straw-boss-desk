@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import http from "node:http";
-import net from "node:net";
-import type { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { buildEnv, firstProxyEntry, LOOPBACK, NEVER_CARRY, PASS_THROUGH, resolveOsProxy } from "../src/main/env.ts";
+import { connectProxy } from "./harness/connect-proxy.ts";
 import { computeLayout, type AppPlatform, type CurrentTools, type Layout } from "../src/main/paths.ts";
 
 const current: CurrentTools = { node: "24.22.1", git: "2.56.0", herdr: "0.9.5" };
@@ -251,30 +249,6 @@ describe("the OS proxy setting", () => {
 });
 
 describe("a child npm goes through the OS proxy setting (a test-local CONNECT proxy)", () => {
-	/** A CONNECT proxy on 127.0.0.1 that tunnels to the requested host and records what was asked for. */
-	async function connectProxy(): Promise<{ port: number; connects: string[]; close(): Promise<void> }> {
-		const connects: string[] = [];
-		const sockets = new Set<Duplex>();
-		const server = http.createServer((_, res) => { res.writeHead(405).end(); });
-		server.on("connect", (req, client, head) => {
-			connects.push(req.url ?? "");
-			const [host, port] = (req.url ?? "").split(":");
-			const upstream = net.connect(Number(port), host ?? "", () => {
-				client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-				upstream.write(head);
-				upstream.pipe(client);
-				client.pipe(upstream);
-			});
-			for (const s of [client, upstream]) { sockets.add(s); s.on("close", () => sockets.delete(s)); s.on("error", () => s.destroy()); }
-		});
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		return {
-			port: (server.address() as net.AddressInfo).port,
-			connects,
-			close: () => new Promise<void>((resolve) => { for (const s of sockets) s.destroy(); server.close(() => resolve()); }),
-		};
-	}
-
 	const npmCli = (): string => {
 		const node = dirname(process.execPath);
 		const candidates = [join(node, "node_modules", "npm", "bin", "npm-cli.js"), join(node, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")];
