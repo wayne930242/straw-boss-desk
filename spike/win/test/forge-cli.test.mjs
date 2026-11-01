@@ -118,13 +118,14 @@ describe("launcher text", () => {
   it("cmd: the exact variables the spec names", () => {
     const gh = cmdLauncher("github");
     const glab = cmdLauncher("gitlab");
-    assert.ok(gh.includes('set "GH_CONFIG_DIR=') && gh.includes('set "GH_PROMPT_DISABLED=1"') && gh.includes('set "GH_NO_UPDATE_NOTIFIER=1"'));
+    assert.ok(gh.includes('set "GH_CONFIG_DIR=') && gh.includes('set "GH_PROMPT_DISABLED=1"') && gh.includes('set "GH_NO_UPDATE_NOTIFIER=1"') && gh.includes('set "GH_TELEMETRY=disabled"'));
     assert.ok(glab.includes('set "GLAB_CONFIG_DIR=') && glab.includes('set "GLAB_NO_PROMPT=1"') && glab.includes('set "GLAB_CHECK_UPDATE=false"'));
   });
   it("sh: LF lines, a shebang, exported variables, an exec of the pinned binary", () => {
     const text = shLauncher("github", "win32");
     assert.ok(text.startsWith("#!/bin/sh\n") && !text.includes("\r"));
-    assert.ok(text.includes("export GH_CONFIG_DIR GH_PROMPT_DISABLED GH_NO_UPDATE_NOTIFIER"));
+    assert.ok(text.includes("export GH_CONFIG_DIR GH_PROMPT_DISABLED GH_NO_UPDATE_NOTIFIER GH_TELEMETRY"));
+    assert.ok(text.includes("GH_TELEMETRY=disabled\n"), "gh telemetry is switched off (K2)");
     assert.ok(text.includes(`unset ${UNSET.join(" ")}`));
     assert.ok(text.includes('CDPATH= cd -- "$d"') && text.includes('CDPATH= cd -- "$d/../.."'), "cd ignores CDPATH");
     assert.ok(!/\bcd "/.test(text), "no bare cd");

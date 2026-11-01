@@ -17,7 +17,7 @@ export const FORGES = {
     cli: "gh",
     configEnv: "GH_CONFIG_DIR",
     configDir: "gh",
-    env: [["GH_PROMPT_DISABLED", "1"], ["GH_NO_UPDATE_NOTIFIER", "1"]],
+    env: [["GH_PROMPT_DISABLED", "1"], ["GH_NO_UPDATE_NOTIFIER", "1"], ["GH_TELEMETRY", "disabled"]],
   },
   gitlab: {
     cli: "glab",
