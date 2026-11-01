@@ -205,6 +205,8 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 	const textFiles = launcherFiles(platform, specs);
 	const shimNames = shimTools.flatMap(windowsShims);
 	const binExe = (ctx: StageContext, name: string): string => join(ctx.layout.tools.binExe, name);
+	/** The folder a probe runs in: bun asks for a `package.json` even to print its cache folder. */
+	const probeOf = (ctx: StageContext): string => join(stagingOf(ctx), "probe");
 	return {
 		name: "launchers",
 		needs: ["tool-paths"],
@@ -240,6 +242,8 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 			// The staged launchers find their root from their own place (`tools/bin.staging/../..`) and read the `paths` files beside them: copy those in
 			// for the check. They are not part of the set that is renamed into `tools/bin`.
 			for (const name of Object.keys(pathFiles(platform, ctx.layout, versionsFor(ctx, enabled), enabled))) copyFileSync(toolsBin(ctx, name), join(dir, name));
+			mkdirSync(probeOf(ctx), { recursive: true });
+			writeFileSync(join(probeOf(ctx), "package.json"), '{"name":"sbd-launcher-probe","private":true}\n');
 			if (shimNames.length > 0) mkdirSync(shimStagingOf(ctx), { recursive: true });
 			for (const tool of shimTools) {
 				const version = ctx.versionsOf([tool])[tool] as string;
@@ -253,11 +257,16 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 			const env = systemEnv(platform, ctx.appEnv);
 			const versions = versionsFor(ctx, enabled);
 			const targets = specs.map((spec) => ({ spec, tool: spec.pathVar === "SBD_GH" ? "gh" : spec.pathVar === "SBD_GLAB" ? "glab" : spec.pathVar.slice(4).toLowerCase() }));
-			/** The first output line of the staged launcher. A Windows .cmd cannot be spawned directly (Node refuses it), and cmd.exe takes only names the app chose: run it by name from its own folder. */
-			const through = async (spec: LauncherSpec, args: readonly string[]): Promise<string> => {
-				if (!win) return runLine(ctx, join(dir, spec.name), args);
-				const result = await ctx.exec(ctx.platform.locate.system("cmd"), ["/d", "/c", `${spec.name}.cmd`, ...args], { cwd: dir, env, timeoutMs: 120_000 });
-				if (result.code !== 0) throw new StageError("other", { stage: "launchers" }, `${spec.name}.cmd ${args.join(" ")} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`);
+			/**
+			 * The first output line of the staged launcher. A Windows .cmd cannot be spawned directly (Node refuses it), and cmd.exe takes only names the
+			 * app chose: run it by name, from its own folder, or, with a `cwd` of the caller's, from there with the staged folder first on the PATH.
+			 */
+			const through = async (spec: LauncherSpec, args: readonly string[], cwd?: string): Promise<string> => {
+				if (!win && cwd === undefined) return runLine(ctx, join(dir, spec.name), args);
+				const result = win
+					? await ctx.exec(ctx.platform.locate.system("cmd"), ["/d", "/c", `${spec.name}.cmd`, ...args], { cwd: cwd ?? dir, env: cwd === undefined ? env : { ...env, PATH: dir }, timeoutMs: 120_000 })
+					: await ctx.exec(join(dir, spec.name), args, { cwd, env, timeoutMs: 120_000 });
+				if (result.code !== 0) throw new StageError("other", { stage: "launchers" }, `${spec.name} ${args.join(" ")} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`);
 				return result.stdout.trim().split(/\r?\n/)[0] ?? "";
 			};
 			for (const { spec, tool } of targets) {
@@ -267,7 +276,7 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 				lines.push(`${spec.name} -> ${line}`);
 				if (probe && spec.probe !== undefined) {
 					// Where the tool says it keeps its files. If it cannot read the folders the launcher gave it (T5-F002), it keeps them in the project.
-					const printed = await through(spec, spec.probe.args);
+					const printed = await through(spec, spec.probe.args, probeOf(ctx));
 					const expected = join(ctx.layout.root, ...spec.probe.folder.split("/"));
 					if (!sameFolder(printed, expected)) {
 						throw new StageError(
