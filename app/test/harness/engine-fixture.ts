@@ -18,9 +18,9 @@ import type { FixtureServer } from "./fixture-server.ts";
 export const currentKey = (): PlatformKey => platformKey(process.platform, process.arch);
 
 /** A scratch directory outside the repository and the real home; the root inside it has a space and CJK characters, as the spec's CI root does. */
-export function scratchRoot(prefix = "sbd-eng-"): { base: string; root: string } {
+export function scratchRoot(prefix = "sbd-eng-", rootName = "root 測試"): { base: string; root: string } {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
-	const root = join(base, "root 測試");
+	const root = join(base, rootName);
 	mkdirSync(root, { recursive: true });
 	return { base, root };
 }

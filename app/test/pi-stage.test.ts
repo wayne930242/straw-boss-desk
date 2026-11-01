@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
-import { binEntry, binShim, installedFiles, npmGlobalPin, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
+import { binEntry, binScript, binShim, installedFiles, npmGlobalPin, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
 import { npmFailure, npmFailureKind } from "../src/main/bootstrap/npm.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import type { Stack } from "../src/main/bootstrap/stack.ts";
@@ -38,8 +38,8 @@ interface Fixture {
 }
 
 /** A root whose `node`, `git`, and `herdr` are active (as the stages before `pi` leave them), and an app environment that is the scratch folder's own. */
-async function fixture(): Promise<Fixture> {
-	const made = scratchRoot("sbd-pi-");
+async function fixture(rootName?: string): Promise<Fixture> {
+	const made = scratchRoot("sbd-pi-", rootName);
 	scratch.push(made.base);
 	const layout = testLayout(made.root);
 	installFakeNode(layout, "24.0.0");
@@ -156,6 +156,49 @@ describe("the pi stage against a local registry", () => {
 			registry.publicHost = "127.0.0.1";
 			await proxy.close();
 		}
+	});
+});
+
+// T6-F001: the default root holds the profile folder's name, which can carry `&`, `^`, `!`, or `%`. The stage runs the package's bin script with the
+// private Node (what the `pi.cmd` shim runs), never npm's `pi.cmd` wrapper, whose `SET dp0=%~dp0` breaks under `&` and `^`.
+const HOSTILE_ROOTS = ["a^b!c%d&e 測試", "R&D", "a^b", "100%", "x!y!", "(1) b"];
+describe("the pi stage under a root with cmd's special characters (T6-F001), Windows only", { skip: isWindows ? false : "Windows only: cmd.exe's parsing of the wrapper npm writes" }, () => {
+	const hostile = registry.publish(PI, "1.5.0");
+	for (const name of HOSTILE_ROOTS) {
+		it(`installs and prints the pin under ${JSON.stringify(name)}`, async () => {
+			const f = await fixture(name);
+			const { outcome } = await runPi(f, hostile);
+			assert.equal(outcome?.status, "installed", JSON.stringify(outcome));
+			assert.match(outcome?.evidence ?? "", /pi --version -> 1\.5\.0/);
+			// The script that ran is the package's own, which the shim names too.
+			const script = binScript(f.layout, hostile, "pi");
+			assert.ok(script !== null && existsSync(script.absolute), "the bin script is where the manifest says");
+		});
+	}
+});
+
+describe("where the bin script is", () => {
+	const published = registry.publish(PI, "1.6.0");
+
+	it("is the manifest's bin entry under the package folder, as an absolute path and as the place under the root the Windows shim writes", async () => {
+		const f = await fixture();
+		assert.equal(binScript(f.layout, published, "pi"), null, "nothing installed yet");
+		const { outcome } = await runPi(f, published);
+		assert.equal(outcome?.status, "installed", JSON.stringify(outcome));
+		const script = binScript(f.layout, published, "pi");
+		assert.ok(script !== null && existsSync(script.absolute));
+		assert.equal(script?.relative, "tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js");
+	});
+
+	it("is null for an entry that climbs out of the package, or a manifest without the bin", () => {
+		const f = testLayout(join(scratchRoot("sbd-pi-b-").root));
+		const dir = join(f.tools.npm, ...(isWindows ? ["node_modules"] : ["lib", "node_modules"]), "@earendil-works", "pi-coding-agent");
+		mkdirSync(dir, { recursive: true });
+		const pin = { name: PI, version: "1.0.0", integrity: "sha512-x" };
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.0.0", bin: { pi: "../../escape.js" } }));
+		assert.equal(binScript(f, pin, "pi"), null);
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.0.0" }));
+		assert.equal(binScript(f, pin, "pi"), null);
 	});
 });
 

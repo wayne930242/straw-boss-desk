@@ -300,14 +300,17 @@ describe("tools/bin/paths.sh and paths.cmd", () => {
 		assert.ok(mac.includes('SBD_GH="$SBD_APP_ROOT/tools/gh/2.103.3/bin/gh"'));
 		assert.ok(mac.includes('SBD_BUN="$SBD_APP_ROOT/tools/bun/1.2.23/bun"'));
 		assert.ok(!mac.includes("SBD_GIT_BASH"), "bash.exe is Windows only");
+		assert.ok(!mac.includes("SBD_NODE"), "the pi.cmd shim, which runs node itself, is Windows only");
 		const win = pathsCmd(fakeLayout("win32"), winVersions, enabled);
 		assert.ok(win.includes("tools\\bin;%SBD_APP_ROOT%\\tools\\bin-exe;%SBD_APP_ROOT%\\tools\\node\\24.22.1;%SBD_APP_ROOT%\\tools\\npm;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\cmd;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\bin;%SBD_APP_ROOT%\\tools\\herdr\\0.9.5"), win);
 		assert.ok(win.includes('set "SBD_GIT_BASH=%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\bin\\bash.exe"'));
+		assert.ok(win.includes('set "SBD_NODE=%SBD_APP_ROOT%\\tools\\node\\24.22.1\\node.exe"'), "pi.cmd runs node by this line (T6-F001)");
 		assert.ok(win.includes('set "SBD_BUN=%SBD_APP_ROOT%\\tools\\bun\\1.2.23\\bun.exe"'));
 		assert.ok(win.includes("\r\n") && !win.replace(/\r\n/g, "").includes("\n"));
 		const winSh = pathsSh(fakeLayout("win32"), winVersions, enabled);
 		assert.ok(winSh.includes('SBD_PATH="$SBD_APP_ROOT/tools/bin;$SBD_APP_ROOT/tools/bin-exe;$SBD_APP_ROOT/tools/node/24.22.1;'), "Windows: `;` between mixed-form paths");
 		assert.ok(winSh.includes('SBD_GIT_BASH="$SBD_APP_ROOT/tools/git/2.56.0.3/bin/bash.exe"'));
+		assert.ok(winSh.includes('SBD_NODE="$SBD_APP_ROOT/tools/node/24.22.1/node.exe"'));
 	});
 
 	it("name only the enabled tools: no SBD_BUN without bun, no SBD_GH without gh", () => {

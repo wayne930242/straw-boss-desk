@@ -7,7 +7,8 @@ import { toolDir, toolExecutable, toolPathEntries, type AppPlatform, type Curren
 // OEM code page, so a user folder with CJK characters written into one would be decoded wrongly).
 
 // Format 2 (task 5b): on Windows `tools/bin-exe` follows `tools/bin` in the PATH list (T5-F001).
-export const PATHS_FORMAT = 2;
+// Format 3 (task 6b, T6-F001): on Windows `SBD_NODE` names the private Node, which `pi.cmd` runs the pi script with.
+export const PATHS_FORMAT = 3;
 
 /** What a paths file lists beyond Node, Git, and Herdr. */
 export interface EnabledTools {
@@ -39,6 +40,7 @@ export function pathVariables(layout: Layout, versions: PathVersions, enabled: E
 		out.push([variableOf(tool), rel(tool, version)]);
 	}
 	if (layout.platform === "win32") {
+		out.push(["SBD_NODE", rel("node", versions.node)]);
 		out.push(["SBD_GIT_BASH", relative(layout, toolDir(layout, "git", versions.git), "bin/bash.exe")]);
 	}
 	return out;

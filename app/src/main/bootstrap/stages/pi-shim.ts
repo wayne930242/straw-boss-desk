@@ -6,7 +6,8 @@ import { StageError } from "../errors.ts";
 import { activateFiles, detectFromRecord, fileKey, type Evidence, type Stage, type StageContext } from "../stage.ts";
 import { planEnsureFirst } from "../../platform/win.ts";
 import type { EnabledTools } from "./path-files.ts";
-import { everyShimFile, shimFiles } from "./shim-files.ts";
+import { binScript, npmGlobalPin } from "./pi.ts";
+import { everyShimFile, shimFiles, shimNames } from "./shim-files.ts";
 import { expectVersion } from "./support.ts";
 
 // The `pi-shim` stage (spec: Stages; Panes on Windows; Writing the PATH entry). Windows only: `tools\shims` with `pi.cmd`, `pi`, `bash.cmd` (and
@@ -17,7 +18,7 @@ export const SHIM_FORMAT = 1;
 
 /** The files the `pi-shim` stage ever wrote, as absolute paths under `tools/shims`, minus those the current set keeps. */
 export function shimDrop(shimsDir: string, enabled: EnabledTools, allOptional: readonly string[]): string[] {
-	const keep = Object.keys(shimFiles(enabled.optional));
+	const keep = shimNames(enabled.optional);
 	return everyShimFile(allOptional).filter((name) => !keep.includes(name)).map((name) => join(shimsDir, name));
 }
 
@@ -25,7 +26,12 @@ const setTag = (enabled: EnabledTools): string => enabled.optional.join(",") || 
 
 export function piShimStage(enabled: EnabledTools, allOptional: readonly string[]): Stage {
 	const tag = `format ${SHIM_FORMAT}; tools ${setTag(enabled)}`;
-	const files = shimFiles(enabled.optional);
+	/** The shim files for the installed pi: `pi.cmd` names the package's bin script, so a pi whose bin entry moved changes the text (T6-F001). */
+	const filesOf = (ctx: StageContext): Record<string, string> => {
+		const script = binScript(ctx.layout, npmGlobalPin(ctx.stack, "pi"), "pi");
+		if (script === null) throw new StageError("other", { stage: "pi-shim" }, `the installed pi has no bin script under ${ctx.layout.tools.npm}`);
+		return shimFiles(enabled.optional, script.relative);
+	};
 	const stagingOf = (ctx: StageContext): string => join(ctx.layout.tools.root, "shims.staging");
 	const finalOf = (ctx: StageContext, name: string): string => join(ctx.layout.tools.shims, name);
 	// The recipe's optional tools decide the bun shims, which run the launchers: wait for them. `launchers` needs `tool-paths` already.
@@ -38,6 +44,12 @@ export function piShimStage(enabled: EnabledTools, allOptional: readonly string[
 			if (!ctx.platform.userPath.supported) return null;
 			const found = await detectFromRecord(ctx, { version: tag });
 			if (found === null) return null;
+			let files: Record<string, string>;
+			try {
+				files = filesOf(ctx);
+			} catch {
+				return null;
+			}
 			for (const [name, text] of Object.entries(files)) {
 				const path = finalOf(ctx, name);
 				if (!existsSync(path) || readFileSync(path, "utf8") !== text) {
@@ -59,13 +71,14 @@ export function piShimStage(enabled: EnabledTools, allOptional: readonly string[
 			return found;
 		},
 		async install(ctx) {
+			const files = filesOf(ctx);
 			const dir = ctx.freshStaging(stagingOf(ctx));
 			// Binary-safe: the batch files keep their CRLF and the POSIX script its LF.
 			for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text, { encoding: "utf8", mode: 0o755 });
 		},
 		async verify(ctx) {
 			const dir = stagingOf(ctx);
-			const names = Object.keys(files);
+			const names = shimNames(enabled.optional);
 			for (const name of names) {
 				const text = readFileSync(join(dir, name), "utf8");
 				// ASCII only, and no byte of the root's path or of its parent: the root comes from the shim's own place (cmd reads a batch file in the OEM code page).
@@ -87,7 +100,7 @@ export function piShimStage(enabled: EnabledTools, allOptional: readonly string[
 			mkdirSync(ctx.layout.tools.shims, { recursive: true });
 			activateFiles(
 				ctx,
-				Object.keys(files).map((name) => ({ from: join(dir, name), to: finalOf(ctx, name) })),
+				shimNames(enabled.optional).map((name) => ({ from: join(dir, name), to: finalOf(ctx, name) })),
 				shimDrop(ctx.layout.tools.shims, enabled, allOptional),
 			);
 			// The files are in place before the entry points at the folder.

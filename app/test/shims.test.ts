@@ -21,12 +21,14 @@ after(() => {
 	for (const d of scratch) removeTree(d);
 });
 const isWindows = process.platform === "win32";
+/** Where the installed pi's bin script lies under the root, as the `pi-shim` stage reads it from the package's manifest. */
+const PI_SCRIPT = "tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js";
 
 describe("what the shim files say", () => {
-	const files = shimFiles(["bun"]);
+	const files = shimFiles(["bun"], PI_SCRIPT);
 
 	it("lists pi.cmd, pi, and bash.cmd, and bun.cmd and bunx.cmd only for a recipe that names bun", () => {
-		assert.deepEqual(Object.keys(shimFiles([])).sort(), ["bash.cmd", "pi", "pi.cmd"]);
+		assert.deepEqual(Object.keys(shimFiles([], PI_SCRIPT)).sort(), ["bash.cmd", "pi", "pi.cmd"]);
 		assert.deepEqual(Object.keys(files).sort(), ["bash.cmd", "bun.cmd", "bunx.cmd", "pi", "pi.cmd"]);
 		assert.deepEqual([...everyShimFile(["bun"])].sort(), Object.keys(files).sort());
 		assert.deepEqual(everyShimFile([]).sort(), ["bash.cmd", "pi", "pi.cmd"]);
@@ -48,16 +50,16 @@ describe("what the shim files say", () => {
 		}
 	});
 
-	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and the program run inside the setlocal (pi.cmd leaves it for its PATH)", () => {
+	it("follows the T5-F007 pattern: DisableDelayedExpansion, pushd, call \".\\paths.cmd\", and the program run inside the setlocal", () => {
 		for (const name of ["pi.cmd", "bash.cmd"]) {
 			const text = files[name] as string;
 			assert.match(text, /setlocal DisableDelayedExpansion\r\n/);
 			assert.match(text, /pushd "%~dp0\.\.\\bin"\r\ncall "\.\\paths\.cmd"\r\npopd\r\n/, name);
 			assert.ok(!/call "?%/.test(text), `${name} calls a path built from variables`);
 			assert.ok(!/^\s*call (?!"\.\\paths\.cmd")/m.test(text), `${name} uses call for anything but the paths file`);
-			assert.match(text, name === "pi.cmd" ? /^endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi\.cmd" %\*\r\nexit \/b %ERRORLEVEL%\r$/m : /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%SBD_GIT_BASH%" %\*\r\nexit \/b %ERRORLEVEL%\r$/m, `${name}'s exec lines`);
-			// Only pi.cmd leaves its setlocal before the program runs (npm's wrapper aborts its batch context, which would undo a PATH set inside it).
-			assert.equal(/endlocal/.test(text), name === "pi.cmd", `${name}: endlocal`);
+			assert.match(text, name === "pi.cmd" ? /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%SBD_NODE%" "%SBD_APP_ROOT%\\tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli\.js" %\*\r\nexit \/b %ERRORLEVEL%\r$/m : /^set "PATH=%SBD_PATH%;%PATH%"\r\n"%SBD_GIT_BASH%" %\*\r\nexit \/b %ERRORLEVEL%\r$/m, `${name}'s exec lines`);
+			// No shim leaves its setlocal before the program runs, so a `!` of the root or an argument survives a cmd started with /v:on.
+			assert.ok(!/endlocal/.test(text), `${name}: endlocal`);
 		}
 		assert.match(files["bun.cmd"] as string, /^"%SBD_APP_ROOT%\\tools\\bin\\bun\.cmd" %\*\r\nexit \/b %ERRORLEVEL%\r$/m);
 		assert.match(files["bunx.cmd"] as string, /bunx\.cmd" %\*/);
@@ -75,9 +77,22 @@ describe("what the shim files say", () => {
 		assert.match(files.pi as string, /want=\$\{STRAW_BOSS_DESK_ROOT\/\/\\\\\/\/\}/, "every backslash of the variable becomes a slash");
 	});
 
+	it("runs node with pi's bin script and never npm's own pi.cmd wrapper, which breaks under a root with & or ^ (T6-F001)", () => {
+		const text = files["pi.cmd"] as string;
+		assert.ok(!/tools\\npm\\pi\.cmd/i.test(text), "npm's wrapper is not run");
+		assert.match(text, /^if not exist "%SBD_NODE%" goto :missing_desk\r$/m);
+		assert.match(text, /^if not exist "%SBD_APP_ROOT%\\tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli\.js" goto :missing_desk\r$/m);
+	});
+
+	it("refuses a pi script path that is not a plain relative path under tools\\npm", () => {
+		for (const bad of ["", "dist\\cli.js", "tools\\npm\\..\\x.js", "tools\\npm\\a&b\\cli.js", 'tools\\npm\\"x', "tools\\npm\\a%b", "tools\\npm\\a^b", "tools\\npm\\a!b", "tools\\npm\\測試\\cli.js", "C:\\x\\cli.js"]) {
+			assert.throws(() => cmdShim(SHIM_SPECS.pi as never, bad), /not a plain relative path/, JSON.stringify(bad));
+		}
+	});
+
 	it("keeps the pass-through list in step with each command's name", () => {
 		for (const spec of Object.values(SHIM_SPECS)) {
-			const text = cmdShim(spec);
+			const text = cmdShim(spec, PI_SCRIPT);
 			assert.ok(text.includes(`${spec.name}.com ${spec.name}.exe ${spec.name}.bat ${spec.name}.cmd`));
 		}
 	});
@@ -184,6 +199,15 @@ describe("the POSIX pi shim, run under bash 4 or later", { skip: isWindows ? "th
 
 /** A batch stand-in for a pinned program: it says it ran, with its arguments, and whether the app's bin folder is first on the PATH; exit code 7. */
 const marker = (who: string): string => `@echo off\r\necho ${who} args=[%*]\r\nfor /f "delims=;" %%A in ("%PATH%") do if exist "%%A\\paths.cmd" echo BIN_FIRST\r\nexit /b 7\r\n`;
+/** The pinned pi's bin script, run by the Node of `tools\\node`: it says it ran, with its arguments, and whether the app's bin folder is first on the PATH; exit code 7. */
+const PI_JS = [
+	"console.log('PINNED args=[' + process.argv.slice(2).join(' ') + ']');",
+	"if ((process.env.PATH || '').split(';')[0].toLowerCase().endsWith('\\\\tools\\\\bin')) console.log('BIN_FIRST');",
+	"console.log('AGENT=' + (process.env.PI_CODING_AGENT_DIR || ''));",
+	"console.log('CWD=' + process.cwd());",
+	"process.exit(7);",
+	"",
+].join("\n");
 /** What a console shows for a path: a character outside the OEM code page comes out as `?`. */
 const asConsole = (text: string): string => text.replace(/[^\x00-\x7f]/g, "?");
 const BATCH_ROOTS = ["a^b!c%d&e 測試", "plain 測試", "100%", "x!y!", "^^", "a&b", "(1) b"];
@@ -203,11 +227,22 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 			const root = join(base, name);
 			const layout = computeLayout({ root, home: base, platform: "win32" });
 			for (const dir of [layout.tools.shims, layout.tools.bin, layout.tools.npm]) mkdirSync(dir, { recursive: true });
-			for (const [file, text] of Object.entries(shimFiles(["bun"]))) writeFileSync(join(layout.tools.shims, file), text);
+			for (const [file, text] of Object.entries(shimFiles(["bun"], PI_SCRIPT))) writeFileSync(join(layout.tools.shims, file), text);
 			for (const [file, text] of Object.entries(pathFiles("win32", layout, versions, enabled))) writeFileSync(join(layout.tools.bin, file), text);
-			// The pinned pi and the launcher of bun are batch stand-ins that say they ran, with their arguments, and whether the app's bin folder is first on the PATH.
-			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
+			// The pinned pi is a script run by the private Node (a copy of node.exe, linked into every root); the launcher of bun is a batch stand-in. npm's own
+			// `pi.cmd` wrapper is a poison pill: the shim must never run it (T6-F001).
+			const piJs = join(layout.root, ...PI_SCRIPT.split("\\"));
+			mkdirSync(dirname(piJs), { recursive: true });
+			writeFileSync(piJs, PI_JS);
+			writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\necho NPM_WRAPPER_RAN\r\nexit /b 99\r\n");
 			writeFileSync(join(layout.tools.bin, "bun.cmd"), marker("LAUNCHER"));
+			const nodeExe = join(toolDir(layout, "node", "24.0.0"), "node.exe");
+			mkdirSync(dirname(nodeExe), { recursive: true });
+			try {
+				linkSync(process.execPath, nodeExe);
+			} catch {
+				copyFileSync(process.execPath, nodeExe);
+			}
 			// PortableGit's bash.exe is a copy of node.exe here: `bash.cmd -p "..."` prints what it is asked.
 			const exe = join(toolDir(layout, "git", "2.56.0.3"), "bin", "bash.exe");
 			mkdirSync(dirname(exe), { recursive: true });
@@ -239,13 +274,14 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 
 	for (const delayed of [false, true]) {
 		const suffix = delayed ? " with delayed expansion switched on (cmd /v:on)" : "";
-		it(`runs the pinned pi in a desk pane, with the app's folders first, the arguments once expanded, and the exit code${suffix}`, async () => {
-			// With delayed expansion on, the line after pi.cmd's endlocal loses a "!" (as npm's own wrapper's does), so the roots with one are left out there.
-			for (const { layout, other } of roots.filter((r) => !(delayed && r.name.includes("!")))) {
+		it(`runs the pinned pi with the private Node in a desk pane, with the app's folders first, the arguments once expanded, and the exit code${suffix}`, async () => {
+			// Every root runs, the ones with a "!" or a "^" and "&" included, with delayed expansion on as well: the shim never leaves its setlocal (T6-F001).
+			for (const { layout, other } of roots) {
 				const r = await ask(layout, other, "pi", ["--session", "x y", "50%"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
 				assert.equal(r.code, 7, `${layout.root}: ${r.stdout}${r.stderr}`);
-				// node quotes the argument with a space; the `%` reaches the program once, not expanded twice.
-				assert.match(r.stdout, /PINNED args=\[--session "x y" 50%\]/, layout.root);
+				assert.ok(!r.stdout.includes("NPM_WRAPPER_RAN"), `${layout.root}: npm's wrapper ran`);
+				// node's own argv: the argument with a space arrives whole, and the `%` reaches the program once, not expanded twice.
+				assert.match(r.stdout, /PINNED args=\[--session x y 50%\]/, layout.root);
 				assert.match(r.stdout, /BIN_FIRST/, layout.root);
 			}
 		});
@@ -282,32 +318,6 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		});
 	}
 
-	// What npm writes for a global package: `pi.cmd` looks for `node` on the PATH when no node.exe lies beside it, then runs the package's script.
-	const NPM_WRAPPER = [
-		"@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
-		'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ") ELSE (", '  SET "_prog=node"', "  SET PATHEXT=%PATHEXT:;.JS;=;%", ")", "",
-		'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\fakepi\\cli.js" %*', "",
-	].join("\r\n");
-
-	it("starts the wrapper npm writes for the pinned pi, which finds node on the PATH the shim built", async () => {
-		// npm's own wrapper breaks on a root with `&` (its `%dp0%` lines), so it is tried under the root without cmd's special characters.
-		for (const { layout, other, name } of roots.filter((r) => r.name === "plain 測試")) {
-			const nodeDir = toolDir(layout, "node", "24.0.0");
-			mkdirSync(nodeDir, { recursive: true });
-			copyFileSync(process.execPath, join(nodeDir, "node.exe"));
-			mkdirSync(join(layout.tools.npm, "node_modules", "fakepi"), { recursive: true });
-			writeFileSync(join(layout.tools.npm, "node_modules", "fakepi", "cli.js"), "console.log('FAKEPI ' + process.argv.slice(2).join(' '));\n");
-			writeFileSync(join(layout.tools.npm, "pi.cmd"), NPM_WRAPPER);
-			try {
-				const r = await ask(layout, other, "pi", ["--version"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PATH: sys32 });
-				assert.equal(r.code, 0, `${name}: ${r.stdout}${r.stderr}`);
-				assert.equal(r.stdout.trim(), "FAKEPI --version", name);
-			} finally {
-				writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
-			}
-		}
-	});
-
 	it("compares the root without regard to case or a trailing backslash", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		for (const written of [`${layout.root}\\`, layout.root.toUpperCase(), layout.root.toLowerCase()]) {
@@ -318,18 +328,13 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 
 	it("keeps PI_CODING_AGENT_DIR as it finds it, and does not change the caller's working folder", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
-		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\necho AGENT=%PI_CODING_AGENT_DIR%\r\necho CWD=%CD%\r\n");
-		try {
-			const work = join(base, "work 測試");
-			mkdirSync(work, { recursive: true });
-			const agent = join(work, ".pi", "agent");
-			const r = await ask(layout, other, "pi", [], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PI_CODING_AGENT_DIR: agent }, { cwd: work });
-			// A console prints a path's CJK characters as `?`, so the comparison is on that form.
-			assert.match(r.stdout, new RegExp(`AGENT=${asConsole(agent).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
-			assert.equal(/CWD=(.*)\r?\n/.exec(r.stdout)?.[1]?.trim().toLowerCase(), asConsole(work).toLowerCase());
-		} finally {
-			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
-		}
+		const work = join(base, "work 測試");
+		mkdirSync(work, { recursive: true });
+		const agent = join(work, ".pi", "agent");
+		const r = await ask(layout, other, "pi", [], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PI_CODING_AGENT_DIR: agent }, { cwd: work });
+		// node prints the real characters; the working folder is the caller's, not the shim's or the bin folder's.
+		assert.equal(/AGENT=(.*)\r?\n/.exec(r.stdout)?.[1]?.trim(), agent);
+		assert.equal(/CWD=(.*)\r?\n/.exec(r.stdout)?.[1]?.trim().toLowerCase(), work.toLowerCase());
 	});
 
 	it("works with NoDefaultCurrentDirectoryInExePath set (R5-F007) and a PATH that has no shims folder in it", async () => {
@@ -351,31 +356,26 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		const none = join(base, "no-pi");
 		mkdirSync(join(none, "tools", "shims"), { recursive: true });
 		mkdirSync(join(none, "tools", "bin"), { recursive: true });
-		writeFileSync(join(none, "tools", "shims", "pi.cmd"), cmdShim(SHIM_SPECS.pi as never));
+		writeFileSync(join(none, "tools", "shims", "pi.cmd"), cmdShim(SHIM_SPECS.pi as never, PI_SCRIPT));
 		const desk = await run(comspec, ["/d", "/c", "pi.cmd"], { env: { ...systemEnv("win32", process.env), PATH: sys32, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: none }, cwd: join(none, "tools", "shims") });
 		assert.equal(desk.code, 9009);
 		assert.match(desk.stderr, /not set up in this Straw Boss Desk/);
 	});
 
-	it("leaves the caller's variables alone after a pass-through and after a desk run; only pi.cmd changes the PATH there (a wrapper batch checks)", async () => {
+	it("leaves the caller's variables alone after a pass-through and after a desk run, for every shim (a wrapper batch checks)", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
-		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\nexit /b 0\r\n");
 		const wrapper = join(base, "wrapper.cmd");
 		writeFileSync(wrapper, '@echo off\r\nset "BEFORE=%PATH%"\r\ncall %1.cmd --x >nul 2>nul\r\nif "%PATH%"=="%BEFORE%" (echo PATH_SAME) else echo PATH_CHANGED\r\nset SBD_ 2>nul\r\necho DONE\r\n');
-		try {
-			const env = { ...systemEnv("win32", process.env), PATH: `${layout.tools.shims};${other}` };
-			const desk = { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root };
-			const out = async (command: string, e: Record<string, string>): Promise<string> => {
-				const r = await run(comspec, ["/d", "/c", wrapper, command], { env: e, cwd: base });
-				return r.stdout.replace(/\r/g, "").trim() + r.stderr.trim();
-			};
-			assert.equal(await out("pi", env), "PATH_SAME\nDONE", "pi.cmd passing through");
-			assert.equal(await out("bash", env), "PATH_SAME\nDONE", "bash.cmd passing through");
-			assert.equal(await out("bash", desk), "PATH_SAME\nDONE", "bash.cmd in a desk pane");
-			assert.equal(await out("pi", desk), "PATH_CHANGED\nDONE", "pi.cmd in a desk pane (the PATH is set after its endlocal, no SBD_ variable is left)");
-		} finally {
-			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
-		}
+		const env = { ...systemEnv("win32", process.env), PATH: `${layout.tools.shims};${other}` };
+		const desk = { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root };
+		const out = async (command: string, e: Record<string, string>): Promise<string> => {
+			const r = await run(comspec, ["/d", "/c", wrapper, command], { env: e, cwd: base });
+			return r.stdout.replace(/\r/g, "").trim() + r.stderr.trim();
+		};
+		assert.equal(await out("pi", env), "PATH_SAME\nDONE", "pi.cmd passing through");
+		assert.equal(await out("bash", env), "PATH_SAME\nDONE", "bash.cmd passing through");
+		assert.equal(await out("bash", desk), "PATH_SAME\nDONE", "bash.cmd in a desk pane");
+		assert.equal(await out("pi", desk), "PATH_SAME\nDONE", "pi.cmd in a desk pane (it no longer leaves its setlocal, so the caller's PATH stays)");
 	});
 
 });

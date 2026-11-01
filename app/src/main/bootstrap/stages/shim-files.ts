@@ -6,15 +6,14 @@
 //
 // The batch files follow the T5-F007 pattern (`setlocal DisableDelayedExpansion`, `pushd` to the paths file's folder, `call ".\paths.cmd"`, R5-F007).
 // How each hands over to its program was settled on `windows-2025` (the experiments are in the Build notes):
-// - `bash.cmd`, `bun.cmd`, and a pass-through run the program inside the `setlocal`, then `exit /b %ERRORLEVEL%`. Delayed expansion is applied to each
-//   command when it runs, so a command after an `endlocal` of a cmd started with `/v:on` (the per-user DelayedExpansion setting) loses the `!` of a root
-//   or an argument; inside the `setlocal` it does not. Without a `call` the program gets the caller's arguments exactly once expanded (`call` doubles
-//   carets and expands `%` a second time). A program that is not a batch file returns, so the `exit` line stops the shim from running into the next label.
-// - `pi.cmd` ends with `endlocal & set "PATH=..." & "<pinned pi.cmd>" %*`. npm's wrapper ends with `endLocal & goto #_undefined_# 2>NUL || ...`, and that
-//   `goto` aborts the batch context, which ends every `setlocal` still pending, so a `PATH` set inside the shim's `setlocal` is gone before the wrapper's
-//   `"node"` runs. Set after the `endlocal`, the `PATH` is part of the environment the wrapper starts with. The price is npm's own: a cmd with delayed
-//   expansion on strips a `!` from this line, as it does from the wrapper's. (In an interactive cmd the `PATH` then keeps the app's folders; a pane is
-//   PowerShell, which runs a batch file in a child cmd.)
+// - `pi.cmd`, `bash.cmd`, `bun.cmd`, and a pass-through run the program inside the `setlocal`, then `exit /b %ERRORLEVEL%`. Delayed expansion is applied to
+//   each command when it runs, so a command after an `endlocal` of a cmd started with `/v:on` (the per-user DelayedExpansion setting) loses the `!` of a
+//   root or an argument; inside the `setlocal` it does not. Without a `call` the program gets the caller's arguments exactly once expanded (`call`
+//   doubles carets and expands `%` a second time). A program that is not a batch file returns, so the `exit` line stops the shim from running into the
+//   next label.
+// - `pi.cmd` runs `node <pi bin script>` itself, with `SBD_NODE` from `paths.cmd` and the script's place under the root written in the shim (T6-F001).
+//   npm's own `pi.cmd` wrapper is never run: it keeps `SET dp0=%~dp0` unquoted, so a root with `&` or `^` (which the default root takes from the
+//   profile folder's name) broke it, and its `endLocal & goto #_undefined_#` ending forced the shim to leave its `setlocal` before the program ran.
 
 /** The shim files a Windows install writes, by name. `bun.cmd` and `bunx.cmd` only for a recipe that names bun. */
 export interface ShimSpec {
@@ -33,33 +32,47 @@ export const SHIM_SPECS: Readonly<Record<string, ShimSpec>> = {
 
 const SIGNATURE = "straw-boss-desk shim";
 
+/** Where pi's bin script lies under the root: ASCII, backslashes, no quote, `%`, `&`, `^`, `!`, or `..`. The shim writes it between quotes. */
+export const PI_SCRIPT_PATTERN = /^tools\\npm\\(?:(?!\.+\\)[A-Za-z0-9_.@+-]+\\)*(?!\.+$)[A-Za-z0-9_.@+-]+$/;
+
 const crlf = (lines: readonly string[]): string => `${lines.join("\r\n")}\r\n`;
+
+/** What a shim does in a desk pane: the lines between the root test and the `:pass` label. */
+function deskLinesOf(spec: ShimSpec, piScript: string): string[] {
+	if (spec.desk === "launcher") {
+		return [
+			`if not exist "%SBD_APP_ROOT%\\tools\\bin\\${spec.name}.cmd" goto :missing_desk`,
+			`"%SBD_APP_ROOT%\\tools\\bin\\${spec.name}.cmd" %*`,
+			"exit /b %ERRORLEVEL%",
+		];
+	}
+	const program =
+		spec.desk === "bash"
+			? ['if not exist "%SBD_GIT_BASH%" goto :missing_desk', 'set "PATH=%SBD_PATH%;%PATH%"', '"%SBD_GIT_BASH%" %*']
+			: [
+					'if not exist "%SBD_NODE%" goto :missing_desk',
+					`if not exist "%SBD_APP_ROOT%\\${piScript}" goto :missing_desk`,
+					'set "PATH=%SBD_PATH%;%PATH%"',
+					`"%SBD_NODE%" "%SBD_APP_ROOT%\\${piScript}" %*`,
+				];
+	return [
+		'if not exist "%~dp0..\\bin\\paths.cmd" goto :missing_desk',
+		'pushd "%~dp0..\\bin"',
+		'call ".\\paths.cmd"',
+		"popd",
+		...program,
+		"exit /b %ERRORLEVEL%",
+	];
+}
 
 /**
  * The batch shim for one command. The desk test compares the root of the shim's own place with `STRAW_BOSS_DESK_ROOT`, case-insensitively and
  * with a trailing backslash dropped; both are runtime strings, never bytes of the file.
  */
-export function cmdShim(spec: ShimSpec): string {
+export function cmdShim(spec: ShimSpec, piScript = ""): string {
 	const { name } = spec;
-	const deskLines: string[] =
-		spec.desk === "launcher"
-			? [
-					`if not exist "%SBD_APP_ROOT%\\tools\\bin\\${name}.cmd" goto :missing_desk`,
-					`"%SBD_APP_ROOT%\\tools\\bin\\${name}.cmd" %*`,
-					"exit /b %ERRORLEVEL%",
-				]
-			: [
-					spec.desk === "pi" ? 'if not exist "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" goto :missing_desk' : "rem the bash path is checked once paths.cmd has named it",
-					'if not exist "%~dp0..\\bin\\paths.cmd" goto :missing_desk',
-					'pushd "%~dp0..\\bin"',
-					'call ".\\paths.cmd"',
-					"popd",
-					...(spec.desk === "bash" ? ['if not exist "%SBD_GIT_BASH%" goto :missing_desk'] : []),
-					...(spec.desk === "pi"
-						? ['endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*']
-						: ['set "PATH=%SBD_PATH%;%PATH%"', '"%SBD_GIT_BASH%" %*']),
-					"exit /b %ERRORLEVEL%",
-				];
+	if (spec.desk === "pi" && !PI_SCRIPT_PATTERN.test(piScript)) throw new Error(`the pi script path ${JSON.stringify(piScript)} is not a plain relative path`);
+	const deskLines = deskLinesOf(spec, piScript);
 	return crlf([
 		"@echo off",
 		`rem ${SIGNATURE} for ${name}: written by the app; no path and no version in it.`,
@@ -153,10 +166,13 @@ export function shPi(): string {
 	]);
 }
 
-/** The shim files for these optional tools, by name. */
-export function shimFiles(optionalTools: readonly string[]): Record<string, string> {
+/**
+ * The shim files for these optional tools, by name. `piScript` is the place of pi's bin script under the root, from the installed package's manifest
+ * (`tools\npm\node_modules\@earendil-works\pi-coding-agent\dist\cli.js`).
+ */
+export function shimFiles(optionalTools: readonly string[], piScript: string): Record<string, string> {
 	const files: Record<string, string> = {
-		"pi.cmd": cmdShim(SHIM_SPECS.pi as ShimSpec),
+		"pi.cmd": cmdShim(SHIM_SPECS.pi as ShimSpec, piScript),
 		pi: shPi(),
 		"bash.cmd": cmdShim(SHIM_SPECS.bash as ShimSpec),
 	};
@@ -169,5 +185,10 @@ export function shimFiles(optionalTools: readonly string[]): Record<string, stri
 
 /** Every shim name the app may have written, for the optional tools the stack lists: what a shim set deletes again for a tool the recipe dropped. */
 export function everyShimFile(allOptional: readonly string[]): string[] {
-	return Object.keys(shimFiles(allOptional.includes("bun") ? ["bun"] : []));
+	return shimNames(allOptional.includes("bun") ? ["bun"] : []);
+}
+
+/** The names `shimFiles` writes for these optional tools. */
+export function shimNames(optionalTools: readonly string[]): string[] {
+	return ["pi.cmd", "pi", "bash.cmd", ...(optionalTools.includes("bun") ? ["bun.cmd", "bunx.cmd"] : [])];
 }

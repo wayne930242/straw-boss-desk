@@ -76,8 +76,22 @@ export function installedFiles(layout: Layout, pin: NpmPin, bin: string): string
 export const binShim = (layout: Layout, bin: string): string => (layout.platform === "win32" ? join(layout.tools.npm, `${bin}.cmd`) : join(layout.tools.npm, "bin", bin));
 
 /**
+ * The bin script of the installed package: the absolute path, and its place under the root with backslashes (what the Windows `pi.cmd` shim writes
+ * between quotes, T6-F001). Null when the package or its bin entry is missing or the entry climbs out of the package folder.
+ */
+export function binScript(layout: Layout, pin: NpmPin, bin: string): { absolute: string; relative: string } | null {
+	const dir = packageDir(layout, pin.name);
+	const entry = binEntry(readManifest(join(dir, "package.json")), bin, pin.name);
+	if (entry === null) return null;
+	const parts = entry.split("/").filter((part) => part !== "" && part !== ".");
+	if (parts.length === 0 || parts.includes("..")) return null;
+	const absolute = join(dir, ...parts);
+	return { absolute, relative: ["tools", "npm", "node_modules", ...pin.name.split("/"), ...parts].join("\\") };
+}
+
+/**
  * A stage that installs one pinned npm package into the private prefix and runs its bin. `verify` runs the bin the way a shell would find it
- * (`pi.cmd` through `cmd.exe` on Windows, the prefix's `bin/pi` on macOS) and compares its `--version` with the pin.
+ * (the private Node with the bin script on Windows, the prefix's `bin/pi` on macOS) and compares its `--version` with the pin.
  */
 export function npmGlobalStage(spec: NpmStageSpec): Stage {
 	const pinOf = (ctx: StageContext): NpmPin => npmGlobalPin(ctx.stack, spec.name);
@@ -108,7 +122,7 @@ export function npmGlobalStage(spec: NpmStageSpec): Stage {
 			if (files.length < 2) throw new StageError("other", { stage: spec.name }, `${pin.name}@${pin.version} is not installed under ${ctx.layout.tools.npm} after npm install`);
 			const installed = readManifest(join(packageDir(ctx.layout, pin.name), "package.json"))?.version;
 			if (installed !== pin.version) throw new StageError("other", { stage: spec.name }, `${pin.name} on disk is ${installed ?? "unreadable"}, the pin is ${pin.version}`);
-			const line = await versionThroughWrapper(ctx, spec.name);
+			const line = await versionThroughBin(ctx, pin, spec.name);
 			expectVersion(ctx, spec.name, line, pin.version);
 			return { text: `${pin.name}@${pin.version}; ${spec.name} --version -> ${line}`, version: pin.version, files: files.map((f) => fileKey(ctx.layout, f)) };
 		},
@@ -119,15 +133,21 @@ export function npmGlobalStage(spec: NpmStageSpec): Stage {
 }
 
 /**
- * `<bin> --version` through the wrapper npm wrote: `bin/<bin>` (a script with a `node` shebang, so `node` must be on the constructed `PATH`) on macOS,
- * `<bin>.cmd` run by `cmd.exe` from the prefix on Windows (Node refuses to spawn a `.cmd` itself).
+ * `<bin> --version` the way the app runs it. macOS: `bin/<bin>` (a script with a `node` shebang, so `node` must be on the constructed `PATH`).
+ * Windows: the private Node with the package's bin script, which is what the `pi.cmd` shim runs, never npm's `<bin>.cmd` wrapper (it breaks under a
+ * root with `&` or `^`, T6-F001).
  */
-export async function versionThroughWrapper(ctx: StageContext, bin: string): Promise<string> {
+export async function versionThroughBin(ctx: StageContext, pin: NpmPin, bin: string): Promise<string> {
 	const env = ctx.childEnv();
-	const win = ctx.layout.platform === "win32";
-	const result = win
-		? await ctx.exec(ctx.platform.locate.system("cmd"), ["/d", "/c", `${bin}.cmd`, "--version"], { cwd: ctx.layout.tools.npm, env, timeoutMs: 120_000 })
-		: await ctx.exec(binShim(ctx.layout, bin), ["--version"], { env, timeoutMs: 120_000 });
+	let result;
+	if (ctx.layout.platform === "win32") {
+		const script = binScript(ctx.layout, pin, bin);
+		if (script === null) throw new StageError("other", { stage: ctx.stage }, `${pin.name} has no bin script for ${bin} under ${ctx.layout.tools.npm}`);
+		const node = nodeBinaryPath(ctx.layout, ctx.versionsOf(["node"]).node as string);
+		result = await ctx.exec(node, [script.absolute, "--version"], { cwd: ctx.layout.tools.npm, env, timeoutMs: 120_000 });
+	} else {
+		result = await ctx.exec(binShim(ctx.layout, bin), ["--version"], { env, timeoutMs: 120_000 });
+	}
 	const line = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/)[0] ?? "";
 	if (result.code !== 0) throw new StageError("other", { stage: ctx.stage }, `${bin} --version failed (exit ${result.code}): ${line}`);
 	return result.stdout.trim().split(/\r?\n/)[0] ?? line;
