@@ -72,7 +72,7 @@ describe("the .cmd launchers under a root with cmd's special characters (T5-F007
 				assert.equal(realpathSync.native(home).toLowerCase(), join(layout.root, "tools", "bun-home").toLowerCase(), layout.root);
 				const cache = await ask(layout, "bun", "process.env.BUN_INSTALL_CACHE_DIR", delayed);
 				assert.equal(realpathSync.native(cache).toLowerCase(), join(layout.root, "tools", "bun-home", "install", "cache").toLowerCase(), layout.root);
-				assert.equal(await ask(layout, "bunx", "process.env.DO_NOT_TRACK", delayed), "1", layout.root);
+				// bunx is `bun x ...`: the stand-in node would read `x` as a script, so it is only checked by its text (tool-stages tests).
 			}
 		});
 	}
