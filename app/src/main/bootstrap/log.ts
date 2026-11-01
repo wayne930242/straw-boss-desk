@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { safeFileName } from "./fsutil.ts";
 
 // Logs and the redactor (spec: Bootstrap engine, Logs and failures). Every line that reaches a file goes through one `Redactor`: the GUI URL token,
-// every pattern of `recipe/secret-patterns.json`, and, by exact match, every secret value main has registered at that moment.
+// every pattern of `recipe/secret-patterns.json`, the userinfo of any `scheme://user:password@host` URL, and, by exact match, every secret value main has
+// registered at that moment.
 
 export const REDACTED = "<redacted>";
 export const TOKEN = "<token>";
@@ -22,6 +23,13 @@ export const MAX_PEM_LINES = 64;
  * has `.zip` after it and does not.
  */
 const GUI_URL = /((?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}\/)[A-Za-z0-9_~-]{16,}(?![A-Za-z0-9_~-]|\.[A-Za-z0-9])/g;
+
+/**
+ * `scheme://user:password@host`: the userinfo of a URL, as a company proxy variable carries it (`HTTPS_PROXY=http://user:pass@proxy:8080`, which reaches
+ * every child the engine starts, T6-F011). The user and the password are masked; the scheme and the host stay. The user has no colon, the password may hold
+ * anything up to the last `@` before the next slash, a space, or a quote. A URL with a user and no password (`ssh://git@host`) is left alone.
+ */
+const URL_USERINFO = /(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@"'<>]+:[^/\s"'<>]*@/g;
 
 /** A PEM block, `-----BEGIN <label>-----` to the matching `-----END <label>-----` (to the end of the text when there is none), whatever its label. */
 const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----[\s\S]*?(?:-----END \1-----|$)/g;
@@ -93,6 +101,7 @@ export class Redactor {
 		const exact = this.#exactPattern();
 		if (exact) out = out.replace(exact, REDACTED);
 		out = out.replace(GUI_URL, `$1${TOKEN}`);
+		out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
 		for (const pattern of this.#patterns) out = out.replace(pattern, REDACTED);
 		return out;
 	}

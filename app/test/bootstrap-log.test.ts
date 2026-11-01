@@ -98,6 +98,45 @@ describe("Redactor", () => {
 	});
 });
 
+describe("URL userinfo (T6-F011)", () => {
+	const r = new Redactor([]);
+	it("masks the user and the password of a proxy URL and keeps the scheme and the host", () => {
+		assert.equal(r.redact("HTTPS_PROXY=http://alice:s3cret@proxy.corp.example:8080"), `HTTPS_PROXY=http://${REDACTED}@proxy.corp.example:8080`);
+		assert.equal(r.redact("via https://u:p%40ss%3A@10.0.0.1:3128/path?x=1"), `via https://${REDACTED}@10.0.0.1:3128/path?x=1`);
+		assert.equal(r.redact("socks5h://dom\\user:pw@host:1080"), `socks5h://${REDACTED}@host:1080`);
+	});
+
+	it("masks a password that holds an @ or a colon, every URL on a line, and stops at a quote, a space, or a slash", () => {
+		assert.equal(r.redact("http://a:p@ss:w@host:80/"), `http://${REDACTED}@host:80/`);
+		assert.equal(r.redact('{"proxy":"http://a:b@h:1","other":"http://c:d@k:2"} done'), `{"proxy":"http://${REDACTED}@h:1","other":"http://${REDACTED}@k:2"} done`);
+		assert.equal(r.redact("see <http://a:b@h:1> and http://c:d@k:2 now"), `see <http://${REDACTED}@h:1> and http://${REDACTED}@k:2 now`);
+	});
+
+	it("leaves a URL with no password, a port, and an @ after the path alone", () => {
+		for (const text of ["ssh://git@github.com/org/repo.git", "http://127.0.0.1:8080/a@b:c", "https://registry.npmjs.org/@earendil-works/pi-coding-agent", "mail to alice@example.com", "C:\\Users\\x\\a:b@c"]) {
+			assert.equal(r.redact(text), text);
+		}
+	});
+
+	it("is applied in events, in stage output, and in the tail, whichever way the line arrives", () => {
+		const logs = dir();
+		const logger = new Logger({ dir: logs, redactor: new Redactor(patterns) });
+		const url = "http://corp-user:corp-pass-9@proxy.corp.example:8080";
+		logger.event({ event: "env", HTTPS_PROXY: url, nested: { list: [url, `x ${url} y`] }, [url]: "as a key" });
+		const stage = logger.stage("npm");
+		stage.raw(`npm http fetch GET 200 ${url.slice(0, 20)}`);
+		stage.raw(`${url.slice(20)}/registry\nsecond ${url}\n`);
+		stage.flush();
+		logger.flush();
+		for (const name of ["bootstrap.jsonl", "stage-npm.log"]) {
+			const text = readFileSync(join(logs, name), "utf8");
+			for (const secret of ["corp-user", "corp-pass-9"]) assert.ok(!text.includes(secret), `${name} holds ${secret}`);
+			assert.ok(text.includes("proxy.corp.example:8080"), `${name} keeps the host`);
+		}
+		assert.ok(logger.tail(40).every((l) => !l.includes("corp-pass-9")));
+	});
+});
+
 describe("Logger", () => {
 	it("writes JSON lines that hold no planted secret, in events, stage output split across chunks, and the tail", () => {
 		const logs = dir();

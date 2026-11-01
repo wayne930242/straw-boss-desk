@@ -276,6 +276,51 @@ describe("redaction", () => {
 	});
 });
 
+describe("redaction of URL userinfo (T6-F011)", () => {
+	it("keeps a proxy URL's user and password out of the logs, the stage log, the state files, a recorded evidence, and a failure's detail", async () => {
+		const proxy = "http://corp-user:corp-pass-9@proxy.corp.example:8080";
+		const noisy: Stage = {
+			name: "noisy",
+			needs: [],
+			plannedVersion: () => "1.0.0",
+			async detect() {
+				return null;
+			},
+			async install(ctx) {
+				await ctx.exec(process.execPath, ["-e", `console.log(${JSON.stringify(`HTTPS_PROXY=${proxy}`)})`]);
+			},
+			async verify() {
+				return { text: `reached the registry through ${proxy}`, version: "1.0.0" };
+			},
+			async activate() {},
+		};
+		const broken: Stage = {
+			name: "broken",
+			needs: [],
+			plannedVersion: () => "1.0.0",
+			async detect() {
+				return null;
+			},
+			async install() {
+				throw new Error(`npm could not use ${proxy}`);
+			},
+			async verify() {
+				throw new Error("not reached");
+			},
+			async activate() {},
+		};
+		const run = await runEngine(root, makeStack({}), [noisy, broken]);
+		assert.equal(run.outcomes["noisy"]?.status, "installed");
+		assert.equal(run.outcomes["broken"]?.status, "failed");
+		for (const { file, text } of filesUnder(join(root, "logs"), join(root, "state"))) {
+			for (const secret of ["corp-user", "corp-pass-9"]) assert.ok(!text.includes(secret), `${file} holds ${secret}`);
+		}
+		assert.match(readFileSync(join(root, "logs", "stage-noisy.log"), "utf8"), /http:\/\/<redacted>@proxy\.corp\.example:8080/);
+		for (const text of [run.outcomes["noisy"]?.evidence ?? "", run.outcomes["broken"]?.failure?.detail ?? ""]) assert.ok(!text.includes("corp-pass-9"), text);
+		assert.ok((run.outcomes["broken"]?.failure?.detail ?? "").includes("proxy.corp.example"), "the host is kept for the PM");
+	});
+});
+
 /** Every file under logs/ and state/ of a root, with its text. */
 function filesUnder(...dirs: string[]): { file: string; text: string }[] {
 	const found: { file: string; text: string }[] = [];
