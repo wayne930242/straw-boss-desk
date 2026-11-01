@@ -145,7 +145,7 @@ export function createEngine(deps: EngineDeps): Engine {
 			const stages = (deps.stages ?? allStages)(stack, recipe, layout.platform);
 			logger.event({ event: "run-begin", stages: stages.map((s) => s.name), generation: stack.generation, force: config.force === true, forges: recipe.forges.map((f) => `${f.kind}:${f.host}`), tools: recipe.tools });
 			const swept = sweepLeftovers(layout);
-			if (swept.removed.length > 0 || swept.restored.length > 0) logger.event({ event: "swept", removed: swept.removed, restored: swept.restored });
+			if (swept.removed.length > 0 || swept.restored.length > 0 || swept.kept.length > 0) logger.event({ event: "swept", removed: swept.removed, restored: swept.restored, kept: swept.kept });
 
 			const retryDelayMs = deps.retryDelayMs ?? 5000;
 			const result: GraphResult = await runGraph({

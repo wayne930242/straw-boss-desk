@@ -63,11 +63,28 @@ export function writeManagedFile(file: ManagedFile): void {
 }
 
 /**
+ * Runs `before` ahead of the stage's `activate`. Whatever a stage writes outside its tool folder (the private gitconfig's block, Herdr's config) is
+ * written here, before `activate` renames the folder and changes `current.json`: a write that fails then fails the stage while the old version is
+ * still the active one, and a kill between the two leaves the old version active with files the stage writes again (T5-F006). `before` must be
+ * idempotent and must not depend on the new version being in place.
+ */
+export function withBeforeActivate(stage: Stage, before: (ctx: StageContext, evidence: Evidence) => void): Stage {
+	return {
+		...stage,
+		async activate(ctx, evidence: Evidence) {
+			before(ctx, evidence);
+			await stage.activate(ctx, evidence);
+		},
+	};
+}
+
+/**
  * Adds files a stage owns, outside its tool folder (Herdr's `config.toml`, the macOS `ZDOTDIR` files), to a stage: `detect` also requires each file
- * to hold exactly its text, and `activate` writes them after the tool folder is in place. They carry no hash in the record: their text is the check.
+ * to hold exactly its text, and `activate` writes them before the tool folder is put in place (`withBeforeActivate`). They carry no hash in the
+ * record: their text is the check.
  */
 export function withManagedFiles(stage: Stage, files: (ctx: StageContext) => ManagedFile[]): Stage {
-	return {
+	const checked: Stage = {
 		...stage,
 		async detect(ctx) {
 			const found = await stage.detect(ctx);
@@ -80,11 +97,10 @@ export function withManagedFiles(stage: Stage, files: (ctx: StageContext) => Man
 			}
 			return found;
 		},
-		async activate(ctx, evidence: Evidence) {
-			await stage.activate(ctx, evidence);
-			for (const file of files(ctx)) writeManagedFile(file);
-		},
 	};
+	return withBeforeActivate(checked, (ctx) => {
+		for (const file of files(ctx)) writeManagedFile(file);
+	});
 }
 
 export const fileExists = (path: string): boolean => existsSync(path);

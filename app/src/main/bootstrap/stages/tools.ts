@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { bunCacheDir, bunHome } from "../../env.ts";
 import { toolExecutable, type AppPlatform } from "../../paths.ts";
@@ -8,7 +8,7 @@ import { removeTree } from "../fsutil.ts";
 import { StackError, assetFor } from "../stack.ts";
 import { activateFiles, detectFromRecord, fileKey, type Stage, type StageContext } from "../stage.ts";
 import { hasBlock, upsertBlock } from "./gitconfig.ts";
-import { expectVersion, runLine, withManagedFiles, type ManagedFile } from "./support.ts";
+import { expectVersion, runLine, withBeforeActivate, withManagedFiles, type ManagedFile } from "./support.ts";
 
 // The tool stages (spec: Stages): node, git, herdr, fd-rg, gh, glab, and one `opt:<tool>` for each optional tool the recipe names. Each downloads its
 // pinned asset, extracts it into `tools/<tool>/<version>.staging`, runs the staged binary, and renames the folder into place (`archiveStage`).
@@ -71,7 +71,7 @@ export function gitStage(platform: AppPlatform): Stage {
 			return line;
 		},
 	});
-	return {
+	const checked: Stage = {
 		...stage,
 		async detect(ctx) {
 			const found = await stage.detect(ctx);
@@ -82,11 +82,10 @@ export function gitStage(platform: AppPlatform): Stage {
 			}
 			return found;
 		},
-		async activate(ctx, evidence) {
-			await stage.activate(ctx, evidence);
-			upsertBlock(ctx.layout.gitconfig, "base", GIT_BASE_BLOCK, "first");
-		},
 	};
+	// The base block does not depend on Git's version, so it is written before the folder is activated (T5-F006): a block the file cannot take
+	// (`GitconfigBlockError`) then fails the stage with the old Git still active.
+	return withBeforeActivate(checked, (ctx) => upsertBlock(ctx.layout.gitconfig, "base", GIT_BASE_BLOCK, "first"));
 }
 
 // ---- herdr -----------------------------------------------------------------------------------------------------------
@@ -156,12 +155,19 @@ export function herdrStage(platform: AppPlatform): Stage {
 
 // ---- fd and ripgrep --------------------------------------------------------------------------------------------------
 
-/** pi downloads the latest `fd` and `rg` on its first start without a pin (mac spike finding 5); this stage puts the pinned ones into its `bin` folder first. */
+/**
+ * pi downloads the latest `fd` and `rg` on its first start without a pin (mac spike finding 5); this stage puts the pinned ones into its `bin` folder first.
+ *
+ * The archives are unpacked under the data root (`tools/fd-rg.staging`), where the relative path from the destination to `tools/downloads` is ASCII
+ * and on one drive, which `tar.exe` needs (T5-F003): the agent folder can lie on another drive or behind a non-ASCII path (**App data layout**). Only
+ * the two binaries are then copied, which can cross drives, into a staging folder beside their final place, and `activateFiles` renames them in.
+ */
 export function fdRgStage(platform: AppPlatform): Stage {
 	const tools = [
 		{ stack: "fd", file: `fd${exe(platform)}` },
 		{ stack: "rg", file: `rg${exe(platform)}` },
 	] as const;
+	const unpackOf = (ctx: StageContext): string => join(ctx.layout.tools.root, "fd-rg.staging");
 	const stagingOf = (ctx: StageContext): string => join(ctx.layout.agent, "bin", "fd-rg.staging");
 	const finalOf = (ctx: StageContext, file: string): string => join(ctx.layout.agent, "bin", file);
 	const versionOf = (ctx: StageContext): string => tools.map((t) => `${t.stack} ${assetFor(ctx.stack, t.stack, ctx.key).version}`).join(", ");
@@ -174,16 +180,17 @@ export function fdRgStage(platform: AppPlatform): Stage {
 			return detectFromRecord(ctx, { version: versionOf(ctx) });
 		},
 		async install(ctx) {
+			const unpack = ctx.freshStaging(unpackOf(ctx));
 			const staging = ctx.freshStaging(stagingOf(ctx));
 			for (const tool of tools) {
 				const asset = assetFor(ctx.stack, tool.stack, ctx.key);
 				const downloaded = await ctx.download(tool.stack, asset);
-				const unpacked = join(staging, `${tool.stack}-unpacked`);
+				const unpacked = join(unpack, `${tool.stack}-unpacked`);
 				const extracted = await ctx.extract(downloaded.path, unpacked, 1);
 				ctx.log.event({ event: "extracted", tool: tool.stack, entries: extracted.entries });
 				const from = join(unpacked, tool.file);
 				if (!existsSync(from)) throw new StageError("other", { stage: "fd-rg" }, `the ${tool.stack} archive holds no ${tool.file}`);
-				renameSync(from, join(staging, tool.file));
+				copyFileSync(from, join(staging, tool.file));
 				chmodSync(join(staging, tool.file), 0o755);
 				removeTree(unpacked);
 			}

@@ -1,5 +1,5 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { Layout } from "../paths.ts";
 import { removeTree, renameRetry } from "./fsutil.ts";
 import type { Lane, Stage, StageOutcome } from "./stage.ts";
@@ -114,13 +114,21 @@ export async function runGraph(options: GraphOptions): Promise<GraphResult> {
 // ---- leftovers of an interrupted run ---------------------------------------------------------------------------------
 
 const STAGING = /\.staging$/;
-const REPLACED = /\.replaced$/;
+/** `<x>.replaced`, or `<x>.replaced-<n>` when an earlier leftover of the same name could not be deleted (`freeAside`). */
+const ASIDE = /^(.*)\.replaced(?:-(\d+))?$/;
 
 export interface SweepResult {
 	/** Paths deleted: staging folders, files, and stale `.replaced` copies. */
 	removed: string[];
 	/** Paths put back: a `<v>.replaced` whose `<v>` was missing (T4-F010), so `current.json` names a folder that exists again. */
 	restored: string[];
+	/** Paths that could not be deleted (on Windows, a copy of a running executable): they stay, are logged, and the next sweep tries again (T5-F004). */
+	kept: Array<{ path: string; error: string }>;
+}
+
+export interface SweepOptions {
+	/** Deletes a file or folder tree; a test passes one that throws. Default: `removeTree`. */
+	remove?: (path: string) => void;
 }
 
 /**
@@ -129,14 +137,27 @@ export interface SweepResult {
  * - `tools/<tool>/<version>.staging`, `tools/<name>.staging`, and the `.staging` files of `tools/bin` are deleted;
  * - `<x>.replaced` is the previous copy that `activateDir` and `activateFiles` move aside before the new one is renamed into place. When `<x>` is
  *   there, the new copy won and the old one is deleted; when `<x>` is missing the run was killed between the two renames, `current.json` still
- *   names `<x>`, and the old copy is moved back (T4-F010 a);
+ *   names `<x>`, and the old copy is moved back (T4-F010 a). When several asides exist for one `<x>` (`<x>.replaced-2`), the newest is the one moved back;
+ * - a deletion that fails (Windows: the old copy of a running `bun.exe` can be renamed but not deleted) never stops the sweep: the path is kept,
+ *   reported in `kept`, and tried again by the next sweep (T5-F004);
+ * - the same rules cover the private `gitconfig`, which sits in the root: `gitconfig.staging` is deleted, and `gitconfig.replaced` is moved back
+ *   when `gitconfig` is missing (T5-F006);
  * - unfinished `.part` downloads are deleted.
  *
- * It looks under `tools/`, one level down, and in the agent's `bin` folder (where `fd-rg` replaces files).
+ * It looks under `tools/`, one level down, in the agent's `bin` folder (where `fd-rg` replaces files), and at the `gitconfig` files of the root.
  */
-export function sweepLeftovers(layout: Layout): SweepResult {
-	const result: SweepResult = { removed: [], restored: [] };
-	const sweep = (dir: string): void => {
+export function sweepLeftovers(layout: Layout, options: SweepOptions = {}): SweepResult {
+	const remove = options.remove ?? removeTree;
+	const result: SweepResult = { removed: [], restored: [], kept: [] };
+	const drop = (path: string): void => {
+		try {
+			remove(path);
+			result.removed.push(path);
+		} catch (error) {
+			result.kept.push({ path, error: (error as Error).message });
+		}
+	};
+	const sweep = (dir: string, only: (name: string) => boolean = () => true): void => {
 		let names: string[];
 		try {
 			names = readdirSync(dir);
@@ -145,21 +166,28 @@ export function sweepLeftovers(layout: Layout): SweepResult {
 			throw error;
 		}
 		const present = new Set(names);
+		const asides = new Map<string, Array<{ name: string; n: number }>>();
 		for (const name of names) {
-			const path = join(dir, name);
+			if (!only(name)) continue;
 			if (STAGING.test(name)) {
-				removeTree(path);
-				result.removed.push(path);
-			} else if (REPLACED.test(name)) {
-				const original = name.replace(REPLACED, "");
-				if (present.has(original)) {
-					removeTree(path);
-					result.removed.push(path);
-				} else {
-					renameRetry(path, join(dir, original));
-					result.restored.push(path);
-				}
+				drop(join(dir, name));
+				continue;
 			}
+			const m = ASIDE.exec(name);
+			if (m === null) continue;
+			const original = m[1] as string;
+			asides.set(original, [...(asides.get(original) ?? []), { name, n: m[2] === undefined ? 1 : Number(m[2]) }]);
+		}
+		for (const [original, list] of asides) {
+			list.sort((a, b) => b.n - a.n);
+			let rest = list;
+			if (!present.has(original)) {
+				const newest = list[0] as { name: string };
+				renameRetry(join(dir, newest.name), join(dir, original));
+				result.restored.push(join(dir, newest.name));
+				rest = list.slice(1);
+			}
+			for (const { name } of rest) drop(join(dir, name));
 		}
 	};
 	const tools = layout.tools.root;
@@ -175,18 +203,14 @@ export function sweepLeftovers(layout: Layout): SweepResult {
 		sweep(join(tools, name));
 	}
 	sweep(join(layout.agent, "bin"));
-	// The private gitconfig is edited through a staging copy beside it.
-	const gitconfigStaging = `${layout.gitconfig}.staging`;
-	if (existsSync(gitconfigStaging)) {
-		removeTree(gitconfigStaging);
-		result.removed.push(gitconfigStaging);
-	}
+	// The private gitconfig is edited through a staging copy beside it, and replaced by moving the old file aside first.
+	const gitconfigName = basename(layout.gitconfig);
+	const ownsGitconfig = (name: string): boolean => name === `${gitconfigName}.staging` || ASIDE.exec(name)?.[1] === gitconfigName;
+	sweep(dirname(layout.gitconfig), ownsGitconfig);
 	try {
 		for (const name of readdirSync(layout.tools.downloads)) {
 			if (!name.endsWith(".part")) continue;
-			const path = join(layout.tools.downloads, name);
-			removeTree(path);
-			result.removed.push(path);
+			drop(join(layout.tools.downloads, name));
 		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

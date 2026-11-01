@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // File helpers shared by the engine's modules. Every write that another run might read half-done goes through `writeFileAtomic`.
@@ -69,6 +69,39 @@ export function readJsonFile(file: string): JsonValue {
 /** Removes a file or folder tree, retrying the way antivirus scanning on Windows needs. Missing is fine. Throws when it cannot. */
 export function removeTree(path: string): void {
 	rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+}
+
+/** The two file operations that can fail on Windows while a process still runs the file. A test passes stubs; the engine passes the real ones. */
+export interface FsOps {
+	removeTree(path: string): void;
+	renameRetry(from: string, to: string): void;
+}
+
+export const REAL_FS: FsOps = { removeTree, renameRetry };
+
+/** How many `.replaced` names `freeAside` tries before it gives up. */
+const ASIDE_TRIES = 50;
+
+/** `<target>.replaced`, or `<target>.replaced-<n>` for the n-th name. `sweepLeftovers` reads both forms. */
+export const asideName = (target: string, n: number): string => (n <= 1 ? `${target}.replaced` : `${target}.replaced-${n}`);
+
+/**
+ * A free name to move `target` aside to. A `<target>.replaced` that is still there is deleted; when it cannot be (on Windows the old copy of a
+ * running `bun.exe` can be renamed but not deleted, T5-F004), it stays and the next name is used, so a held leftover never blocks a later replace.
+ * `held` receives each leftover that stayed, for the stage's `fsErrors`.
+ */
+export function freeAside(target: string, ops: FsOps = REAL_FS, held?: (path: string, error: Error) => void): string {
+	for (let n = 1; n <= ASIDE_TRIES; n++) {
+		const candidate = asideName(target, n);
+		if (!existsSync(candidate)) return candidate;
+		try {
+			ops.removeTree(candidate);
+			return candidate;
+		} catch (error) {
+			held?.(candidate, error as Error);
+		}
+	}
+	throw new Error(`${target} has ${ASIDE_TRIES} leftover copies that cannot be deleted; stop the programs that run them`);
 }
 
 /** Lowercase hex SHA-256 of a file's bytes, streamed. */

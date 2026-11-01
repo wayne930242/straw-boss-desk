@@ -6,7 +6,7 @@ import type { CommandRunner, Platform, RunOptions, RunResult } from "../platform
 import { classifyError, RETRIED_ONCE, StageError, type FailureCategory, type FailureParams } from "./errors.ts";
 import { downloadVerified, type Downloaded, type Fetch } from "./download.ts";
 import { extractArchive, extractSelfExtractor, type Extracted } from "./extract.ts";
-import { removeTree, renameRetry, sha256File } from "./fsutil.ts";
+import { asideName, freeAside, REAL_FS, removeTree, sha256File, type FsOps } from "./fsutil.ts";
 import type { StageLog } from "./log.ts";
 import type { EngineRecipe } from "./recipe-config.ts";
 import type { Asset, PlatformKey, Stack } from "./stack.ts";
@@ -266,22 +266,21 @@ export async function detectFromRecord(
  * `activate` for a stage whose output is the folder `tools/<tool>/<version>`: renames the staging folder into place (an older folder of the same
  * version, such as a corrupted one, is moved aside first and deleted after), then makes the version the active one in `current.json`.
  */
-export async function activateDir(ctx: StageContext, spec: { tool: string; version: string; staging: string }): Promise<void> {
+export async function activateDir(ctx: StageContext, spec: { tool: string; version: string; staging: string }, ops: FsOps = REAL_FS): Promise<void> {
 	const final = installDir(ctx.layout, spec.tool, spec.version);
-	const aside = `${final}.replaced`;
-	removeTree(aside);
+	const aside = freeAside(final, ops, (path, error) => ctx.fsErrors.push(`${path}: ${error.message}`));
 	const hadOld = existsSync(final);
-	if (hadOld) renameRetry(final, aside);
+	if (hadOld) ops.renameRetry(final, aside);
 	try {
-		renameRetry(spec.staging, final);
+		ops.renameRetry(spec.staging, final);
 	} catch (error) {
-		if (hadOld) renameRetry(aside, final);
+		if (hadOld) ops.renameRetry(aside, final);
 		throw error;
 	}
 	await ctx.state.setVersion(spec.tool, spec.version);
 	if (hadOld) {
 		try {
-			removeTree(aside);
+			ops.removeTree(aside);
 		} catch (error) {
 			ctx.fsErrors.push(`${aside}: ${(error as Error).message}`);
 		}
@@ -294,45 +293,47 @@ export async function activateDir(ctx: StageContext, spec: { tool: string; versi
  * files already replaced are put back, so the set is replaced whole or not at all; what a kill leaves behind, `sweepLeftovers` puts back or deletes.
  * `remove` lists targets that must be gone afterwards (a launcher for a tool the recipe dropped): they are moved aside with the rest and deleted last.
  */
-export function activateFiles(ctx: StageContext, pairs: ReadonlyArray<{ from: string; to: string }>, remove: readonly string[] = []): void {
+export function activateFiles(ctx: StageContext, pairs: ReadonlyArray<{ from: string; to: string }>, remove: readonly string[] = [], ops: FsOps = REAL_FS): void {
 	const done: Array<{ from: string; to: string; aside: string | null }> = [];
 	const gone: Array<{ target: string; aside: string }> = [];
+	const held = (path: string, error: Error): void => {
+		ctx.fsErrors.push(`${path}: ${error.message}`);
+	};
 	try {
 		for (const { from, to } of pairs) {
 			mkdirSync(dirname(to), { recursive: true });
-			const aside = `${to}.replaced`;
-			removeTree(aside);
 			const had = existsSync(to);
-			if (had) renameRetry(to, aside);
+			// A leftover copy that a running program holds (Windows) stays, and the next free name is used (T5-F004).
+			const aside = had ? freeAside(to, ops, held) : asideName(to, 1);
+			if (had) ops.renameRetry(to, aside);
 			try {
-				renameRetry(from, to);
+				ops.renameRetry(from, to);
 			} catch (error) {
-				if (had) renameRetry(aside, to);
+				if (had) ops.renameRetry(aside, to);
 				throw error;
 			}
 			done.push({ from, to, aside: had ? aside : null });
 		}
 		for (const target of remove) {
 			if (!existsSync(target)) continue;
-			const aside = `${target}.replaced`;
-			removeTree(aside);
-			renameRetry(target, aside);
+			const aside = freeAside(target, ops, held);
+			ops.renameRetry(target, aside);
 			gone.push({ target, aside });
 		}
 	} catch (error) {
-		for (const g of gone.toReversed()) renameRetry(g.aside, g.target);
+		for (const g of gone.toReversed()) ops.renameRetry(g.aside, g.target);
 		for (const d of done.toReversed()) {
-			removeTree(d.to);
-			if (d.aside !== null) renameRetry(d.aside, d.to);
+			ops.removeTree(d.to);
+			if (d.aside !== null) ops.renameRetry(d.aside, d.to);
 		}
 		throw error;
 	}
 	for (const aside of [...done.map((d) => d.aside), ...gone.map((g) => g.aside)]) {
 		if (aside === null) continue;
 		try {
-			removeTree(aside);
+			ops.removeTree(aside);
 		} catch (error) {
-			ctx.fsErrors.push(`${aside}: ${(error as Error).message}`);
+			held(aside, error as Error);
 		}
 	}
 }
