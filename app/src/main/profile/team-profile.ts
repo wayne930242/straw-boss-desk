@@ -199,11 +199,17 @@ function readJsonOr<T>(path: string, fallback: T): Json | T {
 	}
 }
 
+/** A file of the profile package read as text; a link, a folder, or a device in its place is refused, so a file the package points at elsewhere is never read. */
+function readPackageFile(file: string): string {
+	if (!lstatSync(file).isFile()) throw new Error(`${file} is not a regular file; the profile package is damaged`);
+	return readFileSync(file, "utf8");
+}
+
 /** A JSON file of the profile package that must hold an object; a package that ships anything else is refused by name. */
 function readJsonObject(file: string): Json {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(file, "utf8"));
+		parsed = JSON.parse(readPackageFile(file));
 	} catch (error) {
 		throw new Error(`${file} is not readable JSON (${(error as Error).message.split("\n")[0]}); the profile package is damaged`);
 	}
@@ -227,9 +233,9 @@ export function loadProfile(profileDir: string): Profile {
 	const pkg = readJsonObject(join(profileDir, "package.json"));
 	const version = safeSegment(pkg.version, "profile version");
 	const files = new Map<string, string>();
-	for (const rel of ["AGENTS.md"]) files.set(rel, readFileSync(join(profileDir, rel), "utf8"));
+	for (const rel of ["AGENTS.md"]) files.set(rel, readPackageFile(join(profileDir, rel)));
 	if (existsSync(join(profileDir, "rules"))) {
-		for (const rel of walk(join(profileDir, "rules"), profileDir)) files.set(safeRel(rel, "profile file"), readFileSync(join(profileDir, rel), "utf8"));
+		for (const rel of walk(join(profileDir, "rules"), profileDir)) files.set(safeRel(rel, "profile file"), readPackageFile(join(profileDir, ...rel.split("/"))));
 	}
 	return {
 		name: String(pkg.name),

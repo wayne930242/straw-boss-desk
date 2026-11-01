@@ -662,6 +662,34 @@ describe("RC-F002 and P3R-F001: names Windows rewrites or opens as a device", ()
 	});
 });
 
+describe("a profile package that ships a link", () => {
+	it("is refused when it is loaded: a link in rules/ or at AGENTS.md is not followed to a file elsewhere", (t) => {
+		const secret = join(tmp, "outside-secret.txt");
+		writeFileSync(secret, "not the package's");
+		makeProfile(profileDir);
+		rmSync(join(profileDir, "rules", "a.md"));
+		if (!link(t, secret, join(profileDir, "rules", "a.md"), "file")) return;
+		assert.throws(() => loadProfile(profileDir), /not a regular file; the profile package is damaged/);
+		makeProfile(profileDir);
+		rmSync(join(profileDir, "AGENTS.md"));
+		link(t, secret, join(profileDir, "AGENTS.md"), "file");
+		assert.throws(() => loadProfile(profileDir), /not a regular file/);
+		makeProfile(profileDir);
+		mkdirSync(join(tmp, "elsewhere", "deep"), { recursive: true });
+		writeFileSync(join(tmp, "elsewhere", "deep", "x.md"), "x");
+		dirLink(join(tmp, "elsewhere"), join(profileDir, "rules", "linked"));
+		assert.throws(() => loadProfile(profileDir), /not a regular file/);
+	});
+
+	it("is refused when a config file is not a JSON object", () => {
+		makeProfile(profileDir);
+		writeFileSync(join(profileDir, "config", "settings.json"), "[1]");
+		assert.throws(() => loadProfile(profileDir), /is not a JSON object; the profile package is damaged/);
+		writeFileSync(join(profileDir, "config", "settings.json"), "{ nope");
+		assert.throws(() => loadProfile(profileDir), /is not readable JSON/);
+	});
+});
+
 describe("RC-F003: the temp file and the links of a write", () => {
 	const outside = (): string => {
 		const dir = join(tmp, "outside");
