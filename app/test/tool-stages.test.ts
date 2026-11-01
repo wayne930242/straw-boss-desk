@@ -297,12 +297,12 @@ describe("tools/bin/paths.sh and paths.cmd", () => {
 		assert.ok(mac.includes('SBD_BUN="$SBD_APP_ROOT/tools/bun/1.2.23/bun"'));
 		assert.ok(!mac.includes("SBD_GIT_BASH"), "bash.exe is Windows only");
 		const win = pathsCmd(fakeLayout("win32"), winVersions, enabled);
-		assert.ok(win.includes("tools\\bin;%SBD_APP_ROOT%\\tools\\node\\24.22.1;%SBD_APP_ROOT%\\tools\\npm;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\cmd;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\bin;%SBD_APP_ROOT%\\tools\\herdr\\0.9.5"), win);
+		assert.ok(win.includes("tools\\bin;%SBD_APP_ROOT%\\tools\\bin-exe;%SBD_APP_ROOT%\\tools\\node\\24.22.1;%SBD_APP_ROOT%\\tools\\npm;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\cmd;%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\bin;%SBD_APP_ROOT%\\tools\\herdr\\0.9.5"), win);
 		assert.ok(win.includes('set "SBD_GIT_BASH=%SBD_APP_ROOT%\\tools\\git\\2.56.0.3\\bin\\bash.exe"'));
 		assert.ok(win.includes('set "SBD_BUN=%SBD_APP_ROOT%\\tools\\bun\\1.2.23\\bun.exe"'));
 		assert.ok(win.includes("\r\n") && !win.replace(/\r\n/g, "").includes("\n"));
 		const winSh = pathsSh(fakeLayout("win32"), winVersions, enabled);
-		assert.ok(winSh.includes('SBD_PATH="$SBD_APP_ROOT/tools/bin;$SBD_APP_ROOT/tools/node/24.22.1;'), "Windows: `;` between mixed-form paths");
+		assert.ok(winSh.includes('SBD_PATH="$SBD_APP_ROOT/tools/bin;$SBD_APP_ROOT/tools/bin-exe;$SBD_APP_ROOT/tools/node/24.22.1;'), "Windows: `;` between mixed-form paths");
 		assert.ok(winSh.includes('SBD_GIT_BASH="$SBD_APP_ROOT/tools/git/2.56.0.3/bin/bash.exe"'));
 	});
 
@@ -510,7 +510,7 @@ describe("the preflight", () => {
 /** A stage that "installs" a tool: scripts that print their version, in the folder layout the real archive has. */
 function fakeTool(name: string, tool: string, version: string, installs: string[]): Stage {
 	const exe = toolExecutable("darwin", tool);
-	const script = tool === "gh" ? `echo "gh version ${version} (fake)"` : tool === "glab" ? `echo "glab ${version} (fake)"` : tool === "bun" ? `echo "${version}"` : `echo "${tool} ${version}"`;
+	const script = tool === "gh" ? `echo "gh version ${version} (fake)"` : tool === "glab" ? `echo "glab ${version} (fake)"` : tool === "bun" ? `if [ "$1" = pm ] && [ "$2" = cache ]; then echo "$BUN_INSTALL_CACHE_DIR"; else echo "${version}"; fi` : `echo "${tool} ${version}"`;
 	const stagingOf = (ctx: StageContext): string => `${installDir(ctx.layout, tool, version)}.staging`;
 	return {
 		name,
@@ -551,7 +551,8 @@ describe("tool-paths and launchers with stand-in tools (POSIX)", { skip: posixOn
 			...setup.clis.map((cli) => fakeTool(cli, cli, cli === "gh" ? setup.gh : "1.124.0", installs)),
 			...(setup.bun === null ? [] : [fakeTool("opt:bun", "bun", setup.bun, installs)]),
 			toolPathsStage(platform, enabled),
-			launchersStage(platform, enabled, ["bun"]),
+			// The probe runs `bun pm cache` through the staged launcher (T5-F002): on Windows by default, here for the stand-in.
+			launchersStage(platform, enabled, ["bun"], { probe: true }),
 		];
 	};
 	const status = (run: Awaited<ReturnType<typeof runEngine>>, ...names: string[]): string[] => names.map((n) => `${n}:${run.outcomes[n]?.status}`);
@@ -678,6 +679,35 @@ describe("tool-paths and launchers with stand-in tools (POSIX)", { skip: posixOn
 		const run = await runEngine(root, makeStack({}), stages(setup, []));
 		assert.equal(run.outcomes.launchers?.status, "installed");
 		assert.equal(existsSync(bin(root, "bun")), false);
+	});
+
+	it("T5-F002: a bun that keeps its cache somewhere other than the launcher's folder fails the stage with a plain sentence, and nothing is put in place", async () => {
+		const { root } = fresh();
+		const honest = fakeTool("opt:bun", "bun", "1.2.23", []);
+		// The stand-in reads no environment: like a bun that gets `??` for its cache folder, it falls back to the project's node_modules/.cache.
+		const lost: Stage = {
+			...honest,
+			async install(ctx) {
+				await honest.install(ctx);
+				writeFileSync(join(`${installDir(ctx.layout, "bun", "1.2.23")}.staging`, "bun"), '#!/bin/sh\nif [ "$1" = pm ]; then echo "$PWD/node_modules/.cache"; else echo 1.2.23; fi\n', { mode: 0o755 });
+			},
+		};
+		const all = stages({ gh: "2.103.3", bun: "1.2.23", clis: ["gh"] }, []).map((s) => (s.name === "opt:bun" ? lost : s));
+		const run = await runEngine(root, makeStack({}), all);
+		const outcome = run.outcomes.launchers;
+		assert.equal(outcome?.status, "failed");
+		assert.equal(outcome?.failure?.category, "other");
+		assert.match(outcome?.failure?.sentence ?? "", /bun cannot keep its files in the app's folder on this computer.*short folder names are turned off/);
+		assert.match(outcome?.failure?.detail ?? "", /node_modules\/\.cache/);
+		assert.deepEqual(readdirSync(join(root, "tools", "bin")), ["paths.sh"], "no launcher was put in place");
+		assert.deepEqual(leftovers(root), []);
+	});
+
+	it("T5-F002: the same bun, asked through the launcher, answers with the launcher's folder and the stage passes", async () => {
+		const { root } = fresh();
+		const run = await runEngine(root, makeStack({}), stages({ gh: "2.103.3", bun: "1.2.23", clis: [] }, []));
+		assert.equal(run.ok, true, JSON.stringify(run.error ?? run.outcomes));
+		assert.match(run.outcomes.launchers?.evidence ?? "", /bun pm cache -> tools\/bun-home\/install\/cache/);
 	});
 
 	it("a launcher whose tool prints another version fails the stage and writes nothing into tools/bin", async () => {

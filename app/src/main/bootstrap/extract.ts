@@ -1,6 +1,6 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import path, { dirname, basename, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
-import type { CommandRunner, Locate } from "../platform/index.ts";
+import type { CommandRunner, Locate, Processes } from "../platform/index.ts";
 import { StageError } from "./errors.ts";
 import { removeTree, sha256File } from "./fsutil.ts";
 import { isInside } from "../paths.ts";
@@ -64,6 +64,8 @@ export interface ExtractRequest {
 	dest: string;
 	locate: Locate;
 	run: CommandRunner;
+	/** The whole environment `tar` gets (T5-F005): with it the program starts from nothing else, without it from the runner's base. */
+	env?: Readonly<Record<string, string>>;
 	/** Leading path components dropped from every entry (the `node-v24.22.1-win-x64/` folder of the Node zip). */
 	stripComponents?: number;
 }
@@ -78,7 +80,7 @@ export interface Extracted {
 const DISK_FULL = /No space left on device|not enough space on the disk|There is not enough space|disk is full|ENOSPC/i;
 
 async function tar(request: ExtractRequest, tarPath: string, args: string[], cwd: string): Promise<string> {
-	const result = await request.run(tarPath, args, { timeoutMs: TAR_LIMIT_MS, cwd });
+	const result = await request.run(tarPath, args, { timeoutMs: TAR_LIMIT_MS, cwd, ...(request.env ? { env: request.env, replaceEnv: true } : {}) });
 	if (result.code !== 0) {
 		const why = result.timedOut ? "timed out" : `exit ${result.code}`;
 		const detail = `tar ${args[0]} ${request.archive} failed (${why}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`;
@@ -136,6 +138,10 @@ export interface SelfExtractRequest {
 	/** A new or empty folder; the self-extractor's output lands under it. */
 	dest: string;
 	run: CommandRunner;
+	/** The whole environment the installer gets (T5-F005): it runs code from the archive, so it must not inherit the app's own. */
+	env?: Readonly<Record<string, string>>;
+	/** Looked at after the installer exits: a program still running from `dest` fails the extraction, since the staging folder is about to be renamed. */
+	processes?: Pick<Processes, "listUnder">;
 }
 
 /**
@@ -153,12 +159,18 @@ export async function extractSelfExtractor(request: SelfExtractRequest): Promise
 	const out = relative(dirname(dest), dest);
 	if (!/^[\x21-\x7e]+$/.test(out) || out.startsWith("-")) throw new ExtractRefused(installer, `the destination name ${JSON.stringify(out)} has characters the extractor cannot read in its arguments`);
 	try {
-		const result = await request.run(installer, [`-o${out}`, "-y"], { timeoutMs: SFX_LIMIT_MS, cwd: dirname(dest) });
+		const result = await request.run(installer, [`-o${out}`, "-y"], { timeoutMs: SFX_LIMIT_MS, cwd: dirname(dest), ...(request.env ? { env: request.env, replaceEnv: true } : {}) });
 		if (result.code !== 0) {
 			const why = result.timedOut ? "timed out" : `exit ${result.code}`;
 			const detail = `${basename(installer)} failed (${why}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`;
 			if (DISK_FULL.test(`${result.stderr}${result.stdout}`)) throw new StageError("disk", {}, detail);
 			throw new StageError("other", { stage: "extract" }, detail);
+		}
+		// PortableGit's self-extractor runs `RunProgram="git-bash.exe ... --command=post-install.bat"` from the extracted tree before it exits (T5-F005).
+		// 7zSD waits for it; if it did not, a bash would still hold the staging folder when it is renamed, so look.
+		const running = (await request.processes?.listUnder(dest)) ?? [];
+		if (running.length > 0) {
+			throw new StageError("locked", {}, `${basename(installer)} exited while ${running.map((p) => `${p.executable ?? "a process"} (pid ${p.pid})`).join(", ")} still runs from ${dest}`);
 		}
 		checkExtractedTree(installer, dest);
 	} catch (error) {

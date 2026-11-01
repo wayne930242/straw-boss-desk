@@ -1,10 +1,10 @@
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, posix, win32 } from "node:path";
-import { toolDir, toolExecutable, type AppPlatform } from "../../paths.ts";
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, posix, win32 } from "node:path";
+import { toolDir, toolExecutable, type AppPlatform, type Layout } from "../../paths.ts";
 import { StageError } from "../errors.ts";
 import { activateFiles, detectFromRecord, fileKey, type Evidence, type Stage, type StageContext } from "../stage.ts";
 import { removeTree } from "../fsutil.ts";
-import { FORGE_LAUNCHERS, everyLauncherName, launcherFiles, optionalLaunchers, windowsShims, type LauncherSpec } from "./launcher-files.ts";
+import { FORGE_LAUNCHERS, everyLauncherName, everyShimName, launcherFiles, optionalLaunchers, windowsShims, type LauncherSpec } from "./launcher-files.ts";
 import { configValue, hasBlock, readGitconfig, upsertBlock, removeBlock } from "./gitconfig.ts";
 import { PATHS_FORMAT, pathFiles, type EnabledTools, type PathVersions } from "./path-files.ts";
 import { systemEnv } from "../../env.ts";
@@ -13,7 +13,8 @@ import { expectVersion, runLine } from "./support.ts";
 // The stages that make the tool folders reachable: `tool-paths` (the two generated files), `launchers` (gh, glab, and the optional tools' launchers), and
 // `git-helpers` (the forge credential helpers in the private gitconfig). Spec: Stages, Tool paths.
 
-export const LAUNCHER_FORMAT = 1;
+// Format 2 (task 5b): the Windows `.exe` shims moved from `tools/bin` to `tools/bin-exe`, and the `.cmd` launchers call the paths file by its bare name.
+export const LAUNCHER_FORMAT = 2;
 
 /** The enabled set as a stage's evidence names it: adding or removing a name in the recipe changes it, which fails `detect`. */
 const setTag = (enabled: EnabledTools): string => [...enabled.clis, ...enabled.optional].join(",") || "none";
@@ -132,16 +133,78 @@ function linkOrCopy(source: string, target: string): void {
 	}
 }
 
-export function launchersStage(platform: AppPlatform, enabled: EnabledTools, allOptional: readonly string[]): Stage {
+/**
+ * Loosely resolved real path: the deepest part that exists is resolved (8.3 names and links expanded), the rest is appended. A folder the launcher
+ * has not made yet still compares.
+ */
+function realLoose(path: string, realpath: (p: string) => string): string {
+	try {
+		return realpath(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		const parent = dirname(path);
+		if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === path) throw error;
+		return join(realLoose(parent, realpath), basename(path));
+	}
+}
+
+/** True when `printed` (what a tool says its folder is) and `expected` name one folder, however each is spelled (short names, case on Windows, a link). */
+export function sameFolder(printed: string, expected: string, realpath: (p: string) => string = realpathSync.native): boolean {
+	let a: string;
+	let b: string;
+	try {
+		a = realLoose(printed.trim(), realpath);
+		b = realLoose(expected, realpath);
+	} catch {
+		return false;
+	}
+	return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+export interface LauncherPlan {
+	/** Names written into `tools/bin`: the launchers, both flavours on Windows. */
+	textNames: string[];
+	/** Windows: the `.exe` shims written into `tools/bin-exe`. */
+	shimNames: string[];
+	/** Absolute paths that must not exist after the set is in place: launchers of dropped tools, any `.exe` in `tools/bin` (T5-F001), shims of dropped tools. */
+	drop: string[];
+}
+
+/** Which files a launcher set puts where, and what it deletes. Pure: a test reads the Windows plan on any platform. */
+export function launcherPlan(layout: Layout, enabled: EnabledTools, allOptional: readonly string[]): LauncherPlan {
+	const platform = layout.platform;
+	const P = platform === "win32" ? win32 : posix;
+	const textNames = Object.keys(launcherFiles(platform, specsFor(enabled)));
+	const shimNames = platform === "win32" ? enabled.optional.filter((tool) => windowsShims(tool).length > 0).flatMap(windowsShims) : [];
+	const drop = [
+		...everyLauncherName(platform, allOptional).filter((name) => !textNames.includes(name)).map((name) => P.join(layout.tools.bin, name)),
+		...everyShimName(platform, allOptional).filter((name) => !shimNames.includes(name)).map((name) => P.join(layout.tools.binExe, name)),
+	];
+	return { textNames, shimNames, drop };
+}
+
+export interface LaunchersOptions {
+	/**
+	 * Run each launcher's `probe` through the staged launcher. Default: on Windows, where the launcher hands the tool 8.3 short names (T5-F002). A test
+	 * turns it on for a stand-in tool elsewhere.
+	 */
+	probe?: boolean;
+}
+
+export function launchersStage(platform: AppPlatform, enabled: EnabledTools, allOptional: readonly string[], options: LaunchersOptions = {}): Stage {
 	const win = platform === "win32";
+	const probe = options.probe ?? win;
 	const tag = `format ${LAUNCHER_FORMAT}; launchers ${setTag(enabled)}`;
 	const specs = specsFor(enabled);
 	const stagingOf = (ctx: StageContext): string => join(ctx.layout.tools.root, "bin.staging");
-	/** On Windows the optional tools' executables are linked into `tools/bin` as `bun.exe` and `bunx.exe` (FE2R-F009), so their versions are in the evidence. */
+	/** The staged `.exe` shims sit in a subfolder of the staging folder and are renamed into `tools/bin-exe`, not `tools/bin` (T5-F001). */
+	const shimStagingOf = (ctx: StageContext): string => join(stagingOf(ctx), "exe");
+	/** On Windows the optional tools' executables are linked into `tools/bin-exe` as `bun.exe` and `bunx.exe` (FE2R-F009), so their versions are in the evidence. */
 	const shimTools = win ? enabled.optional.filter((tool) => windowsShims(tool).length > 0) : [];
 	const dependsOn = (ctx: StageContext): Record<string, string> => (shimTools.length > 0 ? ctx.versionsOf(shimTools) : {});
 	const textFiles = launcherFiles(platform, specs);
 	const shimNames = shimTools.flatMap(windowsShims);
+	const binExe = (ctx: StageContext, name: string): string => join(ctx.layout.tools.binExe, name);
 	return {
 		name: "launchers",
 		needs: ["tool-paths"],
@@ -162,11 +225,11 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 					return null;
 				}
 			}
-			// A launcher of a tool the recipe no longer names is deleted when the set changes; one that came back is a reason to write the set again.
-			const written = new Set([...Object.keys(textFiles), ...shimNames]);
-			const stale = everyLauncherName(platform, allOptional).find((name) => !written.has(name) && existsSync(toolsBin(ctx, name)));
+			// A launcher of a tool the recipe no longer names is deleted when the set changes; one that came back is a reason to write the set again. So is a
+			// `.exe` shim in `tools/bin` (task 5 put them there; beside a `.cmd` launcher it would win the PATHEXT lookup, T5-F001) or a shim of a dropped tool.
+			const stale = launcherPlan(ctx.layout, enabled, allOptional).drop.find((path) => existsSync(path));
 			if (stale !== undefined) {
-				ctx.log.event({ event: "detect-failed", reason: `${toolsBin(ctx, stale)} belongs to a tool the recipe does not name` });
+				ctx.log.event({ event: "detect-failed", reason: `${stale} does not belong to the launchers the recipe needs` });
 				return null;
 			}
 			return found;
@@ -177,10 +240,11 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 			// The staged launchers find their root from their own place (`tools/bin.staging/../..`) and read the `paths` files beside them: copy those in
 			// for the check. They are not part of the set that is renamed into `tools/bin`.
 			for (const name of Object.keys(pathFiles(platform, ctx.layout, versionsFor(ctx, enabled), enabled))) copyFileSync(toolsBin(ctx, name), join(dir, name));
+			if (shimNames.length > 0) mkdirSync(shimStagingOf(ctx), { recursive: true });
 			for (const tool of shimTools) {
 				const version = ctx.versionsOf([tool])[tool] as string;
 				const source = join(toolDir(ctx.layout, tool, version), ...toolExecutable(platform, tool).split("/"));
-				for (const name of windowsShims(tool)) linkOrCopy(source, join(dir, name));
+				for (const name of windowsShims(tool)) linkOrCopy(source, join(shimStagingOf(ctx), name));
 			}
 		},
 		async verify(ctx) {
@@ -189,31 +253,45 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 			const env = systemEnv(platform, ctx.appEnv);
 			const versions = versionsFor(ctx, enabled);
 			const targets = specs.map((spec) => ({ spec, tool: spec.pathVar === "SBD_GH" ? "gh" : spec.pathVar === "SBD_GLAB" ? "glab" : spec.pathVar.slice(4).toLowerCase() }));
+			/** The first output line of the staged launcher. A Windows .cmd cannot be spawned directly (Node refuses it), and cmd.exe takes only names the app chose: run it by name from its own folder. */
+			const through = async (spec: LauncherSpec, args: readonly string[]): Promise<string> => {
+				if (!win) return runLine(ctx, join(dir, spec.name), args);
+				const result = await ctx.exec(ctx.platform.locate.system("cmd"), ["/d", "/c", `${spec.name}.cmd`, ...args], { cwd: dir, env, timeoutMs: 120_000 });
+				if (result.code !== 0) throw new StageError("other", { stage: "launchers" }, `${spec.name}.cmd ${args.join(" ")} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`);
+				return result.stdout.trim().split(/\r?\n/)[0] ?? "";
+			};
 			for (const { spec, tool } of targets) {
 				const version = tool === "gh" || tool === "glab" ? (versions[tool] as string) : (versions.optional[tool] as string);
-				// A Windows .cmd cannot be spawned directly (Node refuses it), and cmd.exe takes only names the app chose: run it by name from its own folder.
-				const line = win
-					? await (async () => {
-							const result = await ctx.exec(ctx.platform.locate.system("cmd"), ["/d", "/c", `${spec.name}.cmd`, "--version"], { cwd: dir, env, timeoutMs: 120_000 });
-							if (result.code !== 0) throw new StageError("other", { stage: "launchers" }, `${spec.name}.cmd --version failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? ""}`);
-							return result.stdout.trim().split(/\r?\n/)[0] ?? "";
-						})()
-					: await runLine(ctx, join(dir, spec.name), ["--version"]);
+				const line = await through(spec, ["--version"]);
 				expectVersion(ctx, spec.name, line, version);
 				lines.push(`${spec.name} -> ${line}`);
+				if (probe && spec.probe !== undefined) {
+					// Where the tool says it keeps its files. If it cannot read the folders the launcher gave it (T5-F002), it keeps them in the project.
+					const printed = await through(spec, spec.probe.args);
+					const expected = join(ctx.layout.root, ...spec.probe.folder.split("/"));
+					if (!sameFolder(printed, expected)) {
+						throw new StageError(
+							"other",
+							{ stage: "launchers", reason: "short-names", name: spec.name },
+							`${spec.name} ${spec.probe.args.join(" ")} says ${JSON.stringify(printed)}, not ${expected}: it cannot read the folder the launcher names (a root with characters outside the ANSI code page, and 8.3 short names off for the drive)`,
+						);
+					}
+					lines.push(`${spec.name} ${spec.probe.args.join(" ")} -> ${spec.probe.folder}`);
+				}
 			}
 			for (const name of shimNames) {
-				const line = await runLine(ctx, join(dir, name), ["--version"]);
+				const line = await runLine(ctx, join(shimStagingOf(ctx), name), ["--version"]);
 				lines.push(`${name} -> ${line}`);
 			}
-			const names = [...Object.keys(textFiles), ...shimNames];
-			const keys = names.map((name) => fileKey(ctx.layout, toolsBin(ctx, name)));
+			const finals = [...Object.keys(textFiles).map((name) => toolsBin(ctx, name)), ...shimNames.map((name) => binExe(ctx, name))];
+			const staged = [...Object.keys(textFiles).map((name) => join(dir, name)), ...shimNames.map((name) => join(shimStagingOf(ctx), name))];
+			const keys = finals.map((final) => fileKey(ctx.layout, final));
 			const deps = dependsOn(ctx);
 			const evidence: Evidence = {
 				text: lines.length > 0 ? lines.join("; ") : "no launchers (the recipe names no code host and no optional tool)",
 				version: tag,
 				files: keys,
-				stagedFiles: Object.fromEntries(names.map((name, i) => [keys[i] as string, join(dir, name)])),
+				stagedFiles: Object.fromEntries(staged.map((path, i) => [keys[i] as string, path])),
 			};
 			if (Object.keys(deps).length > 0) evidence.dependsOn = deps;
 			return evidence;
@@ -221,10 +299,17 @@ export function launchersStage(platform: AppPlatform, enabled: EnabledTools, all
 		async activate(ctx) {
 			const dir = stagingOf(ctx);
 			mkdirSync(ctx.layout.tools.bin, { recursive: true });
-			const names = [...Object.keys(textFiles), ...shimNames];
-			const keep = new Set(names);
-			const drop = everyLauncherName(platform, allOptional).filter((name) => !keep.has(name)).map((name) => toolsBin(ctx, name));
-			activateFiles(ctx, names.map((name) => ({ from: join(dir, name), to: toolsBin(ctx, name) })), drop);
+			// Deleted again: launchers of dropped tools, any `.exe` in `tools/bin` (the old home of the shims), and shims of dropped tools.
+			const { drop } = launcherPlan(ctx.layout, enabled, allOptional);
+			if (shimNames.length > 0) mkdirSync(ctx.layout.tools.binExe, { recursive: true });
+			activateFiles(
+				ctx,
+				[
+					...Object.keys(textFiles).map((name) => ({ from: join(dir, name), to: toolsBin(ctx, name) })),
+					...shimNames.map((name) => ({ from: join(shimStagingOf(ctx), name), to: binExe(ctx, name) })),
+				],
+				drop,
+			);
 		},
 	};
 }

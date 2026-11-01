@@ -198,7 +198,7 @@ describe("tool folders", () => {
 		const root = "C:\\r";
 		const layout = computeLayout({ root, home: "C:\\h", platform: "win32", realpath: fakeFs({ "C:\\h": "C:\\h", "C:\\r": "C:\\r\\.." }) });
 		assert.deepEqual(toolPathEntries(layout, current).map((e) => win32.relative(root, e)), [
-			"tools\\bin", "tools\\node\\24.22.1", "tools\\npm", "tools\\git\\2.56.0\\cmd", "tools\\git\\2.56.0\\bin", "tools\\herdr\\0.9.5",
+			"tools\\bin", "tools\\bin-exe", "tools\\node\\24.22.1", "tools\\npm", "tools\\git\\2.56.0\\cmd", "tools\\git\\2.56.0\\bin", "tools\\herdr\\0.9.5",
 		]);
 	});
 	it("lists them on macOS", () => {

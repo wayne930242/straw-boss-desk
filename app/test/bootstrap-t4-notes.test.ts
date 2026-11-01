@@ -413,6 +413,27 @@ describe("the self-extractor (PortableGit's .7z.exe)", () => {
 		);
 	});
 
+	it("T5-F005: runs with the environment it is given and nothing else, and a process left running from the folder fails the extraction (a locked failure)", async () => {
+		const { base } = fresh();
+		const { path } = installerOf(base);
+		const sha = await hashOf(path);
+		const seen: Array<{ env: unknown; replaceEnv: unknown }> = [];
+		const run: CommandRunner = async (_file, args, options) => {
+			seen.push({ env: options?.env, replaceEnv: options?.replaceEnv });
+			writeFileSync(join(options?.cwd ?? ".", String(args[0]).slice(2), "f"), "x");
+			return { code: 0, stdout: "", stderr: "" };
+		};
+		await extractSelfExtractor({ installer: path, sha256: sha, dest: join(base, "git", "a.staging"), run, env: { SystemRoot: "C:\\Windows" }, processes: { listUnder: async () => [] } });
+		assert.deepEqual(seen, [{ env: { SystemRoot: "C:\\Windows" }, replaceEnv: true }]);
+
+		const dest = join(base, "git", "b.staging");
+		await assert.rejects(
+			extractSelfExtractor({ installer: path, sha256: sha, dest, run, processes: { listUnder: async () => [{ pid: 4242, startTime: "t", executable: join(dest, "usr", "bin", "bash.exe") }] } }),
+			(e: unknown) => e instanceof StageError && e.category === "locked" && /bash\.exe \(pid 4242\) still runs/.test(e.message),
+		);
+		assert.deepEqual(readdirSync(dest), [], "what was extracted is removed again");
+	});
+
 	it("really runs a program and reads what it wrote (a script as the installer)", { skip: process.platform === "win32" ? "the fake installer is a POSIX script" : false }, async () => {
 		const { base } = fresh();
 		const path = join(base, "downloads", "fake.7z.exe");

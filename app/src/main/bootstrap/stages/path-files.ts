@@ -6,7 +6,8 @@ import { toolDir, toolExecutable, toolPathEntries, type AppPlatform, type Curren
 // launchers, the shims, and the macOS `ZDOTDIR` files each find from their own place or from `STRAW_BOSS_DESK_ROOT` (cmd reads a batch file in the
 // OEM code page, so a user folder with CJK characters written into one would be decoded wrongly).
 
-export const PATHS_FORMAT = 1;
+// Format 2 (task 5b): on Windows `tools/bin-exe` follows `tools/bin` in the PATH list (T5-F001).
+export const PATHS_FORMAT = 2;
 
 /** What a paths file lists beyond Node, Git, and Herdr. */
 export interface EnabledTools {

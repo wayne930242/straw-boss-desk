@@ -354,6 +354,21 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 
 function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[]): StageContext {
 	const log = deps.logFor(stage.name);
+	/** The scrubbed environment of the programs that unpack a download (`tar`, a self-extractor): the system essentials and nothing of the app's own (T5-F005). */
+	const unpackEnv = systemEnv(deps.layout.platform, deps.appEnv);
+	/**
+	 * Runs `tar` and the self-extractor through the stage log: the command and its exit code, and the output of a failure or of anything but a listing
+	 * (a listing of a Node archive is thousands of lines). The programs get no environment but `unpackEnv`.
+	 */
+	const unpackRun: CommandRunner = async (file, args, options) => {
+		const started = Date.now();
+		log.event({ event: "exec", file, args: [...args] });
+		const result = await deps.run(file, args, { ...options, env: unpackEnv, replaceEnv: true });
+		if (result.code !== 0 || args[0] !== "-tf") log.raw(`$ ${file} ${args.join(" ")}\n${result.stdout}${result.stdout.endsWith("\n") || result.stdout === "" ? "" : "\n"}${result.stderr}\n`);
+		log.flush();
+		log.event({ event: "exec-result", file, code: result.code, timedOut: result.timedOut === true, ms: Date.now() - started });
+		return result;
+	};
 	return {
 		stage: stage.name,
 		layout: deps.layout,
@@ -407,14 +422,15 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 			};
 		},
 		extractSelfExtractor(installer, sha256, dest) {
-			return extractSelfExtractor({ installer, sha256, dest, run: deps.run });
+			return extractSelfExtractor({ installer, sha256, dest, run: unpackRun, env: unpackEnv, processes: deps.platform.processes });
 		},
 		extract(archive, dest, stripComponents) {
 			return extractArchive({
 				archive,
 				dest,
 				locate: deps.platform.locate,
-				run: deps.run,
+				run: unpackRun,
+				env: unpackEnv,
 				...(stripComponents ? { stripComponents } : {}),
 			});
 		},

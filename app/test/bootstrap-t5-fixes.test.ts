@@ -10,6 +10,10 @@ import { GitconfigBlockError, readGitconfig } from "../src/main/bootstrap/stages
 import { withManagedFiles } from "../src/main/bootstrap/stages/support.ts";
 import { gitStage } from "../src/main/bootstrap/stages/tools.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
+import { buildEnv } from "../src/main/env.ts";
+import { computeLayout, toolPathEntries, type AppPlatform } from "../src/main/paths.ts";
+import { launcherPlan, sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
+import { everyShimName } from "../src/main/bootstrap/stages/launcher-files.ts";
 import type { CommandRunner } from "../src/main/platform/index.ts";
 import { tarGz, zip } from "./harness/archives.ts";
 import { currentKey, leftovers, makeStack, publish, runEngine, scratchRoot, testLayout, toolStage } from "./harness/engine-fixture.ts";
@@ -195,6 +199,34 @@ describe("T5-F006: gitconfig.replaced is restored, and managed files are written
 	});
 });
 
+describe("T5-F005: tar and the self-extractor get a scrubbed environment, and their commands are in the stage log", () => {
+	it("an engine run's tar calls carry only the system essentials, replace the environment, and are logged", { skip: posixOnly }, async () => {
+		const { root } = fresh();
+		const version = "1.0.0";
+		const alpha = publish(server, "alpha-scrub", { version });
+		const calls: Array<{ file: string; env: Readonly<Record<string, string>> | undefined; replaceEnv: boolean | undefined }> = [];
+		const real = execRunner();
+		const run: CommandRunner = (file, args, options) => {
+			calls.push({ file, env: options?.env, replaceEnv: options?.replaceEnv });
+			return real(file, args, options);
+		};
+		const appEnv = { HOME: root, GH_TOKEN: "ghp_must_not_reach_tar", PI_SUBAGENT_ID: "x", SOME_SECRET: "s3cret" };
+		const result = await runEngine(root, makeStack({ "alpha-scrub": alpha }), [toolStage("alpha-scrub")], { run, appEnv });
+		assert.equal(result.ok, true, JSON.stringify(result.outcomes));
+		const tarCalls = calls.filter((c) => /tar$/.test(c.file));
+		assert.ok(tarCalls.length >= 2);
+		for (const c of tarCalls) {
+			assert.equal(c.replaceEnv, true);
+			assert.deepEqual(Object.keys(c.env ?? {}).sort(), ["HOME"], "only the system essentials of the app's environment");
+		}
+		const log = readFileSync(join(root, "logs", "stage-alpha-scrub.log"), "utf8");
+		assert.match(log, /\$ \/usr\/bin\/tar -xf /, "the extraction command is in the stage log");
+		assert.ok(!log.includes("ghp_must_not_reach_tar"));
+		const events = readFileSync(join(root, "logs", "bootstrap.jsonl"), "utf8");
+		assert.match(events, /"event":"exec".*\/usr\/bin\/tar/);
+	});
+});
+
 describe("T5-F003: fd-rg extracts under the root, whatever the agent folder is", () => {
 	it("an agent folder outside the root and behind a non-ASCII path installs; tar sees only ASCII names and works under tools/", async () => {
 		const { base, root } = fresh();
@@ -235,5 +267,75 @@ describe("T5-F003: fd-rg extracts under the root, whatever the agent folder is",
 		}
 		assert.deepEqual(leftovers(root), []);
 		assert.deepEqual(leftovers(agentDir), []);
+	});
+});
+
+// ---- T5-F001 and T5-F002 -----------------------------------------------------------------------------------------------
+
+function layoutOf(platform: AppPlatform) {
+	const home = platform === "win32" ? "C:\\Users\\測試" : "/Users/測試";
+	const root = platform === "win32" ? `${home}\\AppData\\Local\\sbd 測試` : `${home}/Library/Application Support/straw-boss-desk`;
+	return computeLayout({ root, home, platform, realpath: (p) => { if (p === home) return p; throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); } });
+}
+
+describe("T5-F001: a bare bun in cmd or PowerShell reaches the launcher, a spawn without a shell still finds the shim", () => {
+	const win = layoutOf("win32");
+	const bun = { clis: [] as ("gh" | "glab")[], optional: ["bun"] };
+
+	it("the .exe shims go to tools\\bin-exe, the PATH lists it after tools\\bin, and no .exe stays in tools\\bin", () => {
+		const plan = launcherPlan(win, bun, ["bun"]);
+		assert.deepEqual(plan.textNames.sort(), ["bun", "bun.cmd", "bunx", "bunx.cmd"]);
+		assert.deepEqual(plan.shimNames, ["bun.exe", "bunx.exe"]);
+		// Task 5 wrote the shims into tools\bin; a left-over there beside bun.cmd would win the PATHEXT lookup, so every set deletes them.
+		assert.deepEqual(plan.drop.filter((p) => /bunx?\.exe$/.test(p)).sort(), [`${win.tools.bin}\\bun.exe`, `${win.tools.bin}\\bunx.exe`]);
+		const entries = toolPathEntries(win, { node: "24.22.1", git: "2.56.0.3", herdr: "0.9.5" });
+		assert.deepEqual(entries.slice(0, 2), [win.tools.bin, win.tools.binExe]);
+		assert.equal(win.tools.binExe, `${win.root}\\tools\\bin-exe`);
+	});
+
+	it("a recipe that drops bun deletes the launchers, any .exe in tools\\bin, and the shims in tools\\bin-exe", () => {
+		const plan = launcherPlan(win, { clis: [], optional: [] }, ["bun"]);
+		assert.deepEqual(plan.shimNames, []);
+		assert.deepEqual(plan.drop.filter((p) => /bunx?(\.cmd|\.exe)?$/.test(p)).sort(), [
+			`${win.tools.bin}\\bun`, `${win.tools.bin}\\bun.cmd`, `${win.tools.bin}\\bun.exe`, `${win.tools.bin}\\bunx`, `${win.tools.bin}\\bunx.cmd`, `${win.tools.bin}\\bunx.exe`,
+			`${win.tools.binExe}\\bun.exe`, `${win.tools.binExe}\\bunx.exe`,
+		].sort());
+	});
+
+	it("macOS has no shims and no tools/bin-exe entry", () => {
+		const mac = layoutOf("darwin");
+		assert.deepEqual(launcherPlan(mac, bun, ["bun"]).shimNames, []);
+		assert.deepEqual(everyShimName("darwin", ["bun"]), []);
+		assert.equal(toolPathEntries(mac, { node: "24.22.1", git: "2.56.0-2", herdr: "0.9.5" }).some((e) => e.includes("bin-exe")), false);
+	});
+
+	it("the constructed environment gives a bun reached without its launcher the telemetry opt-out and the app's folders", () => {
+		const env = buildEnv({ layout: win, current: { node: "24.22.1", git: "2.56.0.3", herdr: "0.9.5" }, appEnv: {}, optionalTools: ["bun"] });
+		assert.equal(env.DO_NOT_TRACK, "1");
+		assert.equal(env.BUN_INSTALL, `${win.root}\\tools\\bun-home`);
+		assert.equal(env.BUN_INSTALL_CACHE_DIR, `${win.root}\\tools\\bun-home\\install\\cache`);
+		const none = buildEnv({ layout: win, current: { node: "24.22.1", git: "2.56.0.3", herdr: "0.9.5" }, appEnv: {} });
+		assert.equal(none.DO_NOT_TRACK, undefined, "a recipe without bun sets none of it");
+	});
+});
+
+describe("T5-F002: the cache folder check", () => {
+	const real = (map: Record<string, string>) => (p: string): string => {
+		const found = map[p];
+		if (found === undefined) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+		return found;
+	};
+
+	it("takes a short name and the long name of one folder as the same, and a project's node_modules/.cache as another", () => {
+		const longName = "/r/測試/tools/bun-home/install/cache";
+		const table = real({ "/r": "/r", "/r/測試": "/r/測試", "/r/測試/tools": "/r/測試/tools", "/r/測試/tools/bun-home": "/r/測試/tools/bun-home", [longName]: longName, "/r/SBD~1/tools/bun-home/install/cache": longName, "/r/SBD~1/tools/bun-home/install": "/r/測試/tools/bun-home/install" });
+		assert.equal(sameFolder("/r/SBD~1/tools/bun-home/install/cache\n", longName, table), true);
+		assert.equal(sameFolder("/work/app/node_modules/.cache", longName, table), false);
+		assert.equal(sameFolder("", longName, table), false);
+	});
+
+	it("compares a folder the launcher has not made yet by its existing parent", () => {
+		const table = real({ "/var": "/private/var", "/var/x": "/private/var/x", "/private/var": "/private/var", "/private/var/x": "/private/var/x" });
+		assert.equal(sameFolder("/private/var/x/tools/cache", "/var/x/tools/cache", table), true);
 	});
 });

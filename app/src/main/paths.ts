@@ -97,6 +97,8 @@ export interface Layout {
 		npmCache: string;
 		downloads: string;
 		bin: string;
+		/** Windows only: the real `.exe` shims of the optional tools (`bun.exe`), on the PATH after `bin` so that a lookup through PATHEXT finds `bin`'s launchers first (T5-F001). */
+		binExe: string;
 		shims: string;
 	};
 	agent: string;
@@ -230,6 +232,7 @@ export function layoutFromRecord(record: LayoutRecord): Layout {
 			npmCache: P.join(tools, "npm-cache"),
 			downloads: P.join(tools, "downloads"),
 			bin: P.join(tools, "bin"),
+			binExe: P.join(tools, "bin-exe"),
 			shims: P.join(tools, "shims"),
 		},
 		agent: record.agentDir,
@@ -337,7 +340,7 @@ export const toolDir = (layout: Layout, tool: string, version: string): string =
 	pathModule(layout.platform).join(layout.tools.root, tool, version);
 
 /**
- * The app's `PATH` folders in order (spec: Tool paths): `tools/bin`, Node, the npm prefix, Git's folders, Herdr. The layout of each tool's folder is
+ * The app's `PATH` folders in order (spec: Tool paths): `tools/bin`, on Windows `tools/bin-exe`, Node, the npm prefix, Git's folders, Herdr. The layout of each tool's folder is
  * fixed here and the stages extract to it: Windows has `node.exe` at the top of the Node folder and PortableGit's `cmd` and `bin`; macOS has
  * `bin/` in the Node and dugite-native folders and the npm prefix, and the bare `herdr` binary in its folder.
  */
@@ -346,7 +349,7 @@ export function toolPathEntries(layout: Layout, current: CurrentTools): string[]
 	const node = toolDir(layout, "node", current.node);
 	const git = toolDir(layout, "git", current.git);
 	const herdr = toolDir(layout, "herdr", current.herdr);
-	if (layout.platform === "win32") return [layout.tools.bin, node, layout.tools.npm, P.join(git, "cmd"), P.join(git, "bin"), herdr];
+	if (layout.platform === "win32") return [layout.tools.bin, layout.tools.binExe, node, layout.tools.npm, P.join(git, "cmd"), P.join(git, "bin"), herdr];
 	return [layout.tools.bin, P.join(node, "bin"), P.join(layout.tools.npm, "bin"), P.join(git, "bin"), herdr];
 }
 

@@ -12,6 +12,10 @@ export interface FailureParams {
 	what?: string;
 	/** other: the stage that failed. */
 	stage?: string;
+	/** other: a failure with a sentence of its own. `short-names`: a tool cannot read the app's folder and short folder names are off (T5-F002). */
+	reason?: "short-names";
+	/** other, `short-names`: the tool. */
+	name?: string;
 	/** network: why the host cannot be reached, when the check could tell: `path` (a VPN, a proxy, a firewall on the way) or `tls` (a certificate this computer does not trust: a proxy or certificate inspection). */
 	cause?: "path" | "tls";
 }
@@ -41,6 +45,7 @@ export function failureSentence(category: FailureCategory, params: FailureParams
 		case "locked":
 			return "A file was in use (often antivirus scanning it).";
 		case "other":
+			if (params.reason === "short-names") return `${params.name ?? "A tool"} cannot keep its files in the app's folder on this computer: the folder's name has characters it cannot read, and short folder names are turned off for this drive, so it would put them inside each project instead. Ask whoever manages this computer to turn short names on for the drive, then try again.`;
 			return `${params.stage ?? "A step"} failed.`;
 	}
 }

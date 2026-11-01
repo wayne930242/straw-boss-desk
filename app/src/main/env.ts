@@ -60,8 +60,13 @@ export function systemEnv(platform: "win32" | "darwin", appEnv: EnvLike): EnvMap
 	return out;
 }
 
-/** The variables a launched optional tool needs beyond the PATH: where bun keeps its cache and global packages (spec: Tool paths). */
-export const optionalToolEnv = (layout: Layout, tool: string): EnvMap => (tool === "bun" ? { BUN_INSTALL: bunHome(layout), BUN_INSTALL_CACHE_DIR: bunCacheDir(layout) } : {});
+/**
+ * The variables a launched optional tool needs beyond the PATH: where bun keeps its cache and global packages, and its telemetry opt-out (spec: Tool
+ * paths). A program that reaches bun without its launcher (a spawn without a shell finds the `bun.exe` shim) gets these from here; on Windows the paths
+ * are long names, and bun reads them as ANSI, which only the launcher's short names survive (build notes: task 5b, T5-F001).
+ */
+export const optionalToolEnv = (layout: Layout, tool: string): EnvMap =>
+	tool === "bun" ? { BUN_INSTALL: bunHome(layout), BUN_INSTALL_CACHE_DIR: bunCacheDir(layout), DO_NOT_TRACK: "1" } : {};
 
 /** `<root>/tools/bun-home`: bun's `BUN_INSTALL`, so its cache and global packages stay under the app's `tools/` and not in the PM's `~/.bun`. */
 export const bunHome = (layout: Layout): string => (layout.platform === "win32" ? win32 : posix).join(layout.tools.root, "bun-home");

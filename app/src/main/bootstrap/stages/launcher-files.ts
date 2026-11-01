@@ -61,6 +61,12 @@ export interface LauncherSpec {
 	 * `<project>\node_modules\.cache` (found by task 5's e2e on `windows-2025`); gh's Go runtime reads the same variable correctly.
 	 */
 	shortPaths?: boolean;
+	/**
+	 * A command the `launchers` stage runs through the staged launcher to see where the tool really keeps its files: `args` print one folder, and it
+	 * must be `folder` under the root. On Windows a launcher that could not make the tool read its folders (short names turned off for the drive) fails
+	 * here, at install, instead of leaving a cache in every project (T5-F002).
+	 */
+	probe?: { args: readonly string[]; folder: string };
 	env: readonly Pair[];
 	unset: readonly string[];
 }
@@ -94,14 +100,17 @@ export function optionalLaunchers(tool: string): LauncherSpec[] {
 	if (tool !== "bun") return [];
 	const base = { rootFolders: [["BUN_INSTALL", "tools/bun-home"], ["BUN_INSTALL_CACHE_DIR", "tools/bun-home/install/cache"]] as readonly Pair[], env: [NO_TRACK] as readonly Pair[], unset: [] as readonly string[], pathVar: "SBD_BUN", shortPaths: true };
 	return [
-		{ name: "bun", prefixArgs: [], ...base },
+		{ name: "bun", prefixArgs: [], ...base, probe: { args: ["pm", "cache"], folder: "tools/bun-home/install/cache" } },
 		{ name: "bunx", prefixArgs: ["x"], ...base },
 	];
 }
 
 /**
  * Names of the real executables a Windows launcher set adds for a tool. A Node `spawn("bun")` without a shell finds only `bun.exe` (it never tries `.cmd`),
- * and FE2's scripts spawn `bun` that way, so the tool's executable is also linked into `tools/bin` under these names (build notes: FE2R-F009).
+ * and FE2's scripts spawn `bun` that way, so the tool's executable is also linked under these names (build notes: FE2R-F009). They live in
+ * `tools/bin-exe`, not in `tools/bin`: cmd and PowerShell try every PATHEXT extension in one folder before the next folder, so a `bun.exe` beside `bun.cmd`
+ * would win and skip the launcher's short folder names and telemetry switch (T5-F001). With the shims one PATH folder later, a lookup through
+ * PATHEXT finds `tools/bin/bun.cmd` first, and a spawn without a shell, which tries only `.exe`, passes over `tools/bin` and finds the shim.
  */
 export function windowsShims(tool: string): string[] {
 	return tool === "bun" ? ["bun.exe", "bunx.exe"] : [];
@@ -114,9 +123,13 @@ export function cmdLauncher(spec: LauncherSpec): string {
 	const lines = [
 		"@echo off",
 		`rem straw-boss-desk launcher for ${spec.name}: reads paths.cmd, sets its environment${spec.unset.length > 0 ? ", removes CI and token variables" : ""}.`,
-		"setlocal",
+		// DisableDelayedExpansion: the per-user `DelayedExpansion=1` setting would strip a `!` from the root. The paths file is called by its bare name from
+		// its own folder, never by a path: CALL doubles the carets of its line and expands `%` in it a second time, so a root with `^` or `%` broke it (T5-F007).
+		"setlocal DisableDelayedExpansion",
 		'for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"',
-		'call "%~dp0paths.cmd"',
+		'pushd "%~dp0"',
+		"call paths.cmd",
+		"popd",
 		...(spec.config ? [`set "${spec.config.variable}=%SBD_APP_ROOT%\\config\\${spec.config.folder}"`] : []),
 		...spec.rootFolders.flatMap(([k, folder]) => {
 			const path = `%SBD_APP_ROOT%\\${folder.split("/").join("\\")}`;
@@ -164,10 +177,16 @@ export function launcherFiles(platform: AppPlatform, specs: readonly LauncherSpe
 	return out;
 }
 
-/** Every launcher name the app may write, enabled or not: what a launcher set deletes again for a tool the recipe no longer names. */
+/**
+ * Every name the app may have written into `tools/bin`, enabled or not: what a launcher set deletes again for a tool the recipe no longer names. On Windows
+ * this includes the `.exe` shims, which task 5 wrote there and which now live in `tools/bin-exe`: one left behind would win the PATHEXT lookup (T5-F001).
+ */
 export function everyLauncherName(platform: AppPlatform, optionalTools: readonly string[]): string[] {
 	const specs = [...Object.values(FORGE_LAUNCHERS), ...optionalTools.flatMap(optionalLaunchers)];
 	const names = specs.flatMap((s) => (platform === "win32" ? [s.name, `${s.name}.cmd`] : [s.name]));
 	if (platform === "win32") names.push(...optionalTools.flatMap(windowsShims));
 	return names;
 }
+
+/** Every shim name the app may have written into `tools/bin-exe`, enabled or not (Windows). */
+export const everyShimName = (platform: AppPlatform, optionalTools: readonly string[]): string[] => (platform === "win32" ? optionalTools.flatMap(windowsShims) : []);
