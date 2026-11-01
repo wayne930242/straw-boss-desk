@@ -465,11 +465,12 @@ The schema ships in this repository as `recipe/recipe.schema.json` (JSON Schema 
 | `version` | semver string | yes | Compared on update; a lower or equal version is not applied. |
 | `updateUrl` | https URL | no | Where newer versions of this recipe are fetched (see Delivery). The host must be public by its name: not `localhost`, a single-label name, a trailing-dot name, `.local`, `.localdomain`, `.lan`, `.home.arpa`, `.internal`, nor a private, loopback, link-local, shared (100.64/10), IETF protocol assignments (192.0.0.0/24), benchmarking (198.18/15), multicast or reserved (224/4 and up) IPv4 address. The check is lexical; the fetcher re-checks the resolved address and every redirect. |
 | `profile` | `{ "version": semver, "integrity": "sha512-..." }` | no | Pins the official profile package to another version than `stack.json`'s. Omitted means the app default. Another package name is not allowed. |
-| `forges` | array of `{ "kind": "github" \| "gitlab", "host": hostname, "login": "device" \| "token" }`, at least one | yes | Which CLIs to install and log in. `github` requires `host: "github.com"`, the only GitHub host the design supports. `login` defaults to `device` for GitHub and `token` for GitLab. `github` with `login: "token"` is refused: section 4 defines no GitHub token flow, and a pasted classic token could carry scopes (`workflow`) that undo the limit in "What the logins can do". |
-| `repos` | array of `{ "url": https URL, "folder": folder name, "defaultBranch": branch name, "label": string }` | no | Repositories to clone and open as bases. `url` must be on a host in `forges`. `folder` is a single path segment, unique in the recipe, without `..` or reserved Windows names (`CON`, `NUL`, …). `defaultBranch` is optional. `label` is optional and names the base, defaulting to `folder`. |
+| `forges` | array of `{ "kind": "github" \| "gitlab", "host": hostname, "login": "device" \| "token" }`, at least one | yes | Which CLIs to install and log in. A GitLab host may be private (no public DNS record, reachable only on a company network); the validator checks only its name, and the preflight says so when the PM's computer cannot reach it (phase 2 spec, **Network**). `github` requires `host: "github.com"`, the only GitHub host the design supports. `login` defaults to `device` for GitHub and `token` for GitLab. `github` with `login: "token"` is refused: section 4 defines no GitHub token flow, and a pasted classic token could carry scopes (`workflow`) that undo the limit in "What the logins can do". |
+| `repos` | array of `{ "url": https URL, "folder": folder name, "defaultBranch": branch name, "label": string }` | no | Repositories to clone and open as bases. `url` must be on a host in `forges`. `folder` is a single path segment, unique in the recipe, without `..` or reserved Windows names (`CON`, `NUL`, …). `defaultBranch` is optional; when given, `origin/HEAD` ends up pointing at it even where the code host's own default branch is another one (a repository whose host default is `main` but whose work goes to `develop`), because the PM workflow reads `origin/HEAD` for the branch to start from and the merge request to target. `label` is optional and names the base, defaulting to `folder`. |
 | `straw.relay` | https URL | no | The Straw Link relay, written to `link.relay` in `<agent-dir>/straw-boss/config.json`, where pi-straw-boss reads it (`src/link/config.ts`). |
 | `linear` | `{ "enabled": boolean }` | no | Whether the wizard offers the Linear step. The key itself is always entered by the PM. |
 | `instructions` | string, at most 4000 characters | no | Team guidance appended to AGENTS.md under `## Team: <name>`. |
+| `tools` | array of tool names, each `^[a-z][a-z0-9-]{0,31}$`, unique, at most 8 | no | Optional tools the app installs for this team, by the names `stack.json` lists under `optionalTools` (today `bun`). A name the stack does not list is refused: the shell calls `validateRecipe(input, { reservedPackages, knownTools })` with those names, and the option is optional, so a caller that omits it checks only each name's shape. An optional tool is installed from the pinned download of `stack.json` (its version and SHA256 are not the recipe's to choose) and put on the panes' `PATH`; a tool the recipe does not name is not installed, and a tool dropped from the recipe stays on disk but leaves the `PATH` (phase 2 spec, **Tool paths**). |
 | `packages` | array of `{ "name": npm name, "version": exact version, "integrity": "sha512-..." }` | no | Extra pi packages the team adds, installed skills-only (see Additions). A name that `stack.json` lists is refused: the shell calls `validateRecipe(input, { reservedPackages })` with the package names from `stack.json`. The option is required (`[]` for none); a missing option or a string throws a `TypeError`, so a caller cannot switch the check off by leaving it out. |
 
 Example:
@@ -491,6 +492,7 @@ Example:
   ],
   "straw": { "relay": "https://relay.waydo.example" },
   "linear": { "enabled": true },
+  "tools": ["bun"],
   "instructions": "- 文案用語以《Waydo 用語表》為準：docs/glossary.md。\n- 改動價格或方案文字前，先問 PM 是否已和業務確認。"
 }
 ```
@@ -527,6 +529,7 @@ A recipe comes from a colleague, so before anything is installed, cloned, or wri
 - which code hosts it will sign in to, and which CLIs it installs;
 - each repository it will clone, with its host and the folder it lands in;
 - the Straw Link relay it sets (the address messages pass through);
+- each optional tool it turns on, by name and the version `stack.json` pins;
 - the profile version it pins, when it has a `profile` entry, flagged when that version is older than the app's default (an older profile may lack guard rules);
 - the team instructions, in full;
 - each extra package by name and version, marked "installs third-party code";
@@ -539,10 +542,12 @@ The PM applies or cancels. Nothing is written before the PM applies.
 After the stack is installed, in this order:
 
 1. Install the CLIs the `forges` name (section 4) and log in to each, one at a time.
-2. Clone each repository into `<work folder>/<folder>`, with the app's Git and the forge login. The work folder defaults to `~/StrawBoss`, and the PM can change it once. When `defaultBranch` is given, `git remote set-head origin <defaultBranch>` follows, so the PM workflow's default-branch step finds it. A folder that already exists is reused only when its `origin` is the same URL, in which case it is fetched; any other folder stops that repository with a plain message. Nothing is ever overwritten.
+2. Clone each repository into `<work folder>/<folder>`, with the app's Git and the forge login. The work folder defaults to `~/StrawBoss`, and the PM can change it once. When `defaultBranch` is given, `git remote set-head origin <defaultBranch>` follows, so the PM workflow's default-branch step finds it; a recipe update that changes a repository's `defaultBranch` runs it again for that repository. A folder that already exists is reused only when its `origin` is the same URL, in which case it is fetched; any other folder stops that repository with a plain message. Nothing is ever overwritten.
 3. Open each clone as a base through the HTTP endpoint pi-straw-boss serves for "+ New base" (`open-base`, as `spike/win/lib/gui-client.mjs` calls it), named by `label`, with no first message. The switchboard, when it ships, reads the same repository list.
 4. Write `straw.relay` and the AGENTS.md block, and install `packages`, through the installer of section 7.
 5. Show the Linear step only when `linear.enabled` is true.
+
+The optional tools of `tools` are installed in the install step, before the clones; a recipe update that adds one runs the engine for it, and one that removes one changes the `PATH` only.
 
 A failed step names the repository or host and the reason, and can be retried alone, as the design's step graph requires. On a recipe update, removed repositories are only dropped from the list; their folders and bases stay.
 
