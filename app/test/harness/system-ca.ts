@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import tls from "node:tls";
 import { createTestCa, type TestCa } from "./test-ca.ts";
 import { defineFixture, type FixtureIO } from "./hosted.ts";
 
@@ -27,7 +26,16 @@ async function must(io: FixtureIO, command: string, args: readonly string[], tim
 	assert.equal(result.code, 0, `${what} exited with ${result.code}${result.timedOut ? " (timed out)" : ""}: ${(result.stderr || result.stdout).trim().slice(0, 400)}`);
 }
 
-const inSystemStore = (ca: TestCa): boolean => tls.getCACertificates("system").some((pem) => pem.trim() === ca.caPem.trim());
+/**
+ * Whether the OS store holds the CA, asked of a new Node process each time: a process reads the store once and keeps it (`tls.getCACertificates("system")`
+ * answers from that copy), so the process that added the CA cannot see it go.
+ */
+async function inSystemStore(io: FixtureIO, ca: TestCa): Promise<boolean> {
+	const script = "const c=require('node:crypto'),t=require('node:tls');const want=process.env.SBD_CA_FINGERPRINT;process.stdout.write(t.getCACertificates('system').some((p)=>new c.X509Certificate(p).fingerprint256===want)?'yes':'no')";
+	const result = await io.run(process.execPath, ["-e", script], { timeoutMs: 60_000, env: { SBD_CA_FINGERPRINT: ca.ca.fingerprint256 } });
+	assert.equal(result.code, 0, `listing the OS store exited with ${result.code}: ${result.stderr.trim().slice(0, 300)}`);
+	return result.stdout.trim() === "yes";
+}
 
 export const trustedTestCa = defineFixture({
 	name: "a test CA in the OS certificate store (Windows CurrentUser root store, macOS System keychain), taken out again",
@@ -44,7 +52,7 @@ export const trustedTestCa = defineFixture({
 		try {
 			if (win) await must(io, join(system32, "certutil.exe"), ["-user", "-addstore", "-f", "Root", file], 120_000, "certutil -addstore");
 			else await must(io, "/usr/bin/sudo", ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", SYSTEM_KEYCHAIN, file], 120_000, "security add-trusted-cert");
-			assert.equal(inSystemStore(ca), true, "the CA is in the store as Node reads it (tls.getCACertificates('system'))");
+			assert.equal(await inSystemStore(io, ca), true, "the CA is in the store as a new Node process reads it (tls.getCACertificates('system'))");
 			await scenario({ ca, dir, store: win ? "Windows CurrentUser\\Root" : "macOS System keychain" });
 		} finally {
 			try {
@@ -53,7 +61,7 @@ export const trustedTestCa = defineFixture({
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "remove-trusted-cert", "-d", file], { timeoutMs: 120_000 });
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "delete-certificate", "-c", ca.commonName, SYSTEM_KEYCHAIN], { timeoutMs: 120_000 });
 				}
-				assert.equal(inSystemStore(ca), false, "the CA is out of the store again");
+				assert.equal(await inSystemStore(io, ca), false, "the CA is out of the store again");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

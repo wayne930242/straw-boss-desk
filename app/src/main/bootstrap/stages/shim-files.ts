@@ -50,6 +50,8 @@ export function cmdShim(spec: ShimSpec): string {
 					spec.desk === "pi"
 						? 'endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_APP_ROOT%\\tools\\npm\\pi.cmd" %*'
 						: 'endlocal & set "PATH=%SBD_PATH%;%PATH%" & "%SBD_GIT_BASH%" %*',
+					// A program that is not a batch file returns, and the next line would run the pass-through too: leave with the program's exit code.
+					"exit /b %ERRORLEVEL%",
 				];
 	return crlf([
 		"@echo off",
@@ -77,6 +79,7 @@ export function cmdShim(spec: ShimSpec): string {
 		`for %%F in (${name}.com ${name}.exe ${name}.bat ${name}.cmd) do if not defined SBD_NEXT if /i not "%%~dp$SBD_REST:F"=="%SBD_SHIMS%" set "SBD_NEXT=%%~$SBD_REST:F"`,
 		"if not defined SBD_NEXT goto :missing_pass",
 		'endlocal & "%SBD_NEXT%" %*',
+		"exit /b %ERRORLEVEL%",
 		"",
 		":missing_pass",
 		`>&2 echo ${name} is not installed on this computer (Straw Boss Desk passes ${name} through to the next one on the PATH, and there is none).`,

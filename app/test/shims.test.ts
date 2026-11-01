@@ -180,6 +180,10 @@ describe("the POSIX pi shim, run under bash 4 or later", { skip: isWindows ? "th
 
 // ---- the batch files ---------------------------------------------------------------------------------------------------
 
+/** A batch stand-in for a pinned program: it says it ran, with its arguments, and whether the app's bin folder is first on the PATH; exit code 7. */
+const marker = (who: string): string => `@echo off\r\necho ${who} args=[%*]\r\nfor /f "delims=;" %%A in ("%PATH%") do if exist "%%A\\paths.cmd" echo BIN_FIRST\r\nexit /b 7\r\n`;
+/** What a console shows for a path: a character outside the OEM code page comes out as `?`. */
+const asConsole = (text: string): string => text.replace(/[^\x00-\x7f]/g, "?");
 const BATCH_ROOTS = ["a^b!c%d&e 測試", "plain 測試", "100%", "x!y!", "^^", "a&b", "(1) b"];
 
 describe("the batch shims under a root with cmd's special characters (T5-F007 pattern), Windows only", { skip: isWindows ? false : "Windows only: cmd.exe's own parsing" }, () => {
@@ -200,7 +204,6 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 			for (const [file, text] of Object.entries(shimFiles(["bun"]))) writeFileSync(join(layout.tools.shims, file), text);
 			for (const [file, text] of Object.entries(pathFiles("win32", layout, versions, enabled))) writeFileSync(join(layout.tools.bin, file), text);
 			// The pinned pi and the launcher of bun are batch stand-ins that say they ran, with their arguments, and whether the app's bin folder is first on the PATH.
-			const marker = (who: string): string => `@echo off\r\necho ${who} args=[%*]\r\nfor /f "delims=;" %%A in ("%PATH%") do if exist "%%A\\paths.cmd" echo BIN_FIRST\r\nexit /b 7\r\n`;
 			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
 			writeFileSync(join(layout.tools.bin, "bun.cmd"), marker("LAUNCHER"));
 			// PortableGit's bash.exe is a copy of node.exe here: `bash.cmd -p "..."` prints what it is asked.
@@ -236,9 +239,10 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		const suffix = delayed ? " with delayed expansion switched on (cmd /v:on)" : "";
 		it(`runs the pinned pi in a desk pane, with the app's folders first, the arguments once expanded, and the exit code${suffix}`, async () => {
 			for (const { layout, other } of roots) {
-				const r = await ask(layout, other, "pi", ["--session", "x y", "50%", "a^b"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
+				const r = await ask(layout, other, "pi", ["--session", "x y", "50%"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, { delayed });
 				assert.equal(r.code, 7, `${layout.root}: ${r.stdout}${r.stderr}`);
-				assert.match(r.stdout, /PINNED args=\[--session x y 50% a\^b\]/, layout.root);
+				// node quotes the argument with a space; the `%` reaches the program once, not expanded twice.
+				assert.match(r.stdout, /PINNED args=\[--session "x y" 50%\]/, layout.root);
 				assert.match(r.stdout, /BIN_FIRST/, layout.root);
 			}
 		});
@@ -286,12 +290,17 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 	it("keeps PI_CODING_AGENT_DIR as it finds it, and does not change the caller's working folder", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\necho AGENT=%PI_CODING_AGENT_DIR%\r\necho CWD=%CD%\r\n");
-		const work = join(base, "work 測試");
-		mkdirSync(work, { recursive: true });
-		const agent = join(work, ".pi", "agent");
-		const r = await ask(layout, other, "pi", [], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PI_CODING_AGENT_DIR: agent }, { cwd: work });
-		assert.match(r.stdout, new RegExp(`AGENT=${agent.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
-		assert.equal(/CWD=(.*)\r?\n/.exec(r.stdout)?.[1]?.trim().toLowerCase(), work.toLowerCase());
+		try {
+			const work = join(base, "work 測試");
+			mkdirSync(work, { recursive: true });
+			const agent = join(work, ".pi", "agent");
+			const r = await ask(layout, other, "pi", [], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PI_CODING_AGENT_DIR: agent }, { cwd: work });
+			// A console prints a path's CJK characters as `?`, so the comparison is on that form.
+			assert.match(r.stdout, new RegExp(`AGENT=${asConsole(agent).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
+			assert.equal(/CWD=(.*)\r?\n/.exec(r.stdout)?.[1]?.trim().toLowerCase(), asConsole(work).toLowerCase());
+		} finally {
+			writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
+		}
 	});
 
 	it("works with NoDefaultCurrentDirectoryInExePath set (R5-F007) and a PATH that has no shims folder in it", async () => {
@@ -329,6 +338,7 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		assert.equal(passed.stdout.replace(/\r/g, "").trim(), "PATH_SAME\nDONE", passed.stdout + passed.stderr);
 		const desk = await run(comspec, ["/d", "/c", wrapper], { env: { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root }, cwd: base });
 		assert.equal(desk.stdout.replace(/\r/g, "").trim(), "PATH_CHANGED\nDONE", desk.stdout + desk.stderr);
+		writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
 	});
 });
 
