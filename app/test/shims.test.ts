@@ -361,7 +361,7 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		writeFileSync(join(layout.tools.npm, "pi.cmd"), "@echo off\r\nexit /b 0\r\n");
 		const wrapper = join(base, "wrapper.cmd");
-		writeFileSync(wrapper, '@echo off\r\nset "BEFORE=%PATH%"\r\ncall %1.cmd --x >nul\r\nif "%PATH%"=="%BEFORE%" (echo PATH_SAME) else echo PATH_CHANGED\r\nset SBD_ 2>nul\r\necho DONE\r\n');
+		writeFileSync(wrapper, '@echo off\r\nset "BEFORE=%PATH%"\r\ncall %1.cmd --x >nul 2>nul\r\nif "%PATH%"=="%BEFORE%" (echo PATH_SAME) else echo PATH_CHANGED\r\nset SBD_ 2>nul\r\necho DONE\r\n');
 		try {
 			const env = { ...systemEnv("win32", process.env), PATH: `${layout.tools.shims};${other}` };
 			const desk = { ...env, STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root };
