@@ -1,0 +1,209 @@
+import { posix, win32 } from "node:path";
+import { herdrBinary, toolPathEntries, type CurrentTools, type Layout } from "./paths.ts";
+
+// The constructed environment for every child (spec: Runtime supervisor, Environment). It starts from an allow-list of system essentials, never from
+// the app's own environment, so a PI_SUBAGENT_ID, a HERDR_* pane id, an SSH_AUTH_SOCK, or a GH_TOKEN of the author's shell cannot reach a child.
+
+export type EnvMap = Record<string, string>;
+export type EnvLike = Readonly<Record<string, string | undefined>>;
+
+const WIN_ESSENTIALS = [
+	"SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "OS",
+	"USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "USERNAME", "USERDOMAIN", "COMPUTERNAME",
+	"LOCALAPPDATA", "APPDATA", "ProgramData", "ALLUSERSPROFILE", "PUBLIC",
+	"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
+	"TEMP", "TMP", "LANG",
+	"PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS",
+];
+
+const MAC_ESSENTIALS = [
+	"HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ", "__CF_USER_TEXT_ENCODING",
+	"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+];
+
+/** Passed through from the app's environment when set, in either case (spec: Environment). */
+export const PASS_THROUGH = [
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO",
+];
+
+/**
+ * Variables a child never inherits. The allow-list already excludes them; this list is the second gate, checked on the finished map, so a later
+ * addition to an allow-list cannot let one through. The launchers' unset list (spike/win/lib/forge-cli.mjs `UNSET`) plus the variables that make a
+ * pi a subagent, join a Herdr, or move Claude Code's Keychain item (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, spec: Secrets).
+ */
+export const NEVER_CARRY = [
+	"PI_SUBAGENT_ID", "PI_INTERCOM_SESSION_ID", "STRAW_BOSS_ROLE", "SSH_AUTH_SOCK", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+	"HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_SESSION",
+	"CI", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN",
+	"OAUTH_TOKEN", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN", "GH_HOST", "GITLAB_HOST", "GITLAB_URI", "GITLAB_API_HOST", "GL_HOST",
+	"GLAB_API_PROTOCOL", "API_PROTOCOL", "GLAB_USE_KEYRING", "USE_KEYRING",
+];
+
+/** The variables the app sets itself, which the NEVER_CARRY check lets through even when its pattern would match (the HERDR_* paths below). */
+const OWN = new Set(["HERDR_CONFIG_PATH", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "HERDR_DISABLE_SOUND"]);
+
+export const LOOPBACK = "127.0.0.1,localhost,::1";
+
+const MAC_BASE_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+export interface BuildEnvInput {
+	layout: Layout;
+	/** The active tool versions of `state/current.json`. */
+	current: CurrentTools;
+	/** The app's own environment: read for the allow-listed names only. */
+	appEnv: EnvLike;
+	/** The OS proxy setting resolved by `resolveOsProxy`; variables the app's environment sets win over it. */
+	proxy?: OsProxy;
+	/** Decrypted from `secrets/linear.bin`. Pass it only for the Herdr server's environment, so panes and `ttt` see it and no file holds it. */
+	linearApiKey?: string;
+}
+
+/** The value of `name` in `env`, Windows-style (case-insensitive) when `fold` is set. */
+function lookup(env: EnvLike, name: string, fold: boolean): [string, string] | undefined {
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined || value === "") continue;
+		if (key === name || (fold && key.toLowerCase() === name.toLowerCase())) return [key, value];
+	}
+	return undefined;
+}
+
+export function buildEnv({ layout, current, appEnv, proxy, linearApiKey }: BuildEnvInput): EnvMap {
+	const win = layout.platform === "win32";
+	const P = win ? win32 : posix;
+	const out: EnvMap = {};
+	const taken = (name: string): boolean => Object.keys(out).some((k) => (win ? k.toLowerCase() === name.toLowerCase() : k === name));
+
+	for (const name of win ? WIN_ESSENTIALS : MAC_ESSENTIALS) {
+		const found = lookup(appEnv, name, win);
+		if (found) out[found[0]] = found[1];
+	}
+
+	for (const name of PASS_THROUGH) {
+		// macOS names are case-sensitive: `https_proxy` and `HTTPS_PROXY` are both passed when both are set.
+		for (const key of win ? [lookup(appEnv, name, true)?.[0]] : [name, name.toLowerCase()]) {
+			const value = key === undefined ? undefined : appEnv[key];
+			if (key !== undefined && value !== undefined && value !== "") out[key] = value;
+		}
+	}
+	for (const [name, value] of Object.entries(proxy?.env ?? {})) if (!taken(name)) out[name] = value;
+
+	const own = P.delimiter;
+	const entries = toolPathEntries(layout, current);
+	const base = win ? (lookup(appEnv, "PATH", true)?.[1] ?? "").split(own).filter((e) => e !== "") : MAC_BASE_PATH;
+	const same = (a: string, b: string): boolean => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+	const rest = base.filter((e) => !entries.some((own2) => same(own2, e)));
+	out.PATH = [...entries, ...rest].join(own);
+
+	Object.assign(out, {
+		PI_CODING_AGENT_DIR: layout.agent,
+		NPM_CONFIG_PREFIX: layout.tools.npm,
+		NPM_CONFIG_CACHE: layout.tools.npmCache,
+		// npm answers from its cached metadata for up to 5 minutes without asking the registry, so a pin published after the copy was made fails as "not found".
+		NPM_CONFIG_PREFER_ONLINE: "true",
+		NPM_CONFIG_UPDATE_NOTIFIER: "false",
+		NPM_CONFIG_FUND: "false",
+		NPM_CONFIG_AUDIT: "false",
+		STRAW_BOSS_DESK: "1",
+		STRAW_BOSS_DESK_ROOT: layout.root,
+		XDG_CONFIG_HOME: layout.configHome,
+		HERDR_CONFIG_PATH: layout.herdrConfig,
+		HERDR_SOCKET_PATH: layout.herdrSocket,
+		HERDR_BIN_PATH: herdrBinary(layout, current),
+		HERDR_DISABLE_SOUND: "1",
+		CLAUDE_CONFIG_DIR: layout.claude,
+		GIT_CONFIG_GLOBAL: layout.gitconfig,
+		PI_TELEMETRY: "0",
+		PI_SKIP_VERSION_CHECK: "1",
+		DISABLE_TELEMETRY: "1",
+		DISABLE_ERROR_REPORTING: "1",
+		// npm and pi trust the OS certificate store as well as Node's bundled one (supported by the pinned Node 24).
+		NODE_USE_SYSTEM_CA: "1",
+	});
+	if (!win) out.ZDOTDIR = layout.zdotdir;
+	if (linearApiKey !== undefined && linearApiKey !== "") out.LINEAR_API_KEY = linearApiKey;
+
+	for (const name of Object.keys(out)) {
+		if (OWN.has(name)) continue;
+		if (NEVER_CARRY.some((n) => (win ? n.toLowerCase() === name.toLowerCase() : n === name)) || /^PI_SUBAGENT_/i.test(name)) {
+			throw new Error(`the constructed environment would carry ${name}`);
+		}
+	}
+	return out;
+}
+
+// ---- the OS proxy setting ------------------------------------------------------------------------------------------
+
+/** Chromium's `session.resolveProxy(url)`: a list such as `PROXY a:8080; PROXY b:8080; DIRECT`. */
+export type ProxyResolver = (url: string) => Promise<string>;
+
+export interface OsProxy {
+	/** Variables to add; empty when nothing is to be set. */
+	env: EnvMap;
+	/** Every answer and every decision, for `logs/` (the spec logs the answers it does not use). */
+	log: string[];
+}
+
+export type ProxyAnswer = { kind: "direct" } | { kind: "proxy"; hostPort: string } | { kind: "other"; text: string };
+
+/** The first entry of a resolver answer. `PROXY` and `HTTPS` name an HTTP proxy; `SOCKS*` and anything else cannot be given to npm. */
+export function firstProxyEntry(answer: string): ProxyAnswer {
+	const first = answer.split(";")[0]?.trim() ?? "";
+	if (first === "" || /^DIRECT$/i.test(first)) return { kind: "direct" };
+	const m = /^(PROXY|HTTPS)\s+(\S+)$/i.exec(first);
+	return m?.[2] ? { kind: "proxy", hostPort: m[2] } : { kind: "other", text: first };
+}
+
+/** The name part of a forge host (`gitlab.example.com:8443` gives `gitlab.example.com`); a value that is no host fails here, before any lookup. */
+function hostnameOf(host: string): string {
+	try {
+		return new URL(`https://${host}/`).hostname;
+	} catch {
+		throw new Error(`not a host name: ${JSON.stringify(host)}`);
+	}
+}
+
+const hasProxyVariable = (env: EnvLike): boolean => Object.entries(env).some(([k, v]) => v !== undefined && v !== "" && (k.toUpperCase() === "HTTPS_PROXY" || k.toUpperCase() === "HTTP_PROXY"));
+
+/**
+ * Asks the OS proxy setting for the npm registry, github.com, and each forge host, and turns the answer into `HTTPS_PROXY`, `HTTP_PROXY`, and
+ * `NO_PROXY` (spec: The OS proxy setting). Nothing is set when the app's environment already names a proxy, when the registry is `DIRECT`, when
+ * the registry's answer is not an HTTP proxy, or when any host's proxy differs from the registry's: one variable cannot name two proxies.
+ */
+export async function resolveOsProxy({ resolve, forgeHosts, appEnv }: { resolve: ProxyResolver; forgeHosts: readonly string[]; appEnv: EnvLike }): Promise<OsProxy> {
+	const log: string[] = [];
+	const none = (why: string): OsProxy => {
+		log.push(why);
+		return { env: {}, log };
+	};
+	if (hasProxyVariable(appEnv)) return none("the app's environment names a proxy; the OS proxy setting is not used");
+
+	const registry = "https://registry.npmjs.org/";
+	const hosts = [...new Set(["github.com", ...forgeHosts.map((h) => h.toLowerCase())])];
+	const hostnames = new Map(hosts.map((h) => [h, hostnameOf(h)]));
+	const answers = new Map<string, string>();
+	for (const [label, url] of [["registry.npmjs.org", registry], ...hosts.map((h): [string, string] => [h, `https://${h}/`])] as Array<[string, string]>) {
+		try {
+			const answer = await resolve(url);
+			answers.set(label, answer);
+			log.push(`${label}: ${answer}`);
+		} catch (error) {
+			return none(`${label}: the OS proxy setting could not be read (${(error as Error).message}); nothing is set`);
+		}
+	}
+
+	const registryAnswer = firstProxyEntry(answers.get("registry.npmjs.org") ?? "");
+	if (registryAnswer.kind === "direct") return none("the registry is DIRECT; nothing is set");
+	if (registryAnswer.kind === "other") return none(`the registry's answer is ${registryAnswer.text}, which npm cannot use; nothing is set`);
+
+	const direct: string[] = [];
+	for (const host of hosts) {
+		const answer = firstProxyEntry(answers.get(host) ?? "");
+		if (answer.kind === "direct") direct.push(hostnames.get(host) ?? host);
+		else if (answer.kind === "other" || answer.hostPort.toLowerCase() !== registryAnswer.hostPort.toLowerCase()) {
+			return none(`${host} would use a different proxy than the registry; one variable cannot name two proxies, so nothing is set`);
+		}
+	}
+	const url = `http://${registryAnswer.hostPort}`;
+	log.push(`using ${url}; NO_PROXY adds ${direct.length === 0 ? "no host" : direct.join(", ")}`);
+	return { env: { HTTPS_PROXY: url, HTTP_PROXY: url, NO_PROXY: [LOOPBACK, ...direct].join(",") }, log };
+}

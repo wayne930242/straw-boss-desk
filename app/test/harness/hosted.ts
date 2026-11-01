@@ -1,9 +1,10 @@
 // The guard for every fixture that changes the machine outside the test's own root (spec: Fixtures that change the machine).
 // Test code only; never shipped. A fixture runs through `runFixture` or `fixtureTest`, which ask `hostedRunner` first.
-import { execFile } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { test } from "node:test";
+import { processIO } from "./process-io.ts";
+import { createScratchKeychain } from "./scratch-keychain.ts";
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 export interface UserInfoLike { username: string }
@@ -37,11 +38,19 @@ export function hostedRunner(env: EnvLike, userInfo: UserInfoLike, platform: Nod
 
 // ---- fixtures ------------------------------------------------------------------------------------------------------
 
-export interface RunResult { code: number | null; stdout: string; stderr: string }
+export interface RunResult { code: number | null; stdout: string; stderr: string; timedOut?: boolean }
+
+export interface RunOptions {
+	timeoutMs?: number;
+	/** Written to the child's standard input (a password never goes on a command line). */
+	stdin?: string;
+	/** Added to the environment of this call. */
+	env?: Readonly<Record<string, string>>;
+}
 
 /** Everything a fixture does to the machine goes through this, so the guard's test can prove a refusal made no call. */
 export interface FixtureIO {
-	run(command: string, args: readonly string[], options?: { timeoutMs?: number }): Promise<RunResult>;
+	run(command: string, args: readonly string[], options?: RunOptions): Promise<RunResult>;
 	writeFile(path: string, data: string): void;
 	removeFile(path: string): void;
 }
@@ -49,6 +58,11 @@ export interface FixtureIO {
 export interface Fixture {
 	name: string;
 	platforms: readonly NodeJS.Platform[];
+	/**
+	 * What a local run may use instead of the hosted runner. `keychain`: a scratch HOME with its own keychain (design 1b), whose default keychain and
+	 * search list are checked to hold nothing from the real home before anything is written. Absent: a local run skips with the reason.
+	 */
+	scratch?: "keychain";
 	body(io: FixtureIO): Promise<void>;
 }
 
@@ -102,23 +116,31 @@ export async function runFixture(fixture: Fixture, io: FixtureIO, ctx: GateConte
 }
 
 export const realIO: FixtureIO = {
-	run: (command, args, options) =>
-		new Promise((resolve) => {
-			execFile(command, [...args], { timeout: options?.timeoutMs ?? 10_000, windowsHide: true }, (error, stdout, stderr) => {
-				const code = error ? (typeof error.code === "number" ? error.code : null) : 0;
-				resolve({ code, stdout, stderr: error && code === null ? `${stderr}${error.message}` : stderr });
-			});
-		}),
+	...processIO(process.env),
 	writeFile: (path, data) => writeFileSync(path, data),
 	removeFile: (path) => rmSync(path, { force: true }),
 };
 
-/** Registers a node:test case for the fixture: skipped with a named reason off a hosted runner, failing there when SBD_REQUIRE_HOSTED_FIXTURES=1. */
+/**
+ * Registers a node:test case for the fixture: skipped with a named reason off a hosted runner, failing there when SBD_REQUIRE_HOSTED_FIXTURES=1.
+ * A fixture that names a `scratch` alternative runs locally on macOS against a scratch HOME with its own keychain instead of being skipped.
+ */
 export function fixtureTest(fixture: Fixture, ctx: GateContext = currentContext()): void {
 	const verdict = gate(fixture, ctx);
 	if (verdict.run || (verdict.hostedRefusal && requireHosted(ctx.env))) {
 		test(fixture.name, async () => {
 			await runFixture(fixture, realIO, ctx);
+		});
+		return;
+	}
+	if (verdict.hostedRefusal && fixture.scratch === "keychain" && ctx.platform === "darwin") {
+		test(`${fixture.name} (scratch HOME keychain)`, async () => {
+			const scratch = await createScratchKeychain();
+			try {
+				await fixture.body(scratch.io);
+			} finally {
+				await scratch.dispose();
+			}
 		});
 		return;
 	}

@@ -13,6 +13,7 @@ function must(step: string, result: RunResult): RunResult {
 export const keychainSmoke = defineFixture({
 	name: "keychain smoke: add, find and delete a throwaway item in the default keychain",
 	platforms: ["darwin"],
+	scratch: "keychain",
 	async body(io: FixtureIO): Promise<void> {
 		const service = `sbd-ci-smoke-${randomBytes(6).toString("hex")}`;
 		const account = "sbd-smoke";

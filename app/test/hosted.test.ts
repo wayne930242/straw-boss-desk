@@ -115,7 +115,8 @@ describe("registered fixtures", () => {
 
 	it("skip on another platform without failing the required run", () => {
 		for (const fixture of registeredFixtures()) {
-			const other: NodeJS.Platform = fixture.platforms.includes("darwin") ? "win32" : "darwin";
+			// A platform no fixture lists, so the refusal is the platform's and not the hosted guard's.
+			const other: NodeJS.Platform = "linux";
 			const g = gate(fixture, { env: { ...macRunner, SBD_REQUIRE_HOSTED_FIXTURES: "1" }, userInfo: { username: "runner" }, platform: other });
 			assert.equal(g.run, false);
 			assert.equal(g.run === false && g.hostedRefusal, false);

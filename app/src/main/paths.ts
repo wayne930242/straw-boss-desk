@@ -1,6 +1,9 @@
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, posix, win32 } from "node:path";
 
-// The app data root. Task 3 grows this module into the full layout with its checks; the skeleton needs only the root and Chromium's folder.
+// The app data root and its layout (spec: App data layout). `dataRoot` picks the root; `computeLayout` applies the layout's constraints once
+// and `loadLayout` records the answer in `state/layout.json`, so a later start never computes another place.
 
 export interface RootInput {
 	env: Readonly<Record<string, string | undefined>>;
@@ -24,3 +27,291 @@ export function dataRoot({ env, argv, platform, home }: RootInput): string {
 
 /** Chromium's profile and caches (`app.setPath("userData")`); nothing lands in the roaming %APPDATA%. */
 export const electronDir = (root: string): string => join(root, "electron");
+
+// ---- the layout ----------------------------------------------------------------------------------------------------
+
+export type AppPlatform = "win32" | "darwin";
+
+/** `sun_path` holds 104 bytes on macOS; Herdr's socket stays at most this long (spec: App data layout). */
+export const MAX_SOCKET_BYTES = 100;
+
+/** Raised when the layout cannot satisfy a constraint even through its fallback. The wizard shows it; nothing is written. */
+export class LayoutError extends Error {
+	readonly code: "root-not-absolute" | "socket-too-long" | "fallback-outside-home" | "unsupported-platform";
+	constructor(code: LayoutError["code"], message: string) {
+		super(message);
+		this.name = "LayoutError";
+		this.code = code;
+	}
+}
+
+export interface LayoutInput {
+	/** The data root as `dataRoot` returned it. */
+	root: string;
+	/** The user's home: `%USERPROFILE%` or `$HOME`. */
+	home: string;
+	platform: AppPlatform;
+	/** Real path of an existing path (default `fs.realpathSync.native`). Tests pass a table. */
+	realpath?: (path: string) => string;
+}
+
+/** What `state/layout.json` holds: the decisions, each with the reason it was taken. Paths only; no secrets. */
+export interface LayoutRecord {
+	schema: 1;
+	platform: AppPlatform;
+	root: string;
+	realRoot: string;
+	home: string;
+	/** First 8 hex digits of the SHA-256 of `realRoot`: names the fallback folder, so two roots never share one. */
+	id: string;
+	agentDir: string;
+	/** XDG_CONFIG_HOME: Herdr's folder (config, socket) and the macOS ZDOTDIR files. */
+	configHome: string;
+	/** `~/.straw-boss-desk/<id>` when anything fell back, else null. **Remove all data** deletes it with the root. */
+	fallbackDir: string | null;
+	herdrSocket: string;
+	herdrSocketBytes: number;
+	/** `<agent>/straw-boss/agents/<16 hex>.sock` on macOS (seam U11 has no short-path fallback yet); null on Windows. */
+	sidecarSocketBytes: number | null;
+	reasons: string[];
+}
+
+export interface Layout {
+	platform: AppPlatform;
+	root: string;
+	id: string;
+	stack: string;
+	tools: {
+		root: string;
+		npm: string;
+		npmCache: string;
+		downloads: string;
+		bin: string;
+		shims: string;
+	};
+	agent: string;
+	configHome: string;
+	/** gh and glab keep their folders beside the root's `config/`, where the launchers find them from their own place (`tools/bin/../..`). */
+	ghConfig: string;
+	glabConfig: string;
+	herdrDir: string;
+	herdrConfig: string;
+	herdrSocket: string;
+	zdotdir: string;
+	claude: string;
+	gitconfig: string;
+	secrets: string;
+	recipe: string;
+	state: string;
+	logs: string;
+	electron: string;
+	record: LayoutRecord;
+}
+
+export const SIDECAR_SOCKET_NAME = `${"0".repeat(16)}.sock`;
+
+const pathModule = (platform: AppPlatform) => (platform === "win32" ? win32 : posix);
+const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
+
+/** Real path of the deepest part of `path` that exists, with the rest appended: the root is new on a first run. */
+function realpathLoose(path: string, realpath: (p: string) => string, P: typeof posix): string {
+	const missing: string[] = [];
+	let current = path;
+	for (;;) {
+		try {
+			const real = realpath(current);
+			return missing.length === 0 ? real : P.join(real, ...missing.toReversed());
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+			const parent = P.dirname(current);
+			if (parent === current) throw error;
+			missing.push(P.basename(current));
+			current = parent;
+		}
+	}
+}
+
+/** True when `child` is `parent` or lies below it. `win32.relative` compares without regard to case, as the file system does. */
+export function isInside(parent: string, child: string, P: typeof posix = posix): boolean {
+	const rel = P.relative(parent, child);
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${P.sep}`) && !P.isAbsolute(rel));
+}
+
+/** The layout and the constraints of the spec's App data layout; pure apart from `realpath`. */
+export function computeLayout(input: LayoutInput): Layout {
+	const { root, home, platform } = input;
+	if (platform !== "win32" && platform !== "darwin") throw new LayoutError("unsupported-platform", `unsupported platform ${String(platform)}`);
+	const P = pathModule(platform);
+	if (!P.isAbsolute(root)) throw new LayoutError("root-not-absolute", `the data root must be an absolute path: ${root}`);
+	const realpath = input.realpath ?? ((p: string) => realpathSync.native(p));
+	const realRoot = realpathLoose(root, realpath, P);
+	const realHome = realpathLoose(home, realpath, P);
+	const id = createHash("sha256").update(realRoot).digest("hex").slice(0, 8);
+	const fallbackDir = P.join(home, ".straw-boss-desk", id);
+	const reasons: string[] = [];
+	let fellBack = false;
+
+	let agentDir = P.join(root, "agent");
+	if (platform === "win32") {
+		// pi-straw-boss's trust relay accepts the agent folder only inside the user's home by realpath.native (src/trust/files.ts, ensureDir).
+		const realAgent = realpathLoose(agentDir, realpath, P);
+		if (!isInside(realHome, realAgent, P)) {
+			agentDir = P.join(fallbackDir, "agent");
+			const realFallback = realpathLoose(agentDir, realpath, P);
+			if (!isInside(realHome, realFallback, P)) {
+				throw new LayoutError("fallback-outside-home", `the agent folder ${agentDir} resolves to ${realFallback}, outside the home ${realHome}`);
+			}
+			fellBack = true;
+			reasons.push(`the agent folder ${realAgent} lies outside the home ${realHome}, so it moved to ${agentDir}`);
+		}
+	}
+
+	let configHome = P.join(root, "config");
+	const socketOf = (config: string): string => P.join(config, "herdr", "herdr.sock");
+	let herdrSocket = socketOf(configHome);
+	if (platform === "darwin" && byteLength(herdrSocket) > MAX_SOCKET_BYTES) {
+		const before = byteLength(herdrSocket);
+		configHome = P.join(fallbackDir, "config");
+		herdrSocket = socketOf(configHome);
+		if (byteLength(herdrSocket) > MAX_SOCKET_BYTES) {
+			throw new LayoutError("socket-too-long", `Herdr's socket path would be ${byteLength(herdrSocket)} bytes even in ${configHome} (limit ${MAX_SOCKET_BYTES}); the home folder's path is too long`);
+		}
+		fellBack = true;
+		reasons.push(`Herdr's socket path was ${before} bytes (limit ${MAX_SOCKET_BYTES}), so XDG_CONFIG_HOME moved to ${configHome}`);
+	}
+
+	const sidecarSocketBytes = platform === "darwin" ? byteLength(P.join(agentDir, "straw-boss", "agents", SIDECAR_SOCKET_NAME)) : null;
+	const record: LayoutRecord = {
+		schema: 1,
+		platform,
+		root,
+		realRoot,
+		home,
+		id,
+		agentDir,
+		configHome,
+		fallbackDir: fellBack ? fallbackDir : null,
+		herdrSocket,
+		herdrSocketBytes: byteLength(herdrSocket),
+		sidecarSocketBytes,
+		reasons,
+	};
+	return layoutFromRecord(record);
+}
+
+/** Every path of the layout, from a record's decisions. */
+export function layoutFromRecord(record: LayoutRecord): Layout {
+	const P = pathModule(record.platform);
+	const { root } = record;
+	const tools = P.join(root, "tools");
+	const config = P.join(root, "config");
+	return {
+		platform: record.platform,
+		root,
+		id: record.id,
+		stack: P.join(root, "stack"),
+		tools: {
+			root: tools,
+			npm: P.join(tools, "npm"),
+			npmCache: P.join(tools, "npm-cache"),
+			downloads: P.join(tools, "downloads"),
+			bin: P.join(tools, "bin"),
+			shims: P.join(tools, "shims"),
+		},
+		agent: record.agentDir,
+		configHome: record.configHome,
+		ghConfig: P.join(config, "gh"),
+		glabConfig: P.join(config, "glab-cli"),
+		herdrDir: P.join(record.configHome, "herdr"),
+		herdrConfig: P.join(record.configHome, "herdr", "config.toml"),
+		herdrSocket: record.herdrSocket,
+		zdotdir: P.join(record.configHome, "zsh"),
+		claude: P.join(root, "claude"),
+		gitconfig: P.join(root, "gitconfig"),
+		secrets: P.join(root, "secrets"),
+		recipe: P.join(root, "recipe"),
+		state: P.join(root, "state"),
+		logs: P.join(root, "logs"),
+		electron: P.join(root, "electron"),
+		record,
+	};
+}
+
+function readRecord(file: string): LayoutRecord | null {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (typeof parsed !== "object" || parsed === null) return null;
+		const r = parsed as Partial<LayoutRecord>;
+		const strings = [r.root, r.realRoot, r.home, r.id, r.agentDir, r.configHome, r.herdrSocket];
+		if (r.schema !== 1 || !strings.every((s) => typeof s === "string" && s.length > 0)) return null;
+		if (r.platform !== "win32" && r.platform !== "darwin") return null;
+		if (typeof r.herdrSocketBytes !== "number" || !Array.isArray(r.reasons)) return null;
+		return r as LayoutRecord;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The layout for a start: the recorded one when `state/layout.json` was written for this root, home, and platform, else a fresh computation that is
+ * written (by rename) before it returns. A record for another root or home, such as a copied data folder, is replaced, never reused: the fallback
+ * folder and Herdr's socket belong to one root.
+ */
+export function loadLayout(input: LayoutInput): Layout {
+	const P = pathModule(input.platform);
+	const file = P.join(input.root, "state", "layout.json");
+	const recorded = readRecord(file);
+	if (recorded && recorded.root === input.root && recorded.home === input.home && recorded.platform === input.platform) {
+		return layoutFromRecord(recorded);
+	}
+	const layout = computeLayout(input);
+	mkdirSync(P.dirname(file), { recursive: true });
+	const tmp = `${file}.${process.pid}.tmp`;
+	try {
+		writeFileSync(tmp, `${JSON.stringify(layout.record, null, "\t")}\n`, "utf8");
+		renameSync(tmp, file);
+	} catch (error) {
+		rmSync(tmp, { force: true });
+		throw error;
+	}
+	return layout;
+}
+
+// ---- the tool folders ----------------------------------------------------------------------------------------------
+
+/** The active versions of `state/current.json` the environment needs: one version string per versioned tool folder. */
+export interface CurrentTools {
+	node: string;
+	git: string;
+	herdr: string;
+	gh?: string;
+	glab?: string;
+}
+
+export const toolDir = (layout: Layout, tool: "node" | "git" | "herdr" | "gh" | "glab", version: string): string =>
+	pathModule(layout.platform).join(layout.tools.root, tool, version);
+
+/**
+ * The app's `PATH` folders in order (spec: Tool paths): `tools/bin`, Node, the npm prefix, Git's folders, Herdr. The layout of each tool's folder is
+ * fixed here and the stages extract to it: Windows has `node.exe` at the top of the Node folder and PortableGit's `cmd` and `bin`; macOS has
+ * `bin/` in the Node and dugite-native folders and the npm prefix, and the bare `herdr` binary in its folder.
+ */
+export function toolPathEntries(layout: Layout, current: CurrentTools): string[] {
+	const P = pathModule(layout.platform);
+	const node = toolDir(layout, "node", current.node);
+	const git = toolDir(layout, "git", current.git);
+	const herdr = toolDir(layout, "herdr", current.herdr);
+	if (layout.platform === "win32") return [layout.tools.bin, node, layout.tools.npm, P.join(git, "cmd"), P.join(git, "bin"), herdr];
+	return [layout.tools.bin, P.join(node, "bin"), P.join(layout.tools.npm, "bin"), P.join(git, "bin"), herdr];
+}
+
+export const herdrBinary = (layout: Layout, current: CurrentTools): string =>
+	pathModule(layout.platform).join(toolDir(layout, "herdr", current.herdr), layout.platform === "win32" ? "herdr.exe" : "herdr");
