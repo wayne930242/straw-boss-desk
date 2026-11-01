@@ -38,7 +38,7 @@ export interface ArchiveStageSpec {
 export function archiveStage(spec: ArchiveStageSpec): Stage {
 	const stackTool = spec.stackTool ?? spec.tool;
 	const assetOf = (ctx: StageContext): Asset => {
-		const asset = ctx.stack.tools[stackTool]?.assets[ctx.key];
+		const asset = (ctx.stack.tools[stackTool] ?? ctx.stack.optionalTools[stackTool])?.assets[ctx.key];
 		if (asset === undefined) throw new StageError("other", { stage: spec.name }, `the stack has no ${stackTool} for ${ctx.key}`);
 		return asset;
 	};
