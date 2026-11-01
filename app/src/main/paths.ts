@@ -32,8 +32,10 @@ export const electronDir = (root: string): string => join(root, "electron");
 
 export type AppPlatform = "win32" | "darwin";
 
-/** `sun_path` holds 104 bytes on macOS; Herdr's socket stays at most this long (spec: App data layout). */
+/** `sun_path` holds 104 bytes on macOS; Herdr's sockets stay at most this long (spec: App data layout). */
 export const MAX_SOCKET_BYTES = 100;
+/** Herdr also binds `herdr-client.sock` in the socket's folder, 7 bytes longer than `herdr.sock`; the rule measures the longer one (found by task 5's e2e: Herdr 0.9.5 exits with "local socket name length exceeds capacity" at a 99-byte main socket). */
+export const HERDR_CLIENT_SOCKET_NAME = "herdr-client.sock";
 
 /** Raised when the layout cannot satisfy a constraint even through its fallback. The wizard shows it; nothing is written. */
 export class LayoutError extends Error {
@@ -169,13 +171,15 @@ export function computeLayout(input: LayoutInput): Layout {
 
 	let configHome = P.join(root, "config");
 	const socketOf = (config: string): string => P.join(config, "herdr", "herdr.sock");
+	/** The longest socket Herdr binds under a config home. */
+	const longestSocketBytes = (config: string): number => byteLength(P.join(config, "herdr", HERDR_CLIENT_SOCKET_NAME));
 	let herdrSocket = socketOf(configHome);
-	if (platform === "darwin" && byteLength(herdrSocket) > MAX_SOCKET_BYTES) {
-		const before = byteLength(herdrSocket);
+	if (platform === "darwin" && longestSocketBytes(configHome) > MAX_SOCKET_BYTES) {
+		const before = longestSocketBytes(configHome);
 		configHome = P.join(fallbackDir, "config");
 		herdrSocket = socketOf(configHome);
-		if (byteLength(herdrSocket) > MAX_SOCKET_BYTES) {
-			throw new LayoutError("socket-too-long", `Herdr's socket path would be ${byteLength(herdrSocket)} bytes even in ${configHome} (limit ${MAX_SOCKET_BYTES}); the home folder's path is too long`);
+		if (longestSocketBytes(configHome) > MAX_SOCKET_BYTES) {
+			throw new LayoutError("socket-too-long", `Herdr's socket path would be ${longestSocketBytes(configHome)} bytes even in ${configHome} (limit ${MAX_SOCKET_BYTES}); the home folder's path is too long`);
 		}
 		fellBack = true;
 		reasons.push(`Herdr's socket path was ${before} bytes (limit ${MAX_SOCKET_BYTES}), so XDG_CONFIG_HOME moved to ${configHome}`);

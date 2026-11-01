@@ -86,7 +86,7 @@ describe("buildEnv", () => {
 	});
 
 	it("uses the fallback XDG_CONFIG_HOME for Herdr and the ZDOTDIR files when the layout fell back", () => {
-		const home = `/Users/${"x".repeat(40)}`;
+		const home = `/Users/${"x".repeat(30)}`;
 		const layout = computeLayout({ root: `${home}/Library/Application Support/straw-boss-desk`, home, platform: "darwin", realpath: (p) => { if (p === home) return p; throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); } });
 		const env = buildEnv({ layout, current, appEnv: {} });
 		assert.equal(env.XDG_CONFIG_HOME, layout.configHome);

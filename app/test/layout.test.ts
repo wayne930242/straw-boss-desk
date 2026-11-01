@@ -81,7 +81,7 @@ describe("layout: macOS", () => {
 	});
 
 	it("takes the ~/.straw-boss-desk/<id>/config fallback when the socket path would pass 100 bytes", () => {
-		const user = "x".repeat(40);
+		const user = "x".repeat(30);
 		const home = `/Users/${user}`;
 		const root = `${home}/Library/Application Support/straw-boss-desk`;
 		assert.ok(bytes(`${root}/config/herdr/herdr.sock`) > 100, "the default socket is too long for this user");
@@ -98,10 +98,22 @@ describe("layout: macOS", () => {
 		assert.match(layout.record.reasons.join("\n"), /socket path was \d+ bytes/);
 	});
 
+	it("measures herdr-client.sock, which Herdr binds beside herdr.sock and which is 7 bytes longer (found by task 5's e2e)", () => {
+		const home = "/Users/a";
+		const filler = "r".repeat(95 - bytes(`${home}//config/herdr/herdr.sock`));
+		const root = `${home}/${filler}`;
+		assert.equal(bytes(`${root}/config/herdr/herdr.sock`), 95, "the main socket alone passes the old rule");
+		assert.equal(bytes(`${root}/config/herdr/herdr-client.sock`), 102, "the client socket does not fit sun_path");
+		const layout = computeLayout({ root, home, platform: "darwin", realpath: identity(home) });
+		assert.equal(layout.configHome, `${home}/.straw-boss-desk/${idOf(root)}/config`);
+		const fits = `${home}/${"r".repeat(93 - bytes(`${home}//config/herdr/herdr.sock`))}`;
+		assert.equal(computeLayout({ root: fits, home, platform: "darwin", realpath: identity(home) }).configHome, `${fits}/config`, "a main socket of 93 bytes keeps the default");
+	});
+
 	it("gives two roots that both fall back two different fallback folders", () => {
-		const home = `/Users/${"x".repeat(40)}`;
-		const rootA = `${home}/sbd-development-root-number-one`;
-		const rootB = `${home}/sbd-development-root-number-two`;
+		const home = `/Users/${"x".repeat(30)}`;
+		const rootA = `${home}/sbd-development-root-number-one-a-longer-name`;
+		const rootB = `${home}/sbd-development-root-number-two-a-longer-name`;
 		for (const r of [rootA, rootB]) assert.ok(bytes(`${r}/config/herdr/herdr.sock`) > 100);
 		const a = computeLayout({ root: rootA, home, platform: "darwin", realpath: identity(home) });
 		const b = computeLayout({ root: rootB, home, platform: "darwin", realpath: identity(home) });
