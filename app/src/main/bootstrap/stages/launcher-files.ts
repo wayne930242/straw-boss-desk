@@ -55,6 +55,12 @@ export interface LauncherSpec {
 	config?: { variable: string; folder: string };
 	/** A variable set to a folder under the root: `[name, folder relative to the root with / separators]`. */
 	rootFolders: readonly Pair[];
+	/**
+	 * The Windows launcher gives the `rootFolders` as their 8.3 short names (creating the folders first). bun 1.2.23 reads its environment as ANSI, so a
+	 * folder with a character outside the code page (a root under `%LOCALAPPDATA%\sbd 測試`, or a user name in CJK) arrives as `??` and bun falls back to
+	 * `<project>\node_modules\.cache` (found by task 5's e2e on `windows-2025`); gh's Go runtime reads the same variable correctly.
+	 */
+	shortPaths?: boolean;
 	env: readonly Pair[];
 	unset: readonly string[];
 }
@@ -86,7 +92,7 @@ export const FORGE_LAUNCHERS: Readonly<Record<"gh" | "glab", LauncherSpec>> = {
 /** Launchers of the optional tools: `bun` also gets `bunx`, and bun's cache and global packages stay under `tools/bun-home`. */
 export function optionalLaunchers(tool: string): LauncherSpec[] {
 	if (tool !== "bun") return [];
-	const base = { rootFolders: [["BUN_INSTALL", "tools/bun-home"], ["BUN_INSTALL_CACHE_DIR", "tools/bun-home/install/cache"]] as readonly Pair[], env: [NO_TRACK] as readonly Pair[], unset: [] as readonly string[], pathVar: "SBD_BUN" };
+	const base = { rootFolders: [["BUN_INSTALL", "tools/bun-home"], ["BUN_INSTALL_CACHE_DIR", "tools/bun-home/install/cache"]] as readonly Pair[], env: [NO_TRACK] as readonly Pair[], unset: [] as readonly string[], pathVar: "SBD_BUN", shortPaths: true };
 	return [
 		{ name: "bun", prefixArgs: [], ...base },
 		{ name: "bunx", prefixArgs: ["x"], ...base },
@@ -112,7 +118,10 @@ export function cmdLauncher(spec: LauncherSpec): string {
 		'for %%I in ("%~dp0..\\..") do set "SBD_APP_ROOT=%%~fI"',
 		'call "%~dp0paths.cmd"',
 		...(spec.config ? [`set "${spec.config.variable}=%SBD_APP_ROOT%\\config\\${spec.config.folder}"`] : []),
-		...spec.rootFolders.map(([k, folder]) => `set "${k}=%SBD_APP_ROOT%\\${folder.split("/").join("\\")}"`),
+		...spec.rootFolders.flatMap(([k, folder]) => {
+			const path = `%SBD_APP_ROOT%\\${folder.split("/").join("\\")}`;
+			return spec.shortPaths === true ? [`if not exist "${path}" mkdir "${path}"`, `for %%I in ("${path}") do set "${k}=%%~sI"`] : [`set "${k}=${path}"`];
+		}),
 		...spec.env.map(([k, v]) => `set "${k}=${v}"`),
 		...spec.unset.map((k) => `set "${k}="`),
 		`"%${spec.pathVar}%" ${[...spec.prefixArgs, "%*"].join(" ")}`,

@@ -224,8 +224,11 @@ describe("launchers (port of forge-cli.mjs)", () => {
 		assert.ok(shLauncher(bun).includes('BUN_INSTALL_CACHE_DIR="$SBD_APP_ROOT/tools/bun-home/install/cache"'));
 		assert.ok(shLauncher(bun).includes('exec "$SBD_BUN" "$@"'));
 		assert.ok(shLauncher(bunx).includes('exec "$SBD_BUN" x "$@"'));
-		assert.ok(cmdLauncher(bun).includes('set "BUN_INSTALL=%SBD_APP_ROOT%\\tools\\bun-home"'));
-		assert.ok(cmdLauncher(bun).includes('set "BUN_INSTALL_CACHE_DIR=%SBD_APP_ROOT%\\tools\\bun-home\\install\\cache"'));
+		// bun reads its environment as ANSI on Windows, so the launcher hands it 8.3 short names of folders it creates first.
+		assert.ok(cmdLauncher(bun).includes('if not exist "%SBD_APP_ROOT%\\tools\\bun-home" mkdir "%SBD_APP_ROOT%\\tools\\bun-home"'));
+		assert.ok(cmdLauncher(bun).includes('for %%I in ("%SBD_APP_ROOT%\\tools\\bun-home") do set "BUN_INSTALL=%%~sI"'));
+		assert.ok(cmdLauncher(bun).includes('for %%I in ("%SBD_APP_ROOT%\\tools\\bun-home\\install\\cache") do set "BUN_INSTALL_CACHE_DIR=%%~sI"'));
+		assert.ok(!cmdLauncher(FORGE_LAUNCHERS.gh).includes("mkdir"), "the forge CLIs read a long path correctly");
 		assert.ok(cmdLauncher(bunx).includes('"%SBD_BUN%" x %*'));
 		assert.ok(!shLauncher(bun).includes("unset"), "CI and token variables are the forge CLIs' concern, not bun's");
 		assert.deepEqual(optionalLaunchers("nothere"), []);
