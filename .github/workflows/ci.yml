@@ -82,6 +82,22 @@ jobs:
         working-directory: app
         run: npm test
 
+      # The task 5 anchor: the tool stages from an empty root with the real releases of stack.json (downloads, launchers, Git, a Herdr pane). The
+      # downloads are cached by stack.json, so a run that does not change a pin downloads nothing; every file is hashed again when it is used.
+      - name: Cache the e2e-light downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sbd-e2e-downloads
+          key: e2e-downloads-${{ runner.os }}-${{ hashFiles('stack.json') }}
+          restore-keys: e2e-downloads-${{ runner.os }}-
+
+      - name: Tool stages, e2e-light
+        working-directory: app
+        env:
+          SBD_E2E_LIGHT: "1"
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-timeout=900000 test/e2e-light.test.ts
+
       - name: Playwright, development build
         working-directory: app
         env:

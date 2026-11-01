@@ -2,3 +2,4 @@
 export { keychainSmoke } from "./keychain-smoke.ts";
 export { credentialListing, credentialProbe } from "./store-fixtures.ts";
 export { hkcuEnvironment, userPathScratchKey } from "./registry-fixtures.ts";
+export { developerToolsAside } from "./devtools-aside.ts";
