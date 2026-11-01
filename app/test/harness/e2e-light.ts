@@ -412,3 +412,55 @@ export function writeLocalProject(dir: string): void {
 
 /** The two files a pane's zsh reads from the world's `ZDOTDIR` (the app writes both). */
 export const zdotdirFiles = (world: World): string[] => [".zshenv", ".zshrc"].map((name) => join(world.layout.zdotdir, name));
+
+// ---- a pi in RPC mode ----------------------------------------------------------------------------------------------------
+
+export interface RpcProbe {
+	/** The JSON lines pi wrote to stdout before it was stopped. */
+	lines: string[];
+	stderr: string;
+	/** The pid of the process this probe started, which it has stopped again. */
+	pid: number | null;
+}
+
+/**
+ * Starts `file args` (a pi in `--mode rpc`), asks it for its state, waits for the answer, then closes its stdin and, when it has not exited within
+ * `graceMs`, stops the process this call started by its pid (the whole tree on Windows). Nothing it started outlives the call.
+ */
+export async function rpcProbe(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; cwd?: string; timeoutMs?: number; graceMs?: number }): Promise<RpcProbe> {
+	const child = spawn(file, [...args], { env: { ...options.env }, ...(options.cwd ? { cwd: options.cwd } : {}), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+	const pid = child.pid ?? null;
+	const lines: string[] = [];
+	let stderr = "";
+	let pending = "";
+	let exited = false;
+	child.on("exit", () => {
+		exited = true;
+	});
+	child.on("error", () => {
+		exited = true;
+	});
+	child.stdin?.on("error", () => {});
+	child.stderr?.on("data", (chunk: Buffer) => {
+		stderr += chunk.toString("utf8");
+	});
+	child.stdout?.on("data", (chunk: Buffer) => {
+		pending += chunk.toString("utf8");
+		const parts = pending.split(/\r?\n/);
+		pending = parts.pop() ?? "";
+		lines.push(...parts.filter((l) => l !== ""));
+	});
+	child.stdin?.write('{"id":"state","type":"get_state"}\n');
+	const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+	while (Date.now() < deadline && !exited && !lines.some((l) => l.includes('"state"'))) await new Promise((resolve) => setTimeout(resolve, 200));
+	child.stdin?.end();
+	const grace = Date.now() + (options.graceMs ?? 15_000);
+	while (Date.now() < grace && !exited) await new Promise((resolve) => setTimeout(resolve, 200));
+	if (!exited && pid !== null) {
+		if (isWindows) await run(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/T", "/F", "/PID", String(pid)], { env: {}, timeoutMs: 30_000 });
+		else child.kill("SIGKILL");
+		const end = Date.now() + 10_000;
+		while (Date.now() < end && !exited) await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+	return { lines, stderr, pid };
+}

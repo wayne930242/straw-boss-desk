@@ -14,6 +14,7 @@ import {
 	noteUserPath,
 	isWindows,
 	plantShellStartupDecoy,
+	rpcProbe,
 	zdotdirFiles,
 	realStack,
 	run,
@@ -31,6 +32,15 @@ import { createPlatform } from "../src/main/platform/index.ts";
 import { hostedCase, type FixtureIO } from "./harness/hosted.ts";
 import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { nodeBinaryPath, npmCliPath } from "../src/main/bootstrap/npm.ts";
+import { binShim, npmGlobalPin } from "../src/main/bootstrap/stages/pi.ts";
+import { locateClaude } from "../src/main/bootstrap/stages/claude.ts";
+import { writeSystemCaFile } from "../src/main/system-ca.ts";
+import { runFixture, realIO } from "./harness/hosted.ts";
+import { trustedTestCa, trustedCaScenario } from "./harness/system-ca.ts";
+import { platformKey } from "../src/main/bootstrap/stack.ts";
+import tls from "node:tls";
+import type { ChildProcess } from "node:child_process";
+import type { Stack } from "../src/main/bootstrap/stack.ts";
 import { resolveOsProxy, systemEnv } from "../src/main/env.ts";
 import { toolDir } from "../src/main/paths.ts";
 import { connectProxy } from "./harness/connect-proxy.ts";
@@ -103,7 +113,12 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	after(async () => {
 		await herdr?.stop();
 		if (aside.state === "active") await aside.leave(ioForSudo);
+		const before = world.userPathBefore;
+		const real = world.realUserPath;
+		const userPath = world.userPath;
 		await disposeWorld(world);
+		// The run took its entry off the user PATH again: the value, and its registry type, are what they were before the first stage ran.
+		if (real) assert.deepEqual(await userPath.read(), before ?? null, "the user PATH is as it was before the run");
 	});
 
 	it("runs every stage from an empty root: all verified, none failed", () => {
@@ -313,16 +328,139 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			}
 		});
 
-		// Herdr rebuilds a Windows pane's PATH from the registry (spec: Panes on Windows), so before task 6's `tools\\shims` entry a Windows pane does not
-		// find the launcher by name; the other variables reach the pane, so the launcher runs by its path from STRAW_BOSS_DESK_ROOT there.
-		it("prints bun's pin through the launcher in a pane; on macOS command -v bun resolves to tools/bin", async () => {
-			const extra = isWindows ? ["pushd %STRAW_BOSS_DESK_ROOT%\\tools\\bin", "bun.cmd --version", "popd"] : ["bun --version"];
+		// Herdr rebuilds a Windows pane's PATH from the registry (spec: Panes on Windows). Since task 6 the `tools\\shims` entry is first in the user PATH, and
+		// its `bun.cmd` runs the launcher, so a pane finds `bun` by name. Where the user PATH is not the real one (a developer's Windows machine: the registry
+		// is a guarded fixture), the case runs the launcher by its path as task 5 did.
+		it("prints bun's pin through the launcher in a pane, by name; on macOS command -v bun resolves to tools/bin", async () => {
+			const byName = !isWindows || world.realUserPath;
+			const extra = byName ? ["bun --version"] : ["pushd %STRAW_BOSS_DESK_ROOT%\\tools\\bin", "bun.cmd --version", "popd"];
 			const text = await (herdr as WorldHerdr).inPane("bun", (out) => paneScript(out, ["bun"], extra), world.home);
 			assert.match(text, new RegExp(BUN_VERSION.replace(/\./g, "\\.")), text);
 			if (!isWindows) {
 				const path = resolved(text, "bun");
 				assert.ok(path !== null && under(world.layout.tools.bin, path), `bun resolves to ${path}`);
 			}
+		});
+	});
+
+	// ---- task 6: pi and the Windows shims ---------------------------------------------------------------------------------
+	describe("pi (task 6)", () => {
+		const pinOf = (): string => npmGlobalPin(realStack as unknown as Stack, "pi").version;
+		const system32 = (): string => join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
+		const shimsDir = (): string => world.layout.tools.shims;
+		/** A folder with a `pi` of another install: a batch file and a POSIX script, each saying `other-pi`. */
+		const otherPi = (): string => {
+			const dir = join(world.base, "another pi");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "pi.cmd"), "@echo off\r\necho other-pi\r\n");
+			writeFileSync(join(dir, "pi"), "#!/bin/sh\necho other-pi\n", { mode: 0o755 });
+			return dir;
+		};
+		/** The environment of a plain program on the PM's machine (no desk variables) with `PATH` as given. */
+		const plain = (pathEntries: readonly string[]): Record<string, string> => ({ ...systemEnv("win32", world.appEnv), PATH: pathEntries.join(";") });
+		const desk = (pathEntries: readonly string[]): Record<string, string> => ({ ...childEnvOf(world, []), PATH: pathEntries.join(";") });
+		const neutral = (): string => {
+			const dir = join(world.base, "neutral 測試");
+			mkdirSync(dir, { recursive: true });
+			return dir;
+		};
+		const cmdRun = (env: Record<string, string>, line: string, cwd = neutral()) => run(join(system32(), "cmd.exe"), ["/d", "/c", line], { env, cwd, timeoutMs: 120_000 });
+
+		it("prints the pin: through the shim on Windows, through the private prefix on macOS", async () => {
+			const env = childEnvOf(world, []);
+			const result = isWindows
+				? await cmdRun(env, `"${join(shimsDir(), "pi.cmd")}" --version`)
+				: await run(binShim(world.layout, "pi"), ["--version"], { env, cwd: world.home, timeoutMs: 120_000 });
+			assert.equal(result.code, 0, result.stderr);
+			assert.equal(result.stdout.trim().split(/\r?\n/)[0], pinOf());
+		});
+
+		it("leaves the pinned fd and rg of the agent's bin folder unchanged after a first rpc start", async (t) => {
+			const bin = join(world.layout.agent, "bin");
+			const names = isWindows ? ["fd.exe", "rg.exe"] : ["fd", "rg"];
+			const hashes = (): Record<string, string> => Object.fromEntries(names.map((n) => [n, sha256Hex(readFileSync(join(bin, n)))]));
+			assert.ok(names.every((n) => existsSync(join(bin, n))), `fd and rg are in ${bin} before the start (the fd-rg stage put them there)`);
+			const before = hashes();
+			const env = childEnvOf(world, []);
+			const probe = isWindows
+				? await rpcProbe(join(system32(), "cmd.exe"), ["/d", "/c", `"${join(shimsDir(), "pi.cmd")}"`, "--mode", "rpc", "--no-session", "--offline"], { env, cwd: world.home })
+				: await rpcProbe(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env, cwd: world.home });
+			t.diagnostic(`rpc start: ${probe.lines.length} line(s); first: ${(probe.lines[0] ?? "").slice(0, 160)}; stderr: ${probe.stderr.trim().slice(0, 200)}`);
+			assert.ok(probe.lines.some((l) => l.includes('"state"')), `pi answered get_state: ${probe.lines.join(" | ").slice(0, 400)} ${probe.stderr.slice(0, 400)}`);
+			assert.deepEqual(hashes(), before, "fd and rg are byte for byte what the fd-rg stage put there");
+			assert.deepEqual(names.filter((n) => !existsSync(join(bin, n))), []);
+			assert.deepEqual(readdirSync(bin).filter((n) => !names.includes(n) && !n.endsWith(".staging")).sort(), [], "pi downloaded nothing else into bin");
+		});
+
+		describe("on Windows, in a desk pane and outside one", { skip: isWindows ? false : "Windows only: the shims are batch files and a POSIX script for Git's sh" }, () => {
+			it("lists pi.cmd, pi, and bash.cmd, and no byte of the root's path is in any of them", () => {
+				const names = readdirSync(shimsDir()).sort();
+				for (const name of ["bash.cmd", "pi", "pi.cmd"]) assert.ok(names.includes(name), `${name} is in tools\\shims: ${names.join(", ")}`);
+				const roots = [world.root, world.root.replace(/\\/g, "/"), dirname(world.root), dirname(world.root).replace(/\\/g, "/")].map((r) => r.toLowerCase());
+				for (const name of names) {
+					const text = readFileSync(join(shimsDir(), name)).toString("latin1").toLowerCase();
+					for (const r of roots) assert.ok(!text.includes(r), `${name} holds ${r}`);
+				}
+			});
+
+			it("runs the other pi from a plain cmd and from Git's sh when the desk variables are absent, or name another root", async () => {
+				const other = otherPi();
+				const gitBin = join(toolDir(world.layout, "git", stateOf(world, "current").versions.git as string), "bin");
+				const anotherRoot = join(world.base, "not the desk root");
+				const cases: Array<[string, Record<string, string>]> = [
+					["without the desk variables", plain([shimsDir(), other, system32()])],
+					["with another root", { ...desk([shimsDir(), other, system32()]), STRAW_BOSS_DESK_ROOT: anotherRoot }],
+				];
+				for (const [what, env] of cases) {
+					const viaCmd = await cmdRun(env, "pi");
+					assert.equal(viaCmd.stdout.trim(), "other-pi", `cmd ${what}: ${viaCmd.stderr}`);
+					const viaSh = await run(join(gitBin, "sh.exe"), ["-c", "pi"], { env: { ...env, PATH: [shimsDir(), other, gitBin, system32()].join(";") }, cwd: neutral(), timeoutMs: 120_000 });
+					assert.equal(viaSh.stdout.trim(), "other-pi", `Git's sh ${what}: ${viaSh.stderr}`);
+				}
+			});
+
+			it("runs a script by bash.cmd into PortableGit's bash from a PowerShell, in a folder with a space and CJK characters, and its pi prints the pin", async () => {
+				const folder = join(world.base, "script folder 測試");
+				mkdirSync(folder, { recursive: true });
+				const script = join(folder, "run 測試.sh");
+				writeFileSync(script, "pi --version\necho \"bash=$(command -v bash)\"\n");
+				const env = desk([shimsDir(), system32()]);
+				const powershell = join(system32(), "WindowsPowerShell", "v1.0", "powershell.exe");
+				const result = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", `bash '${script.replace(/'/g, "''")}'`], { env, cwd: folder, timeoutMs: 120_000 });
+				assert.equal(result.code, 0, result.stderr);
+				assert.equal(result.stdout.trim().split(/\r?\n/)[0], pinOf());
+				const version = stateOf(world, "current").versions.git as string;
+				const gitRoot = toolDir(world.layout, "git", version).replace(/\\/g, "/").toLowerCase();
+				// Git's bash prints its own path as a POSIX path (`/usr/bin/bash`); `-c` asks the bash that ran the script which shell it was.
+				const which = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", "bash -c 'echo $BASH; echo $0'"], { env, cwd: folder, timeoutMs: 60_000 });
+				assert.equal(which.code, 0, which.stderr);
+				assert.match(which.stdout.replace(/\\/g, "/").toLowerCase(), /(\/usr\/bin\/bash|bash)/, `${which.stdout} (Git folder ${gitRoot})`);
+			});
+
+			it("keeps PI_CODING_AGENT_DIR as the child had it, and still starts the pinned pi", async () => {
+				const mine = join(neutral(), ".pi", "agent");
+				mkdirSync(mine, { recursive: true });
+				const env = { ...desk([shimsDir(), system32()]), PI_CODING_AGENT_DIR: mine };
+				const version = await cmdRun(env, `"${join(shimsDir(), "pi.cmd")}" --version`);
+				assert.equal(version.stdout.trim().split(/\r?\n/)[0], pinOf(), version.stderr);
+				const viaBash = await cmdRun(env, `"${join(shimsDir(), "bash.cmd")}" -c "echo $PI_CODING_AGENT_DIR"`);
+				assert.equal(viaBash.stdout.trim().replace(/\\/g, "/").toLowerCase(), mine.replace(/\\/g, "/").toLowerCase(), viaBash.stderr);
+			});
+
+			it("has the shims folder first in the user PATH with its registry type kept (a guarded fixture)", async (t) => {
+				const verdict = hostedCase("pi-shim user PATH entry");
+				if (!verdict.run) {
+					if (verdict.fail) assert.fail(verdict.reason);
+					t.skip(verdict.reason);
+					return;
+				}
+				const now = await world.userPath.read();
+				assert.ok(now !== null, "the user Path value exists");
+				assert.equal(now.value.split(";")[0]?.toLowerCase(), shimsDir().toLowerCase(), now.value);
+				const before = world.userPathBefore;
+				if (before !== undefined && before !== null) assert.equal(now.kind, before.kind, "the registry type is the one it had");
+				assert.equal(now.value.split(";").filter((e) => e.toLowerCase() === shimsDir().toLowerCase()).length, 1, "once");
+			});
 		});
 	});
 
@@ -464,6 +602,165 @@ describe("a recipe with no optional tool and a private forge host (e2e-light)", 
 		const pane = await herdr.inPane("nobun", (out) => paneScript(out, ["bun"]), world.home);
 		const found = resolved(pane, "bun");
 		assert.ok(found === null || !under(world.layout.tools.root, found), `the pane found ${found}`);
+	});
+});
+
+// ---- task 6: the pi stage through the OS proxy, the OS certificate store, and no_proxy ---------------------------------
+
+/** Stops a process this test started: its tree on Windows, the pid elsewhere. */
+async function stopTree(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.pid === undefined) return;
+	if (isWindows) await run(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/T", "/F", "/PID", String(child.pid)], { env: {}, timeoutMs: 30_000 });
+	else child.kill("SIGKILL");
+	const end = Date.now() + 10_000;
+	while (Date.now() < end && child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
+/** Runs `file args` until `done()` is true, it exits, or `timeoutMs` pass, then stops it. Output is dropped: a client's words are not what these checks read. */
+async function runUntil(file: string, args: readonly string[], options: { env: Record<string, string>; cwd: string; timeoutMs: number; done: () => boolean }): Promise<void> {
+	const child = spawn(file, [...args], { env: options.env, cwd: options.cwd, stdio: ["ignore", "ignore", "ignore"], windowsHide: true });
+	child.on("error", () => {});
+	const end = Date.now() + options.timeoutMs;
+	while (Date.now() < end && child.exitCode === null && !options.done()) await new Promise((resolve) => setTimeout(resolve, 150));
+	await stopTree(child);
+}
+
+describe("the pi stage through the OS proxy setting, claude and the OS certificate store, and no_proxy (e2e-light, task 6)", { skip: off }, () => {
+	let world: World;
+	let proxy: Awaited<ReturnType<typeof connectProxy>>;
+	let install: RunSummary;
+	let bridge: string;
+	let claudeExe: string | null = null;
+
+	const nodeFile = (): string => nodeBinaryPath(world.layout, stateOf(world, "current").versions.node as string);
+	const gitFile = (): string => join(toolDir(world.layout, "git", stateOf(world, "current").versions.git as string), ...(isWindows ? ["cmd", "git.exe"] : ["bin", "git"]));
+	const baseEnv = (): Record<string, string> => ({ ...childEnvOf(world, []) });
+	const scratchDir = (name: string): string => {
+		const dir = join(world.base, name);
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	};
+
+	before(async () => {
+		world = createWorld("d");
+		proxy = await connectProxy();
+		// What main does before an engine run: the stubbed `session.resolveProxy` answers with the test-local proxy; the app's environment names none.
+		const os = await resolveOsProxy({ resolve: async () => `PROXY 127.0.0.1:${proxy.port}`, forgeHosts: [], appEnv: world.appEnv });
+		install = await runWorld(world, { only: ["preflight", "node", "git", "herdr", "pi"], proxyEnv: os.env });
+		// pi-claude-bridge brings the Agent SDK and, as an optional dependency, the platform package with the native claude. Installed by hand into a scratch
+		// prefix here: the `pkg:` stages are task 7's.
+		if (install.ok) {
+			bridge = scratchDir("bridge");
+			const pin = (realStack.piPackages as Array<{ name: string; version: string }>).find((p) => p.name === "pi-claude-bridge");
+			const env = { ...baseEnv(), NPM_CONFIG_PREFIX: bridge };
+			const npm = await run(nodeFile(), [npmCliPath(world.layout, stateOf(world, "current").versions.node as string), "install", "--prefix", bridge, "--ignore-scripts", `pi-claude-bridge@${pin?.version}`], { env, cwd: bridge, timeoutMs: 600_000 });
+			assert.equal(npm.code, 0, npm.stderr.slice(0, 600));
+			claudeExe = locateClaude(join(bridge, "node_modules"), platformKey(process.platform, process.arch))?.exe ?? null;
+		}
+	});
+	after(async () => {
+		await proxy?.close();
+		await disposeWorld(world);
+	});
+
+	it("installs pi on a first run, before any start, through the CONNECT proxy the OS setting named, with no proxy variable in the app's environment", () => {
+		assert.equal(install.error, null);
+		assert.ok(install.ok, JSON.stringify(Object.values(install.outcomes).map((o) => o.failure)).slice(0, 1500));
+		assert.equal(install.outcomes.pi?.status, "installed");
+		assert.deepEqual(Object.keys(world.appEnv).filter((k) => /proxy/i.test(k)), []);
+		assert.ok(proxy.connects.includes("registry.npmjs.org:443"), `the proxy saw ${JSON.stringify([...new Set(proxy.connects)])}`);
+	});
+
+	it("finds the native claude of the Agent SDK in the tree pi-claude-bridge installed", () => {
+		assert.ok(claudeExe !== null && existsSync(claudeExe), `claude: ${claudeExe}`);
+	});
+
+	// Design record (Network): does the bundled claude trust the OS certificate store through NODE_USE_SYSTEM_CA? A test CA goes into the runner's store (a guarded
+	// fixture); a stand-in HTTPS server on 127.0.0.1 answers with a certificate signed by it; claude is pointed at it with ANTHROPIC_BASE_URL. The case
+	// records the verdict of each configuration and requires that at least one trusts the CA.
+	it("records whether claude trusts a CA in the OS store with NODE_USE_SYSTEM_CA, and with the system-ca.pem file in NODE_EXTRA_CA_CERTS (guarded fixture)", async (t) => {
+		assert.ok(claudeExe !== null, "claude was found");
+		const exe = claudeExe as string;
+		trustedCaScenario.run = async (trusted) => {
+			let handshakes = 0;
+			let refusals = 0;
+			const server = tls.createServer({ cert: trusted.ca.server.certPem, key: trusted.ca.server.keyPem }, (socket) => {
+				handshakes++;
+				socket.on("error", () => {});
+				socket.end("HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
+			});
+			server.on("tlsClientError", () => {
+				refusals++;
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const port = (server.address() as { port: number }).port;
+			try {
+				const written = await writeSystemCaFile({ layout: world.layout, nodeBinary: nodeFile(), run: (file, args, options) => run(file, args, { env: options?.env ?? {}, timeoutMs: options?.timeoutMs ?? 60_000 }), appEnv: world.appEnv });
+				t.diagnostic(`system-ca.pem: ${written.count} certificates written to ${written.path}`);
+				assert.ok(readFileSync(written.path, "utf8").includes(trusted.ca.caPem.trim().split("\n")[1] as string), "the test CA is in the file");
+				const home = scratchDir("claude-home");
+				const verdict = async (label: string, extra: Record<string, string>): Promise<"trusted" | "refused" | "no connection"> => {
+					handshakes = 0;
+					refusals = 0;
+					const env: Record<string, string> = { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-config"), ANTHROPIC_BASE_URL: `https://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "sk-ant-test", ...extra };
+					for (const name of ["NODE_USE_SYSTEM_CA", "NODE_EXTRA_CA_CERTS"]) if (!(name in extra)) delete env[name];
+					await runUntil(exe, ["-p", "hi", "--max-turns", "1"], { env, cwd: home, timeoutMs: 45_000, done: () => handshakes + refusals > 0 });
+					const result = handshakes > 0 ? "trusted" : refusals > 0 ? "refused" : "no connection";
+					t.diagnostic(`claude ${label}: ${result}`);
+					return result;
+				};
+				const none = await verdict("with neither variable", {});
+				const system = await verdict("with NODE_USE_SYSTEM_CA=1", { NODE_USE_SYSTEM_CA: "1" });
+				const file = await verdict("with NODE_EXTRA_CA_CERTS=system-ca.pem", { NODE_EXTRA_CA_CERTS: written.path });
+				t.diagnostic(`DESIGN RECORD: claude honours NODE_USE_SYSTEM_CA: ${system === "trusted"}; honours NODE_EXTRA_CA_CERTS=system-ca.pem: ${file === "trusted"}; trusted with neither: ${none === "trusted"} (${trusted.store})`);
+				assert.notEqual(none, "no connection", "claude reached the stand-in server at all");
+				assert.ok(system === "trusted" || file === "trusted", `claude trusts the test CA through neither variable (none: ${none}, NODE_USE_SYSTEM_CA: ${system}, file: ${file})`);
+			} finally {
+				server.close();
+			}
+		};
+		try {
+			const verdict = await runFixture(trustedTestCa, realIO);
+			if (!verdict.run) t.skip(verdict.reason);
+		} finally {
+			trustedCaScenario.run = null;
+		}
+	});
+
+	// T3-F007. A client may read `no_proxy`, `NO_PROXY`, or both. The constructed environment keeps a lowercase `no_proxy` the PM set beside the resolved `NO_PROXY`;
+	// this records what npm, Git, and claude do with each, and requires that every one bypasses the proxy for a loopback target when both are set.
+	describe("which spelling of the bypass list each client reads (T3-F007)", () => {
+		const routes = async (client: (c: ProbeContext) => Promise<void>) => {
+			const out = await probeNoProxy(client);
+			return Object.fromEntries(VARIANTS.map((v) => [v, routeOf(out[v])])) as Record<(typeof VARIANTS)[number], "bypassed" | "proxied" | "neither">;
+		};
+		const record = (t: { diagnostic: (m: string) => void }, who: string, r: Record<string, string>): void =>
+			t.diagnostic(`${who}: no variable ${r.none}; no_proxy only ${r.lower}; NO_PROXY only ${r.upper}; both ${r.both}`);
+
+		it("npm", async (t) => {
+			const cache = scratchDir("npm-cache-probe");
+			const r = await routes((c) => runUntil(nodeFile(), [npmCliPath(world.layout, stateOf(world, "current").versions.node as string), "view", "foo", "version", "--registry", c.url, "--strict-ssl=false", "--fetch-retries=0", "--fetch-timeout=5000", "--prefer-online"], { env: { ...baseEnv(), NPM_CONFIG_CACHE: cache, ...c.env }, cwd: cache, timeoutMs: 30_000, done: () => false }));
+			record(t, "npm", r);
+			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
+			assert.equal(r.both, "bypassed", "with both spellings set, npm goes direct");
+		});
+
+		it("Git", async (t) => {
+			const dir = scratchDir("git-probe");
+			const r = await routes((c) => runUntil(gitFile(), ["ls-remote", `${c.url}probe.git`], { env: { ...baseEnv(), GIT_TERMINAL_PROMPT: "0", GIT_CURL_VERBOSE: "0", ...c.env }, cwd: dir, timeoutMs: 30_000, done: () => false }));
+			record(t, "Git", r);
+			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
+			assert.equal(r.both, "bypassed", "with both spellings set, Git goes direct");
+		});
+
+		it("claude", async (t) => {
+			assert.ok(claudeExe !== null, "claude was found");
+			const home = scratchDir("claude-probe-home");
+			const r = await routes((c) => runUntil(claudeExe as string, ["-p", "hi", "--max-turns", "1"], { env: { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-probe-config"), ANTHROPIC_BASE_URL: c.url, ANTHROPIC_API_KEY: "sk-ant-test", ...c.env }, cwd: home, timeoutMs: 12_000, done: () => false }));
+			record(t, "claude", r);
+			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
+			assert.equal(r.both, "bypassed", "with both spellings set, claude goes direct");
+		});
 	});
 });
 
