@@ -186,8 +186,11 @@ const comspec = (world: World): string => join(world.appEnv.SystemRoot ?? "C:\\W
 /** Runs the launcher `name` of a `bin` folder as a PM's shell would find it: a script on macOS, `<name>.cmd` through cmd.exe on Windows (Node refuses to spawn a .cmd itself). */
 export function launcherIn(world: World, bin: string, name: string, args: readonly string[], env: Readonly<Record<string, string>> = systemEnv(platformOfHost, world.appEnv), cwd?: string): Promise<RunResult> {
 	if (!isWindows) return run(join(bin, name), args, { env, ...(cwd ? { cwd } : {}) });
-	// cmd.exe takes only names the app chose; the folder reaches it as its working directory (UTF-16), so a root with CJK characters is fine.
-	return run(comspec(world), ["/d", "/c", `${name}.cmd`, ...args], { env, cwd: bin });
+	// cmd.exe takes only names the app chose, and the folder it works in reaches it as its working directory (UTF-16), so a root with CJK characters is fine.
+	// With a working folder of the caller's, `bin` goes first on the PATH and cmd finds the launcher by name.
+	if (cwd === undefined) return run(comspec(world), ["/d", "/c", `${name}.cmd`, ...args], { env, cwd: bin });
+	const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
+	return run(comspec(world), ["/d", "/c", `${name}.cmd`, ...args], { env: { ...env, [pathKey]: `${bin};${env[pathKey] ?? ""}` }, cwd });
 }
 
 /** Runs `tools/bin/<name>` of the world. With `cwd` on macOS the program runs there; on Windows it runs in `tools\bin`, and `args` name paths absolutely. */

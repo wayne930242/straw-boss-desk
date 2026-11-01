@@ -57,7 +57,7 @@ const under = (root: string, path: string): boolean => path.replace(/\\/g, "/").
 function paneScript(out: string, names: readonly string[], extra: readonly string[] = []): string {
 	if (isWindows) {
 		const where = names.map((n) => `echo ${n}: & where ${n} 2^>^&1`).join(" & ");
-		return `cmd /d /c "(${where}${extra.map((e) => ` & ${e}`).join("")}) > ${out} 2>&1"`;
+		return `cmd /d /c "(${where}${extra.map((e) => ` & ${e}`).join("")} & echo PATH=%PATH%) > ${out} 2>&1"`;
 	}
 	const resolves = names.map((n) => `echo "${n}=$(command -v ${n} || echo none)"`).join("; ");
 	return `{ echo "zsh=$ZSH_VERSION"; echo "GH_TOKEN=\${GH_TOKEN-unset}"; ${resolves}; ${extra.join("; ")}; } > '${out}' 2>&1`;
@@ -244,6 +244,19 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	});
 
 	describe("the optional tool bun", () => {
+		it("is found by a spawn without a shell on Windows through bun.exe in tools/bin, and a bun.cmd alone is not (FE2R-F009)", { skip: isWindows ? false : "Windows only: macOS finds the launcher script by name" }, async () => {
+			const env = childEnvOf(world, ["bun"]);
+			const found = await run("bun", ["--version"], { env });
+			assert.equal(found.code, 0, found.stderr);
+			assert.equal(found.stdout.trim(), BUN_VERSION);
+			const lonely = join(world.base, "cmd-only");
+			mkdirSync(lonely, { recursive: true });
+			writeFileSync(join(lonely, "bun.cmd"), "@echo off\r\necho cmd-only\r\n");
+			const missing = await run("bun", ["--version"], { env: { ...systemEnv("win32", world.appEnv), PATH: lonely } });
+			assert.notEqual(missing.code, 0, "a spawn without a shell does not try .cmd");
+			assert.match(missing.stderr, /ENOENT/);
+		});
+
 		it("fills tools/bun-home and leaves a scratch home empty", async () => {
 			const probeHome = join(world.base, "probe-home");
 			const project = join(world.base, "project");
