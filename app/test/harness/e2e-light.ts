@@ -240,6 +240,22 @@ export function childEnvOf(world: World, optionalTools: readonly string[] = []):
 	return buildEnv({ layout: world.layout, current: currentTools(world), appEnv: world.appEnv, optionalTools });
 }
 
+/**
+ * The proxy variables the desk builds for a PM whose own environment has `no_proxy=corp.example` (not naming the target) while the OS proxy setting names
+ * the proxy at `proxyPort` and sends the target DIRECT: the union of the two lists in both spellings (T6-F003). Only the variables whose name ends in
+ * `proxy` are returned, so a probe can lay them over its own environment.
+ */
+export function builtProxyVariables(world: World, proxyPort: number): EnvMap {
+	const url = `http://127.0.0.1:${proxyPort}`;
+	const env = buildEnv({
+		layout: world.layout,
+		current: currentTools(world),
+		appEnv: { ...world.appEnv, no_proxy: "corp.example" },
+		proxy: { env: { HTTPS_PROXY: url, HTTP_PROXY: url, NO_PROXY: "127.0.0.1,localhost,::1" }, log: [] },
+	});
+	return Object.fromEntries(Object.entries(env).filter(([name]) => /proxy$/i.test(name)));
+}
+
 // ---- running programs --------------------------------------------------------------------------------------------------
 
 export function run(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; cwd?: string; stdin?: string; timeoutMs?: number }): Promise<RunResult> {

@@ -17,8 +17,12 @@ export interface TrustedCa {
 	store: string;
 }
 
-/** What the test does while the CA is trusted. The test sets it before the fixture runs and reads nothing back but exceptions. */
-export const trustedCaScenario: { run: ((trusted: TrustedCa) => Promise<void>) | null } = { run: null };
+/**
+ * What the test does around the CA. The test sets both before the fixture runs and reads nothing back but exceptions. `before` runs with the CA made and
+ * not in the store (the fixture has checked that a new Node process does not see it), so a client's refusal can be observed first (the control, T6-F002);
+ * `run` runs once the store holds it.
+ */
+export const trustedCaScenario: { before: ((trusted: TrustedCa) => Promise<void>) | null; run: ((trusted: TrustedCa) => Promise<void>) | null } = { before: null, run: null };
 
 const SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
 
@@ -86,19 +90,28 @@ export const trustedTestCa = defineFixture({
 	name: "a test CA in the OS certificate store (Windows CurrentUser root store, macOS System keychain), taken out again",
 	platforms: ["win32", "darwin"],
 	async body(io: FixtureIO): Promise<void> {
-		const scenario = trustedCaScenario.run;
-		if (scenario === null) throw new Error("trustedCaScenario.run is not set");
+		const scenario = { before: trustedCaScenario.before, run: trustedCaScenario.run };
+		if (scenario.run === null) throw new Error("trustedCaScenario.run is not set");
 		const dir = realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "sbd-test-ca-")));
 		const ca = createTestCa("os-store");
 		const file = join(dir, "straw-boss-test-ca.cer");
 		writeFileSync(file, ca.caDer);
 		const win = process.platform === "win32";
 		const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+		const store = win ? "Windows CurrentUser\\Root" : "macOS System keychain";
+		// Nothing is in the store yet, so a failure here has nothing to take out again.
+		try {
+			assert.equal(await inSystemStore(io, ca), false, "the CA is not in the store before the fixture adds it");
+			await scenario.before?.({ ca, dir, store });
+		} catch (error) {
+			rmSync(dir, { recursive: true, force: true });
+			throw error;
+		}
 		try {
 			if (win) await withDialog(io, join(system32, "certutil.exe"), ["-user", "-addstore", "-f", "Root", file], system32, "certutil -addstore");
 			else await must(io, "/usr/bin/sudo", ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", SYSTEM_KEYCHAIN, file], 120_000, "security add-trusted-cert");
 			assert.equal(await inSystemStore(io, ca), true, "the CA is in the store as a new Node process reads it (tls.getCACertificates('system'))");
-			await scenario({ ca, dir, store: win ? "Windows CurrentUser\\Root" : "macOS System keychain" });
+			await scenario.run({ ca, dir, store });
 		} finally {
 			try {
 				if (win) {

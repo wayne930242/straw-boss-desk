@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import { privateHostSentence } from "../src/main/bootstrap/stages/preflight.ts";
@@ -24,11 +24,14 @@ import {
 	WorldHerdr,
 	writeLocalProject,
 	firstLine,
+	builtProxyVariables,
 	type RunSummary,
 	type World,
 } from "./harness/e2e-light.ts";
 import { testPlatform } from "./harness/engine-fixture.ts";
 import { createPlatform } from "../src/main/platform/index.ts";
+import { execRunner } from "../src/main/platform/exec.ts";
+import { checkPaneLookups } from "../src/main/pane-path.ts";
 import { hostedCase, type FixtureIO } from "./harness/hosted.ts";
 import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { nodeBinaryPath, npmCliPath } from "../src/main/bootstrap/npm.ts";
@@ -94,6 +97,8 @@ function resolved(text: string, name: string): string | null {
 	const m = new RegExp(`^${name}=(.*)$`, "m").exec(text);
 	return m === null || m[1] === "none" ? null : (m[1] as string);
 }
+
+const system32 = (): string => join(process.env.SystemRoot ?? "C:\\Windows", "System32");
 
 describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	let world: World;
@@ -340,6 +345,30 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 				assert.ok(path !== null && under(world.layout.tools.bin, path), `bun resolves to ${path}`);
 			}
 		});
+
+		// T6-F004. The shipped pane order: Herdr builds the pane's PATH from the registry (machine entries, then the user's, `tools\shims` first among those), and the
+		// pane's shell is PowerShell. The WSL check claims to say which `bash` such a pane runs; this asks a real pane and compares it with the walk of the same
+		// registry values, so the check is shown to match what a pane does and not only a table in a unit test.
+		it("runs, for bash typed in a pane, the file the pane-order walk of the registry names; WSL's bash.exe is the first one exactly when the walk says so (Windows)", async (t) => {
+			if (!isWindows) {
+				t.skip("Windows only: the pane PATH comes from the registry");
+				return;
+			}
+			if (!world.realUserPath) {
+				t.skip("the user PATH is a stand-in here, so a pane does not have the shipped order");
+				return;
+			}
+			const type = (out: string): string => `[IO.File]::WriteAllText('${out}', ((Get-Command bash -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source }) -join '|'))`;
+			const text = await (herdr as WorldHerdr).inPane("bash-order", type, world.home);
+			const found = text.trim().split("|").filter((c) => c !== "");
+			const walked = await checkPaneLookups({ run: execRunner(), locate: createPlatform().locate, exists: existsSync, env: process.env });
+			const same = (a: string | null | undefined, b: string | null | undefined): boolean => a != null && b != null && win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase();
+			t.diagnostic(`a pane finds bash in this order: ${found.join(" | ")}; the walk says ${walked.firstBash ?? "nothing"} (WSL: ${walked.wslBash})`);
+			assert.ok(found.length > 0, `the pane found a bash: ${JSON.stringify(text)}`);
+			assert.ok(same(found[0], walked.firstBash), `the pane runs ${found[0]}, the walk says ${walked.firstBash}`);
+			assert.equal(same(found[0], join(system32(), "bash.exe")), walked.wslBash, "the walk and the pane agree on whether WSL's bash.exe comes first");
+			assert.ok(found.some((c) => same(c, join(world.layout.tools.shims, "bash.cmd"))), "the shim's bash.cmd is on the pane's PATH, through the user entry");
+		});
 	});
 
 	// ---- task 6: pi and the Windows shims ---------------------------------------------------------------------------------
@@ -394,10 +423,19 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			it("lists pi.cmd, pi, and bash.cmd, and no byte of the root's path is in any of them", () => {
 				const names = readdirSync(shimsDir()).sort();
 				for (const name of ["bash.cmd", "pi", "pi.cmd"]) assert.ok(names.includes(name), `${name} is in tools\\shims: ${names.join(", ")}`);
-				const roots = [world.root, world.root.replace(/\\/g, "/"), dirname(world.root), dirname(world.root).replace(/\\/g, "/")].map((r) => r.toLowerCase());
+				const roots = [world.root, dirname(world.root)];
 				for (const name of names) {
-					const text = readFileSync(join(shimsDir(), name)).toString("latin1").toLowerCase();
-					for (const r of roots) assert.ok(!text.includes(r), `${name} holds ${r}`);
+					const bytes = readFileSync(join(shimsDir(), name));
+					// No byte outside ASCII at all, so no character of a CJK root in the OEM or the ANSI code page, in UTF-8, or in UTF-16 (T6-F004 c): a latin1 decoding
+					// could never match a root with CJK characters. The text search below is for the ASCII parts.
+					assert.ok(bytes.every((b) => b < 0x80), `${name} holds a byte outside ASCII`);
+					const text = bytes.toString("latin1").toLowerCase();
+					for (const r of roots) {
+						for (const form of [r, r.replace(/\\/g, "/")]) {
+							for (const encoding of ["utf8", "utf16le"] as const) assert.ok(!bytes.includes(Buffer.from(form, encoding)), `${name} holds ${form} (${encoding})`);
+							assert.ok(!text.includes(form.toLowerCase()), `${name} holds ${form}`);
+						}
+					}
 				}
 			});
 
@@ -427,12 +465,13 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 				const result = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", `bash '${script.replace(/'/g, "''")}'`], { env, cwd: folder, timeoutMs: 120_000 });
 				assert.equal(result.code, 0, result.stderr);
 				assert.equal(result.stdout.trim().split(/\r?\n/)[0], pinOf());
+				// T6-F004 (b): which bash ran the script is PortableGit's, not any bash. `bin\\bash.exe` puts /usr/bin on the PATH, so cygpath turns the shell's own $BASH
+				// into the Windows file; the tail of that path is ASCII, which a console prints whole (the CJK root before it is not compared).
 				const version = stateOf(world, "current").versions.git as string;
-				const gitRoot = toolDir(world.layout, "git", version).replace(/\\/g, "/").toLowerCase();
-				// Git's bash prints its own path as a POSIX path (`/usr/bin/bash`); `-c` asks the bash that ran the script which shell it was.
-				const which = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", "bash -c 'echo $BASH; echo $0'"], { env, cwd: folder, timeoutMs: 60_000 });
+				const which = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", "bash -c 'cygpath -w $BASH'"], { env, cwd: folder, timeoutMs: 60_000 });
 				assert.equal(which.code, 0, which.stderr);
-				assert.match(which.stdout.replace(/\\/g, "/").toLowerCase(), /(\/usr\/bin\/bash|bash)/, `${which.stdout} (Git folder ${gitRoot})`);
+				const ran = which.stdout.trim().replace(/\\/g, "/").toLowerCase();
+				assert.ok(ran.endsWith(`/tools/git/${version}/usr/bin/bash.exe`.toLowerCase()), `the script ran under ${which.stdout.trim()}, not PortableGit ${version}'s bash`);
 			});
 
 			it("keeps PI_CODING_AGENT_DIR as the child had it, and still starts the pinned pi", async () => {
@@ -674,16 +713,21 @@ describe("the pi stage through the OS proxy setting, claude and the OS certifica
 		assert.ok(claudeExe !== null && existsSync(claudeExe), `claude: ${claudeExe}`);
 	});
 
-	// Design record (Network): does the bundled claude trust the OS certificate store through NODE_USE_SYSTEM_CA? A test CA goes into the runner's store (a guarded
-	// fixture); a stand-in HTTPS server on 127.0.0.1 answers with a certificate signed by it; claude is pointed at it with ANTHROPIC_BASE_URL. The case
-	// records the verdict of each configuration and requires that at least one trusts the CA.
-	it("records whether claude trusts a CA in the OS store by default and with NODE_USE_SYSTEM_CA (guarded fixture)", async (t) => {
+	// Design record (Network): does the bundled claude trust the OS certificate store, by default and with NODE_USE_SYSTEM_CA? A test CA goes into the runner's store (a
+	// guarded fixture); a stand-in HTTPS server on 127.0.0.1 answers with a certificate signed by it; claude is pointed at it with ANTHROPIC_BASE_URL. T6-F002: the
+	// control comes first, in fresh processes, before the CA is in the store: claude must refuse the server then, with and without NODE_USE_SYSTEM_CA, so the later
+	// "trusted" is shown to come from the store and not from a claude that verifies nothing. After the CA is added, a fresh claude must trust it with neither
+	// variable and with NODE_USE_SYSTEM_CA=1 (the constructed environment sets it).
+	it("shows that claude refuses a server whose CA is not in the OS store and trusts it once it is, by default and with NODE_USE_SYSTEM_CA (guarded fixture)", async (t) => {
 		assert.ok(claudeExe !== null, "claude was found");
 		const exe = claudeExe as string;
-		trustedCaScenario.run = async (trusted) => {
-			let handshakes = 0;
-			let refusals = 0;
-			const server = tls.createServer({ cert: trusted.ca.server.certPem, key: trusted.ca.server.keyPem }, (socket) => {
+		type Verdict = "trusted" | "refused" | "no connection";
+		let handshakes = 0;
+		let refusals = 0;
+		let server: tls.Server | null = null;
+		let verdictOf: ((label: string, extra: Record<string, string>) => Promise<Verdict>) | null = null;
+		trustedCaScenario.before = async (trusted) => {
+			server = tls.createServer({ cert: trusted.ca.server.certPem, key: trusted.ca.server.keyPem }, (socket) => {
 				handshakes++;
 				socket.on("error", () => {});
 				socket.end("HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
@@ -691,70 +735,81 @@ describe("the pi stage through the OS proxy setting, claude and the OS certifica
 			server.on("tlsClientError", () => {
 				refusals++;
 			});
-			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-			const port = (server.address() as { port: number }).port;
-			try {
-				const home = scratchDir("claude-home");
-				const verdict = async (label: string, extra: Record<string, string>): Promise<"trusted" | "refused" | "no connection"> => {
-					handshakes = 0;
-					refusals = 0;
-					const env: Record<string, string> = { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-config"), ANTHROPIC_BASE_URL: `https://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "sk-ant-test", ...extra };
-					for (const name of ["NODE_USE_SYSTEM_CA", "NODE_EXTRA_CA_CERTS"]) if (!(name in extra)) delete env[name];
-					await runUntil(exe, ["-p", "hi", "--max-turns", "1"], { env, cwd: home, timeoutMs: 45_000, done: () => handshakes + refusals > 0 });
-					const result = handshakes > 0 ? "trusted" : refusals > 0 ? "refused" : "no connection";
-					t.diagnostic(`claude ${label}: ${result}`);
-					return result;
-				};
-				const none = await verdict("with neither variable", {});
-				const system = await verdict("with NODE_USE_SYSTEM_CA=1", { NODE_USE_SYSTEM_CA: "1" });
-				t.diagnostic(`DESIGN RECORD: claude trusts the OS store with neither variable: ${none === "trusted"}; with NODE_USE_SYSTEM_CA=1: ${system === "trusted"} (${trusted.store})`);
-				assert.notEqual(none, "no connection", "claude reached the stand-in server at all");
-				assert.ok(system === "trusted" || none === "trusted", `claude trusts the OS store neither by default nor with NODE_USE_SYSTEM_CA (none: ${none}, NODE_USE_SYSTEM_CA: ${system}): the system-ca.pem file of Network is needed`);
-			} finally {
-				server.close();
-			}
+			await new Promise<void>((resolve) => (server as tls.Server).listen(0, "127.0.0.1", resolve));
+			const port = ((server as tls.Server).address() as { port: number }).port;
+			const home = scratchDir("claude-home");
+			verdictOf = async (label, extra) => {
+				handshakes = 0;
+				refusals = 0;
+				const env: Record<string, string> = { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-config"), ANTHROPIC_BASE_URL: `https://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "sk-ant-test", ...extra };
+				for (const name of ["NODE_USE_SYSTEM_CA", "NODE_EXTRA_CA_CERTS"]) if (!(name in extra)) delete env[name];
+				// A fresh claude process each time; it is stopped when the server has seen its handshake succeed or fail.
+				await runUntil(exe, ["-p", "hi", "--max-turns", "1"], { env, cwd: home, timeoutMs: 45_000, done: () => handshakes + refusals > 0 });
+				const result: Verdict = handshakes > 0 ? "trusted" : refusals > 0 ? "refused" : "no connection";
+				t.diagnostic(`claude ${label}: ${result}`);
+				return result;
+			};
+			const before = await verdictOf("before the CA is in the store, with neither variable", {});
+			const beforeSystem = await verdictOf("before the CA is in the store, with NODE_USE_SYSTEM_CA=1", { NODE_USE_SYSTEM_CA: "1" });
+			assert.equal(before, "refused", "the control: claude refuses a server whose CA is not in the OS store");
+			assert.equal(beforeSystem, "refused", "the control: NODE_USE_SYSTEM_CA=1 alone does not make claude trust a CA the store does not hold");
+		};
+		trustedCaScenario.run = async (trusted) => {
+			assert.ok(verdictOf !== null, "the control ran before the CA was added");
+			const none = await verdictOf("after the CA is in the store, with neither variable", {});
+			const system = await verdictOf("after the CA is in the store, with NODE_USE_SYSTEM_CA=1", { NODE_USE_SYSTEM_CA: "1" });
+			t.diagnostic(`DESIGN RECORD: claude refuses the CA before it is in the store, then trusts it with neither variable: ${none === "trusted"}; with NODE_USE_SYSTEM_CA=1: ${system === "trusted"} (${trusted.store})`);
+			assert.equal(none, "trusted", `claude does not trust the OS store by default (${none}): the system-ca.pem file of Network is needed`);
+			assert.equal(system, "trusted", `claude does not trust the OS store with NODE_USE_SYSTEM_CA=1 (${system}), which the constructed environment sets`);
 		};
 		try {
 			const verdict = await runFixture(trustedTestCa, realIO);
 			if (!verdict.run) t.skip(verdict.reason);
 		} finally {
+			trustedCaScenario.before = null;
 			trustedCaScenario.run = null;
+			(server as tls.Server | null)?.close();
 		}
 	});
 
-	// T3-F007. A client may read `no_proxy`, `NO_PROXY`, or both. The constructed environment keeps a lowercase `no_proxy` the PM set beside the resolved `NO_PROXY`;
-	// this records what npm, Git, and claude do with each, and requires that every one bypasses the proxy for a loopback target when both are set.
-	describe("which spelling of the bypass list each client reads (T3-F007)", () => {
+	// T3-F007, T6-F003. A client may read `no_proxy`, `NO_PROXY`, or both, and curl (so Git) reads the lowercase name first. The constructed environment puts the
+	// union of the PM's list and the resolved one in both spellings; this records what npm, Git, and claude do with each spelling and with the two spellings
+	// holding different lists, and requires that every one bypasses the proxy when both are set and with the environment the desk builds for a PM whose own
+	// lowercase `no_proxy` does not name the target. Each client is stopped as soon as the route is known (T6-F010).
+	describe("which spelling of the bypass list each client reads (T3-F007, T6-F003)", () => {
 		const routes = async (client: (c: ProbeContext) => Promise<void>) => {
-			const out = await probeNoProxy(client);
+			const out = await probeNoProxy(client, { built: (port) => builtProxyVariables(world, port) });
 			return Object.fromEntries(VARIANTS.map((v) => [v, routeOf(out[v])])) as Record<(typeof VARIANTS)[number], "bypassed" | "proxied" | "neither">;
 		};
 		const record = (t: { diagnostic: (m: string) => void }, who: string, r: Record<string, string>): void =>
-			t.diagnostic(`${who}: no variable ${r.none}; no_proxy only ${r.lower}; NO_PROXY only ${r.upper}; both ${r.both}`);
+			t.diagnostic(`${who}: no variable ${r.none}; no_proxy only ${r.lower}; NO_PROXY only ${r.upper}; both ${r.both}; different lists (target only in NO_PROXY) ${r.differ}; as the desk builds them ${r.built}`);
+		const checked = (r: Record<string, string>, who: string): void => {
+			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
+			assert.equal(r.both, "bypassed", `with both spellings set, ${who} goes direct`);
+			assert.equal(r.built, "bypassed", `with the environment the desk builds for a PM's own lowercase no_proxy, ${who} goes direct for a host only the resolved list names`);
+		};
 
 		it("npm", async (t) => {
 			const cache = scratchDir("npm-cache-probe");
-			const r = await routes((c) => runUntil(nodeFile(), [npmCliPath(world.layout, stateOf(world, "current").versions.node as string), "view", "foo", "version", "--registry", c.url, "--strict-ssl=false", "--fetch-retries=0", "--fetch-timeout=5000", "--prefer-online"], { env: { ...baseEnv(), NPM_CONFIG_CACHE: cache, ...c.env }, cwd: cache, timeoutMs: 30_000, done: () => false }));
+			const r = await routes((c) => runUntil(nodeFile(), [npmCliPath(world.layout, stateOf(world, "current").versions.node as string), "view", "foo", "version", "--registry", c.url, "--strict-ssl=false", "--fetch-retries=0", "--fetch-timeout=5000", "--prefer-online"], { env: { ...baseEnv(), NPM_CONFIG_CACHE: cache, ...c.env }, cwd: cache, timeoutMs: 30_000, done: c.seen }));
 			record(t, "npm", r);
-			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
-			assert.equal(r.both, "bypassed", "with both spellings set, npm goes direct");
+			checked(r, "npm");
 		});
 
 		it("Git", async (t) => {
 			const dir = scratchDir("git-probe");
-			const r = await routes((c) => runUntil(gitFile(), ["ls-remote", `${c.url}probe.git`], { env: { ...baseEnv(), GIT_TERMINAL_PROMPT: "0", GIT_CURL_VERBOSE: "0", ...c.env }, cwd: dir, timeoutMs: 30_000, done: () => false }));
+			const r = await routes((c) => runUntil(gitFile(), ["ls-remote", `${c.url}probe.git`], { env: { ...baseEnv(), GIT_TERMINAL_PROMPT: "0", GIT_CURL_VERBOSE: "0", ...c.env }, cwd: dir, timeoutMs: 30_000, done: c.seen }));
 			record(t, "Git", r);
-			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
-			assert.equal(r.both, "bypassed", "with both spellings set, Git goes direct");
+			checked(r, "Git");
 		});
 
 		it("claude", async (t) => {
 			assert.ok(claudeExe !== null, "claude was found");
 			const home = scratchDir("claude-probe-home");
-			const r = await routes((c) => runUntil(claudeExe as string, ["-p", "hi", "--max-turns", "1"], { env: { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-probe-config"), ANTHROPIC_BASE_URL: c.url, ANTHROPIC_API_KEY: "sk-ant-test", ...c.env }, cwd: home, timeoutMs: 12_000, done: () => false }));
+			// The client is stopped when the route is known; the limit is only for a slow first start.
+			const r = await routes((c) => runUntil(claudeExe as string, ["-p", "hi", "--max-turns", "1"], { env: { ...baseEnv(), HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: scratchDir("claude-probe-config"), ANTHROPIC_BASE_URL: c.url, ANTHROPIC_API_KEY: "sk-ant-test", ...c.env }, cwd: home, timeoutMs: 40_000, done: c.seen }));
 			record(t, "claude", r);
-			assert.equal(r.none, "proxied", "the control: without a bypass list the proxy is asked");
-			assert.equal(r.both, "bypassed", "with both spellings set, claude goes direct");
+			checked(r, "claude");
 		});
 	});
 });
