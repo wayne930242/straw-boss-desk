@@ -20,12 +20,19 @@ export const MACHINE_CHANGING: readonly Pattern[] = [
 	{ name: "cert-add-trusted", re: /\badd-trusted-cert\b/, sample: "security add-trusted-cert -d ca.pem" },
 	{ name: "cert-certutil", re: /\bcertutil\b/i, sample: "certutil -addstore Root ca.cer" },
 	{ name: "cert-import", re: /\bImport-Certificate\b/, sample: "Import-Certificate -FilePath ca.cer" },
+	// T6-F005: how a fixture takes its certificate out again, and the click that answers the Windows store's confirmation dialogs.
+	{ name: "cert-drive", re: /\bCert:\\{1,2}/i, sample: "Remove-Item 'Cert:\\CurrentUser\\Root\\0123ABCD'" },
+	{ name: "cert-remove-trusted", re: /\bremove-trusted-cert\b/, sample: "security remove-trusted-cert -d ca.pem" },
+	{ name: "cert-delete", re: /\bdelete-certificate\b/, sample: "security delete-certificate -Z 0123ABCD" },
+	{ name: "dialog-bm-click", re: /\bBM_CLICK\b/, sample: "SendMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero)" },
+	{ name: "dialog-bm-click-code", re: /\b0x00F5\b/i, sample: "SendMessage(button, 0x00F5, 0, 0)" },
 ];
 
 /** The commands the spec names (Fixtures that change the machine: The scan), one string each; every one must match a pattern above. */
 export const SPEC_COMMAND_WORDS: readonly string[] = [
 	"add-generic-password", "delete-generic-password", "CredWrite", "CredDelete", "cmdkey", "reg add", "reg delete", "Set-ItemProperty",
 	"key.SetValue(", "HKCU\\Environment", ".zshrc", "sudo", "add-trusted-cert", "certutil", "Import-Certificate",
+	"Cert:\\", "remove-trusted-cert", "delete-certificate", "BM_CLICK",
 ];
 
 export interface Finding { file: string; line: number; pattern: string }

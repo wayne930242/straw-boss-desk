@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -43,6 +43,12 @@ describe("fixture scan", () => {
 			const found = scanForMachineChanges(root).map((f) => f.pattern);
 			assert.ok(found.includes(p.name), `${p.name} was not found in a planted file`);
 		}
+	});
+
+	it("finds the store-removal commands and the dialog click of the real system-ca fixture when a copy of it lies outside the harness (T6-F005)", () => {
+		const root = plant({ "copy.test.ts": readFileSync(join(testRoot, "harness", "system-ca.ts"), "utf8") });
+		const found = new Set(scanForMachineChanges(root).map((f) => f.pattern));
+		for (const name of ["cert-drive", "cert-remove-trusted", "cert-delete", "dialog-bm-click"]) assert.ok(found.has(name), `${name} is not found in a copy of system-ca.ts`);
 	});
 
 	it("lists every command family of the spec", () => {
