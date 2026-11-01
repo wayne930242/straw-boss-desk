@@ -681,6 +681,8 @@ On the Windows VM and on macOS:
 - `glab` token login. `config.yml` holds no token, and an `api` token pushes over HTTPS.
 - With the credential store made unavailable, the wizard refuses the login instead of keeping a plain-text token.
 
+Status (2026-11-01): macOS ran the `gh` and `glab` checks on a scratch HOME keychain and passed (branch `feat/mac-account-check`); the pushed branches are test branches. The store-unavailable refusal could not be checked safely on the Mac: a missing or read-only keychain can raise a SecurityAgent dialog, and go-keyring calls `/usr/bin/security` by absolute path. It stays a wizard-level check with the store probe's 10 s limit.
+
 ### Scripted PM runs, in the Windows VM and on macOS
 
 Setup: a machine with the stack, the profile, and a test recipe naming a scratch repository with a test command and a CI workflow, on a throwaway github.com repository (and a GitLab project for one run). The work folder is `C:\Users\測試PM\trap\`, where `trap` is itself a git repository with one commit: a decoy that catches an agent committing in the parent folder, the spike's second finding. The wizard clones the recipe's repository into it and opens its base.
