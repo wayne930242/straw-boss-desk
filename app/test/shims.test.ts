@@ -280,6 +280,31 @@ describe("the batch shims under a root with cmd's special characters (T5-F007 pa
 		});
 	}
 
+	// What npm writes for a global package: `pi.cmd` looks for `node` on the PATH when no node.exe lies beside it, then runs the package's script.
+	const NPM_WRAPPER = [
+		"@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
+		'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ") ELSE (", '  SET "_prog=node"', "  SET PATHEXT=%PATHEXT:;.JS;=;%", ")", "",
+		'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\fakepi\\cli.js" %*', "",
+	].join("\r\n");
+
+	it("starts the wrapper npm writes for the pinned pi, which finds node on the PATH the shim built", async () => {
+		for (const { layout, other, name } of roots) {
+			const nodeDir = toolDir(layout, "node", "24.0.0");
+			mkdirSync(nodeDir, { recursive: true });
+			copyFileSync(process.execPath, join(nodeDir, "node.exe"));
+			mkdirSync(join(layout.tools.npm, "node_modules", "fakepi"), { recursive: true });
+			writeFileSync(join(layout.tools.npm, "node_modules", "fakepi", "cli.js"), "console.log('FAKEPI ' + process.argv.slice(2).join(' '));\n");
+			writeFileSync(join(layout.tools.npm, "pi.cmd"), NPM_WRAPPER);
+			try {
+				const r = await ask(layout, other, "pi", ["--version"], { STRAW_BOSS_DESK: "1", STRAW_BOSS_DESK_ROOT: layout.root, PATH: sys32 });
+				assert.equal(r.code, 0, `${name}: ${r.stdout}${r.stderr}`);
+				assert.equal(r.stdout.trim(), "FAKEPI --version", name);
+			} finally {
+				writeFileSync(join(layout.tools.npm, "pi.cmd"), marker("PINNED"));
+			}
+		}
+	});
+
 	it("compares the root without regard to case or a trailing backslash", async () => {
 		const { layout, other } = roots.find((r) => r.name === "plain 測試") as (typeof roots)[number];
 		for (const written of [`${layout.root}\\`, layout.root.toUpperCase(), layout.root.toLowerCase()]) {

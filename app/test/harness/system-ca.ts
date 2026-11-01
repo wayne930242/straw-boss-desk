@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { createTestCa, type TestCa } from "./test-ca.ts";
 import { defineFixture, type FixtureIO } from "./hosted.ts";
 
@@ -20,6 +21,20 @@ export interface TrustedCa {
 export const trustedCaScenario: { run: ((trusted: TrustedCa) => Promise<void>) | null } = { run: null };
 
 const SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
+
+// Windows: `certutil -user -addstore Root` and the .NET store API both stop at a "Security Warning" dialog (it waits for a click that never comes on a
+// runner; found on windows-2025). The CurrentUser Root store is a registry key of the same user, one key for each certificate named by its SHA-1
+// thumbprint, holding the certificate wrapped as a serialized certificate property: id 0x20, reserved 1, length, DER. Writing it is a write to HKCU only,
+// the certificate API reads it like any other, and deleting the key takes it out.
+const userRootKey = (ca: TestCa): string => `HKCU\\Software\\Microsoft\\SystemCertificates\\Root\\Certificates\\${createHash("sha1").update(ca.caDer).digest("hex").toUpperCase()}`;
+
+function certificateBlob(ca: TestCa): string {
+	const header = Buffer.alloc(12);
+	header.writeUInt32LE(0x20, 0);
+	header.writeUInt32LE(1, 4);
+	header.writeUInt32LE(ca.caDer.length, 8);
+	return Buffer.concat([header, ca.caDer]).toString("hex");
+}
 
 async function must(io: FixtureIO, command: string, args: readonly string[], timeoutMs: number, what: string): Promise<void> {
 	const result = await io.run(command, args, { timeoutMs });
@@ -50,13 +65,13 @@ export const trustedTestCa = defineFixture({
 		const win = process.platform === "win32";
 		const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
 		try {
-			if (win) await must(io, join(system32, "certutil.exe"), ["-user", "-addstore", "-f", "Root", file], 120_000, "certutil -addstore");
+			if (win) await must(io, join(system32, "reg.exe"), ["add", userRootKey(ca), "/v", "Blob", "/t", "REG_BINARY", "/d", certificateBlob(ca), "/f"], 60_000, "reg add");
 			else await must(io, "/usr/bin/sudo", ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", SYSTEM_KEYCHAIN, file], 120_000, "security add-trusted-cert");
 			assert.equal(await inSystemStore(io, ca), true, "the CA is in the store as a new Node process reads it (tls.getCACertificates('system'))");
 			await scenario({ ca, dir, store: win ? "Windows CurrentUser\\Root" : "macOS System keychain" });
 		} finally {
 			try {
-				if (win) await io.run(join(system32, "certutil.exe"), ["-user", "-delstore", "Root", ca.commonName], { timeoutMs: 120_000 });
+				if (win) await io.run(join(system32, "reg.exe"), ["delete", userRootKey(ca), "/f"], { timeoutMs: 60_000 });
 				else {
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "remove-trusted-cert", "-d", file], { timeoutMs: 120_000 });
 					await io.run("/usr/bin/sudo", ["/usr/bin/security", "delete-certificate", "-c", ca.commonName, SYSTEM_KEYCHAIN], { timeoutMs: 120_000 });

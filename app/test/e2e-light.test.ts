@@ -364,13 +364,13 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			mkdirSync(dir, { recursive: true });
 			return dir;
 		};
-		const cmdRun = (env: Record<string, string>, line: string, cwd = neutral()) => run(join(system32(), "cmd.exe"), ["/d", "/c", line], { env, cwd, timeoutMs: 120_000 });
+		/** `cmd /d /c <args>`: the first argument is looked up on the env's PATH, the way a pane's shell finds a command by name. */
+		const cmdRun = (env: Record<string, string>, args: readonly string[], cwd = neutral()) => run(join(system32(), "cmd.exe"), ["/d", "/c", ...args], { env, cwd, timeoutMs: 120_000 });
 
 		it("prints the pin: through the shim on Windows, through the private prefix on macOS", async () => {
-			const env = childEnvOf(world, []);
 			const result = isWindows
-				? await cmdRun(env, `"${join(shimsDir(), "pi.cmd")}" --version`)
-				: await run(binShim(world.layout, "pi"), ["--version"], { env, cwd: world.home, timeoutMs: 120_000 });
+				? await cmdRun(desk([shimsDir(), system32()]), ["pi", "--version"])
+				: await run(binShim(world.layout, "pi"), ["--version"], { env: childEnvOf(world, []), cwd: world.home, timeoutMs: 120_000 });
 			assert.equal(result.code, 0, result.stderr);
 			assert.equal(result.stdout.trim().split(/\r?\n/)[0], pinOf());
 		});
@@ -381,10 +381,9 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 			const hashes = (): Record<string, string> => Object.fromEntries(names.map((n) => [n, sha256Hex(readFileSync(join(bin, n)))]));
 			assert.ok(names.every((n) => existsSync(join(bin, n))), `fd and rg are in ${bin} before the start (the fd-rg stage put them there)`);
 			const before = hashes();
-			const env = childEnvOf(world, []);
 			const probe = isWindows
-				? await rpcProbe(join(system32(), "cmd.exe"), ["/d", "/c", `"${join(shimsDir(), "pi.cmd")}"`, "--mode", "rpc", "--no-session", "--offline"], { env, cwd: world.home })
-				: await rpcProbe(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env, cwd: world.home });
+				? await rpcProbe(join(system32(), "cmd.exe"), ["/d", "/c", "pi", "--mode", "rpc", "--no-session", "--offline"], { env: desk([shimsDir(), system32()]), cwd: world.home })
+				: await rpcProbe(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd: world.home });
 			t.diagnostic(`rpc start: ${probe.lines.length} line(s); first: ${(probe.lines[0] ?? "").slice(0, 160)}; stderr: ${probe.stderr.trim().slice(0, 200)}`);
 			assert.ok(probe.lines.some((l) => l.includes('"state"')), `pi answered get_state: ${probe.lines.join(" | ").slice(0, 400)} ${probe.stderr.slice(0, 400)}`);
 			assert.deepEqual(hashes(), before, "fd and rg are byte for byte what the fd-rg stage put there");
@@ -412,7 +411,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 					["with another root", { ...desk([shimsDir(), other, system32()]), STRAW_BOSS_DESK_ROOT: anotherRoot }],
 				];
 				for (const [what, env] of cases) {
-					const viaCmd = await cmdRun(env, "pi");
+					const viaCmd = await cmdRun(env, ["pi"]);
 					assert.equal(viaCmd.stdout.trim(), "other-pi", `cmd ${what}: ${viaCmd.stderr}`);
 					const viaSh = await run(join(gitBin, "sh.exe"), ["-c", "pi"], { env: { ...env, PATH: [shimsDir(), other, gitBin, system32()].join(";") }, cwd: neutral(), timeoutMs: 120_000 });
 					assert.equal(viaSh.stdout.trim(), "other-pi", `Git's sh ${what}: ${viaSh.stderr}`);
@@ -441,9 +440,9 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 				const mine = join(neutral(), ".pi", "agent");
 				mkdirSync(mine, { recursive: true });
 				const env = { ...desk([shimsDir(), system32()]), PI_CODING_AGENT_DIR: mine };
-				const version = await cmdRun(env, `"${join(shimsDir(), "pi.cmd")}" --version`);
+				const version = await cmdRun(env, ["pi", "--version"]);
 				assert.equal(version.stdout.trim().split(/\r?\n/)[0], pinOf(), version.stderr);
-				const viaBash = await cmdRun(env, `"${join(shimsDir(), "bash.cmd")}" -c "echo $PI_CODING_AGENT_DIR"`);
+				const viaBash = await cmdRun(env, ["bash", "-c", "echo $PI_CODING_AGENT_DIR"]);
 				assert.equal(viaBash.stdout.trim().replace(/\\/g, "/").toLowerCase(), mine.replace(/\\/g, "/").toLowerCase(), viaBash.stderr);
 			});
 
