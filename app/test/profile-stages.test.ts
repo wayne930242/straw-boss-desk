@@ -220,6 +220,7 @@ describe("the profile stage", () => {
 		assert.equal(third.outcomes.profile?.status, "skipped-verified");
 		assert.deepEqual(third.outcomes.profile?.warnings?.map((w) => w.kind), ["profile-file-kept"], "reported on every run");
 		assert.deepEqual(new StateStore(f.layout).record("profile")?.warnings?.map((w) => w.kind), ["profile-file-kept"]);
+		assert.deepEqual(new StateStore(f.layout).record("profile")?.warnings?.map((w) => w.path), ["AGENTS.md"], "the file survives a read of state/bootstrap.json, which the settings screen needs");
 	});
 
 	it("takes the recipe's profile pin over the stack's and installs that version; pi replaces the settings entry", async () => {

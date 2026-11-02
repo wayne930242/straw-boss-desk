@@ -93,7 +93,7 @@ function asRecord(value: unknown): StageRecord | null {
 			: undefined;
 	const warnings = Array.isArray(value.warnings)
 		? value.warnings.flatMap((w): StageWarning[] =>
-				isObject(w) && typeof w.kind === "string" && typeof w.sentence === "string" ? [{ kind: w.kind, ...(typeof w.host === "string" ? { host: w.host } : {}), sentence: w.sentence }] : [],
+				isObject(w) && typeof w.kind === "string" && typeof w.sentence === "string" ? [{ kind: w.kind, ...(typeof w.host === "string" ? { host: w.host } : {}), ...(typeof w.path === "string" ? { path: w.path } : {}), sentence: w.sentence }] : [],
 			)
 		: [];
 	// A start block that does not parse is still a block: dropping it would let pi start.
