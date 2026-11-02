@@ -10,7 +10,7 @@ import { createPlatform } from "../src/main/platform/index.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
 import { assertEngineIdle, repairEngineLock } from "../src/main/runtime/engine-lock.ts";
 import { loadStartConfig } from "../src/main/runtime/config.ts";
-import { packageBlocks, readInstalled, isInstalled, ROLLBACK_FAILED_FIELD } from "../src/main/runtime/readiness.ts";
+import { packageBlocks, readInstalled, isInstalled } from "../src/main/runtime/readiness.ts";
 import { resolveShortNames, shortPathOf } from "../src/main/runtime/short-names.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
 import { FakeProcesses, installFake } from "./harness/runtime-fakes.ts";
@@ -146,12 +146,15 @@ describe("what a start reads from the install", () => {
 		assert.ok(!isInstalled(gone) && gone.missing.some((m) => m.includes("herdr")));
 	});
 
-	it("reads the rollback-failed mark of a package from the raw state file", () => {
+	it("reads the startBlock of a stage record from the raw state file, and treats one that does not parse as a block", () => {
 		const { layout } = fresh();
 		assert.deepEqual(packageBlocks(layout), []);
 		mkdirSync(layout.state, { recursive: true });
-		writeFileSync(join(layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "pkg:a": { status: "ok" }, "team-pkg:@acme/skills": { status: "failed", [ROLLBACK_FAILED_FIELD]: true }, profile: { [ROLLBACK_FAILED_FIELD]: false } } }));
-		assert.deepEqual(packageBlocks(layout), [{ stage: "team-pkg:@acme/skills", package: "@acme/skills" }]);
+		const write = (stages: unknown) => writeFileSync(join(layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages }));
+		write({ "pkg:a": { status: "ok" }, "team-pkg:@acme/skills": { status: "failed", startBlock: { kind: "package-may-load", package: "@acme/skills", sentence: "Run Repair." } }, profile: {} });
+		assert.deepEqual(packageBlocks(layout), [{ stage: "team-pkg:@acme/skills", package: "@acme/skills", sentence: "Run Repair." }]);
+		write({ "team-pkg:@x/y": { startBlock: "garbage" }, "pkg:z": { startBlock: {} }, other: { startBlock: null } });
+		assert.deepEqual(packageBlocks(layout), [{ stage: "team-pkg:@x/y", package: "@x/y", sentence: "" }, { stage: "pkg:z", package: "pkg:z", sentence: "" }]);
 		writeFileSync(join(layout.state, "bootstrap.json"), "not json");
 		assert.deepEqual(packageBlocks(layout), []);
 	});

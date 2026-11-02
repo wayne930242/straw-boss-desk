@@ -238,7 +238,9 @@ export class Supervisor {
 	#refuseBlockedPackages(): void {
 		const blocks = packageBlocks(this.#d.layout);
 		if (blocks.length === 0) return;
-		throw new StartFailureError({ kind: "package-unsafe", reason: blocks.map((b) => b.package).join(", "), offerRepair: true });
+		// The record's own sentence is what the screen shows (T7-F002); a record without one falls back to the package names and the catalog line.
+		const sentences = blocks.map((b) => b.sentence).filter((t) => t !== "");
+		throw new StartFailureError({ kind: "package-unsafe", reason: sentences.length > 0 ? firstLineOf(sentences.join(" ")) : blocks.map((b) => b.package).join(", "), offerRepair: true });
 	}
 
 	async #requireIdleEngine(): Promise<void> {

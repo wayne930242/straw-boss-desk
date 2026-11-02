@@ -7,7 +7,6 @@ import { herdrBinary } from "../src/main/paths.ts";
 import { StartFailureError, type StartFailure } from "../src/main/runtime/failure.ts";
 import { fingerprintOf, type StartRecord } from "../src/main/runtime/start-file.ts";
 import { Supervisor, StackBusyError, type SupervisorDeps, type SupervisorEvent } from "../src/main/runtime/supervisor.ts";
-import { ROLLBACK_FAILED_FIELD } from "../src/main/runtime/readiness.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
 import { FakeChild, FakeProcesses, fakeClock, installFake, scriptedRun, type Call } from "./harness/runtime-fakes.ts";
 
@@ -174,15 +173,19 @@ describe("a start that cannot begin", () => {
 		assert.ok(w.events.some((e) => e.type === "failure" && e.failure.kind === "tool-missing"));
 	});
 
-	it("refuses to start while a recipe package whose rollback failed may still load its extensions (T7-F002), before any program runs", async () => {
+	it("refuses to start while a stage record carries a startBlock (T7-F002), shows its sentence, and runs nothing", async () => {
 		const w = world();
-		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "team-pkg:@acme/skills": { status: "failed", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, [ROLLBACK_FAILED_FIELD]: true } } }));
+		const sentence = "The package @acme/skills could not be removed and may still load. Run Repair.";
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "team-pkg:@acme/skills": { status: "failed", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, startBlock: { kind: "package-may-load", package: "@acme/skills", sentence } } } }));
 		const failure = await failureOf(w.supervisor.start());
 		assert.equal(failure.kind, "package-unsafe");
-		assert.equal(failure.reason, "@acme/skills");
+		assert.equal(failure.reason, sentence);
 		assert.equal(failure.offerRepair, true);
 		assert.deepEqual(w.run.calls, []);
 		assert.deepEqual(w.children, []);
+		// The next successful run of the stage writes a record without it, and the start goes on.
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "team-pkg:@acme/skills": { status: "ok", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {} } } }));
+		assert.equal((await w.supervisor.start()).url, URL);
 	});
 
 	it("reports an engine lock it cannot take in one plain sentence and offers Repair, which removes a lock whose owner is not an engine of this root", async () => {
