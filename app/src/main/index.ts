@@ -1,6 +1,6 @@
 import { app, BaseWindow, Menu, session, WebContentsView } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pickLocale } from "../shared/locale.ts";
@@ -12,7 +12,7 @@ import { execRunner } from "./platform/exec.ts";
 import { checkPaneLookups } from "./pane-path.ts";
 import { hasStopStack } from "./runtime/args.ts";
 import { loadStartConfig } from "./runtime/config.ts";
-import { RuntimeLog } from "./runtime/log.ts";
+import { RuntimeLog, runtimeRedactor } from "./runtime/log.ts";
 import { Supervisor } from "./runtime/supervisor.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
 
@@ -28,7 +28,8 @@ app.setPath("userData", electronDir(root));
 
 const home = homedir();
 const layout = computeLayout({ root, home, platform: process.platform === "win32" ? "win32" : "darwin" });
-const runtimeLog = new RuntimeLog({ dir: layout.logs });
+// The credential shapes of `recipe/secret-patterns.json`, shipped beside the app by `scripts/copy-assets.ts`: a missing or damaged file stops the app before it logs anything.
+const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(JSON.parse(readFileSync(join(import.meta.dirname, "..", "assets", "secret-patterns.json"), "utf8"))) });
 const platform = createPlatform();
 const run = execRunner();
 

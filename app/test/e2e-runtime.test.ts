@@ -8,10 +8,11 @@ import { checkPaneLookups } from "../src/main/pane-path.ts";
 import { createPlatform } from "../src/main/platform/index.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
 import { loadStartConfig } from "../src/main/runtime/config.ts";
-import { RuntimeLog } from "../src/main/runtime/log.ts";
+import { RuntimeLog, runtimeRedactor } from "../src/main/runtime/log.ts";
 import { readInstalled, isInstalled } from "../src/main/runtime/readiness.ts";
 import { Supervisor, type SupervisorEvent } from "../src/main/runtime/supervisor.ts";
 import type { SpawnFn } from "../src/main/runtime/herdr.ts";
+import { secretPatterns } from "./harness/engine-fixture.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, runWorld, type RunSummary, type World } from "./harness/e2e-light.ts";
 import { hostedCase } from "./harness/hosted.ts";
 import { prepareStateFolder } from "./harness/hosted-acl.ts";
@@ -96,7 +97,7 @@ describe("the runtime supervisor against the real programs (e2e, task 8a)", { sk
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
 		assert.ok(isInstalled(readInstalled(world.layout)));
 		await prepareStateFolder(world);
-		const runtimeLog = new RuntimeLog({ dir: world.layout.logs });
+		const runtimeLog = new RuntimeLog({ dir: world.layout.logs, redactor: runtimeRedactor(secretPatterns) });
 		const runner = execRunner();
 		supervisor = new Supervisor({
 			layout: world.layout,

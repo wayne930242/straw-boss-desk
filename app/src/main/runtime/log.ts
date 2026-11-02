@@ -1,14 +1,18 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { Redactor, RotatingFile, redactValue, tailLines, type LogValue, type RotationOptions } from "../bootstrap/log.ts";
+import { Redactor, RotatingFile, loadSecretPatterns, redactValue, tailLines, type LogValue, type RotationOptions } from "../bootstrap/log.ts";
 
 // `logs/start.jsonl`: what the supervisor did at a start, a stop, and a restart, one JSON line each (spec: App data layout). Every value goes through the redactor
-// before it is written, and the GUI URL's token is masked by the redactor's own rule, so no line can hold the page token.
+// before it is written: the GUI URL's token is masked by the redactor's own rule, and the credential shapes of `recipe/secret-patterns.json` by its patterns. The log takes its
+// redactor from the caller and has no default, so it never runs without the patterns (T8A-F007): the tool output it keeps (the sb server's log tail, a CLI's stderr) can carry a token.
+
+/** The redactor of this log: the engine's rules with every pattern of `recipe/secret-patterns.json` (parsed). Throws when the patterns are missing or malformed. */
+export const runtimeRedactor = (secretPatterns: unknown): Redactor => new Redactor(loadSecretPatterns(secretPatterns));
 
 export interface RuntimeLogOptions extends RotationOptions {
 	/** `<root>/logs`. */
 	dir: string;
-	redactor?: Redactor;
+	redactor: Redactor;
 	now?: () => Date;
 }
 
@@ -20,7 +24,7 @@ export class RuntimeLog {
 	readonly #keep: number | undefined;
 
 	constructor(options: RuntimeLogOptions) {
-		this.redactor = options.redactor ?? new Redactor([]);
+		this.redactor = options.redactor;
 		this.#now = options.now ?? (() => new Date());
 		this.#path = join(options.dir, "start.jsonl");
 		this.#keep = options.keep;
