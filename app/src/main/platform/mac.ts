@@ -83,6 +83,9 @@ export const isUnderDir = (dir: string, file: string): boolean => {
 	return rel !== "" && rel !== ".." && !rel.startsWith("../") && !posix.isAbsolute(rel);
 };
 
+/** lsof escapes the bytes of a non-ASCII path (`\xNN`) unless the locale is UTF-8, as in a Finder-launched app with no `LANG`; a root with such characters would never be listed (R7 recheck). */
+const LSOF_ENV = { LC_ALL: "en_US.UTF-8" } as const;
+
 export function createMacProcesses(run: CommandRunner, locate: Locate): Processes {
 	const ps = locate.system("ps");
 	const lsof = locate.system("lsof");
@@ -99,12 +102,12 @@ export function createMacProcesses(run: CommandRunner, locate: Locate): Processe
 			if (pids.length === 0) return [];
 			const [starts, exes] = await Promise.all([
 				startTimes(pids),
-				run(lsof, ["-a", "-p", pids.join(","), "-d", "txt", "-Fpn"], { timeoutMs: LIMIT_MS }).then((r) => parseLsofExecutables(r.stdout)),
+				run(lsof, ["-a", "-p", pids.join(","), "-d", "txt", "-Fpn"], { timeoutMs: LIMIT_MS, env: LSOF_ENV }).then((r) => parseLsofExecutables(r.stdout)),
 			]);
 			return pids.map((pid): ProcessInfo => ({ pid, startTime: starts.get(pid) ?? null, executable: exes.get(pid) ?? null }));
 		},
 		async listUnder(dir) {
-			const r = await run(lsof, ["-d", "txt", "-Fpn"], { timeoutMs: LISTING_LIMIT_MS });
+			const r = await run(lsof, ["-d", "txt", "-Fpn"], { timeoutMs: LISTING_LIMIT_MS, env: LSOF_ENV });
 			// lsof exits 1 when it could not read some process (another user's, a protected one); what it did read is still listed.
 			if (r.code === null) throw new Error(`lsof did not finish${r.timedOut ? " within 30 s" : ""}: ${r.stderr.trim().slice(0, 200)}`);
 			const hits = [...parseLsofExecutables(r.stdout)].filter(([, exe]) => isUnderDir(dir, exe));
