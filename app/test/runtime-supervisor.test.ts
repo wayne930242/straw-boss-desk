@@ -820,6 +820,67 @@ describe("stop", () => {
 	});
 });
 
+describe("stop with a pi-straw-boss that is not verified (R8A-F001)", () => {
+	const unverify = (w: { layout: { state: string } }, status = "failed") => writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "pkg:pi-straw-boss": record(status) } }));
+
+	it("runs no cli.mjs at the quit after a start refused for the package, and the stop is clean when nothing runs", async () => {
+		for (const status of ["failed", "absent", "running"]) {
+			const w = world();
+			unverify(w, status);
+			await failureOf(w.supervisor.start());
+			const report = await w.supervisor.stop();
+			assert.deepEqual(w.run.calls.filter((c) => c.args.includes("stop") && c.args[0] === w.installed?.sbCli), [], `${status}: the unverified CLI did not run`);
+			assert.equal(report.cliStop.ran, false);
+			assert.equal(report.ok, true, report.notes.join("; "));
+			assert.ok(w.log.some((l) => l.event === "sb-cli-stop-skipped"));
+		}
+	});
+
+	it("reports a running sb server that no record names, and neither runs the CLI nor kills it", async () => {
+		const w = world();
+		unverify(w);
+		await failureOf(w.supervisor.start());
+		// An sb server of the unverified package, started by a pi session: server.json names it and start.json does not.
+		const slot = join(w.layout.agent, "straw-boss");
+		mkdirSync(slot, { recursive: true });
+		writeFileSync(join(slot, "server.json"), JSON.stringify({ pid: 300 }));
+		w.procs.add(300, { startTime: "S300", executable: w.exe("node") });
+		const report = await w.supervisor.stop();
+		assert.deepEqual(w.callsOf("stop").filter((c) => c.args[0] === w.installed?.sbCli), []);
+		assert.deepEqual(w.procs.killed, []);
+		assert.equal(w.procs.has(300), true);
+		assert.equal(report.unverifiedSb, 300);
+		assert.equal(report.ok, false);
+		assert.ok(w.log.some((l) => l.event === "sb-server-unverified" && l.pid === 300), "logged");
+		assert.ok(report.notes.some((n) => /pid 300/.test(n) && /not verified/.test(n)), report.notes.join("; "));
+		assert.equal(w.supervisor.state, "failed");
+	});
+
+	it("still stops an sb server the record names and that runs, whatever the stage says: its code is loaded already", async () => {
+		const w = world();
+		await w.supervisor.start();
+		unverify(w);
+		const report = await w.supervisor.stop();
+		assert.deepEqual(w.order.slice(-2), ["cli stop", "herdr server stop"]);
+		assert.equal(report.ok, true, report.notes.join("; "));
+	});
+
+	it("session-end runs no cli.mjs for an unverified package with no server of the record running, and runs it for one that is", async () => {
+		const none = world();
+		unverify(none);
+		await failureOf(none.supervisor.start());
+		none.supervisor.stopForSessionEnd();
+		assert.deepEqual(none.syncExits, []);
+		assert.ok(none.log.some((l) => l.event === "session-end-stop-skipped"));
+
+		const live = world();
+		await live.supervisor.start();
+		unverify(live);
+		live.supervisor.stopForSessionEnd();
+		assert.equal(live.syncExits.length, 1);
+	});
+});
+
 describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T7-F007)", () => {
 	it("stops the stack, runs the work, and starts the stack again", async () => {
 		const w = world();
@@ -905,6 +966,27 @@ describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T
 		assert.equal(await result, "worked");
 		assert.equal(w.supervisor.state, "running", "the stack runs again");
 		assert.deepEqual(w.order, ["spawn herdr 100", "up", "cli stop", "herdr server stop", "spawn herdr 101", "up"]);
+	});
+
+	it("runs the main process's prune as a job of the queue, so a restart or upOnce waits for it instead of meeting its lock (R8A-F002)", async () => {
+		const w = world();
+		writeFileSync(join(w.layout.state, "current.json"), JSON.stringify({ schema: 1, versions: { node: "24.0.0", git: "2.0.0", herdr: "0.9.5" }, previous: { node: "23.0.0" } }));
+		await w.supervisor.start();
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		let entered = false;
+		const job = w.supervisor.withStackStopped(async () => {
+			entered = true;
+			await held;
+		});
+		await until(() => entered, "the work to begin");
+		w.supervisor.guiShown();
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(w.log.some((l) => l.event === "prune"), false, "the prune waits behind the queued job");
+		release();
+		await job;
+		await w.supervisor.settled();
+		assert.ok(w.log.some((l) => l.event === "prune" && l.tool === "node"), "and runs after it");
 	});
 
 	it("does not run the work when a program still runs from the tools folder", async () => {

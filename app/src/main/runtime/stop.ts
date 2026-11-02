@@ -14,6 +14,8 @@ import type { ProcessRecord, StartFile } from "./start-file.ts";
 
 // The stop sequence (spec: Runtime supervisor, Stop; desk B7 plan, **Stop order**), as `stop.ps1` and `99-stop.sh` run it:
 //   1. `cli.mjs stop` (120 s on Windows, 45 s on macOS). It marks the sb server stopped on purpose, so a pi session's look cannot start a new one while Herdr shuts down.
+//      It runs the code of pi-straw-boss, so it runs only when that package's stage is `ok`, or when a recorded sb server is already running (its code is loaded already);
+//      otherwise it is skipped, and a running sb server that no record names is reported and left alone (R8A-F001).
 //   2. wait 10 s for the sb server to go; one that stays is killed only while the kill rule allows it.
 //   3. `herdr server stop` on the app's socket, then wait for the server's pid. Workspaces stay open: Herdr restores them at the next start.
 //   4. kill what is left of the recorded processes, and the pi-intercom broker, only by the kill rule (`identity.ts`).
@@ -43,6 +45,8 @@ export interface StopDeps {
 	nodePath: string;
 	/** `<agent>/npm/node_modules/pi-straw-boss/dist/server/cli.mjs`. */
 	sbCli: string;
+	/** True when the `pkg:pi-straw-boss` stage is `ok`: only then may `cli.mjs` run with no sb server of the record running (R8A-F001). */
+	sbPackageVerified: boolean;
 	/** The handle of the Herdr server this app started in this run, when it did. */
 	herdrHandle: ProcHandle | null;
 	clock: Clock;
@@ -65,6 +69,8 @@ export interface StopReport {
 	/** Nothing of the app runs from `<root>/tools` and its Herdr socket does not answer. */
 	ok: boolean;
 	cliStop: { ran: boolean; exit: number | null; outcome: string; timedOut: boolean; detail: string };
+	/** The pid of a running sb server that no record names and whose package is not verified: reported, never stopped (R8A-F001). */
+	unverifiedSb: number | null;
 	killed: KillOutcome[];
 	/** A kill the rule refused: the process is not known to be ours, so it was left alone and (if it still runs) is in `leftovers`. */
 	refused: Array<{ what: string; pid: number; reason: string }>;
@@ -103,7 +109,7 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 	const { layout, processes, log } = deps;
 	const timeouts: StopTimeouts = { ...stopTimeoutsFor(layout.platform), ...deps.timeouts };
 	const alive = deps.pidAlive ?? osPidAlive;
-	const report: StopReport = { ok: false, cliStop: { ran: false, exit: null, outcome: "", timedOut: false, detail: "" }, killed: [], refused: [], leftovers: [], herdrAnswers: false, notes: [] };
+	const report: StopReport = { ok: false, cliStop: { ran: false, exit: null, outcome: "", timedOut: false, detail: "" }, unverifiedSb: null, killed: [], refused: [], leftovers: [], herdrAnswers: false, notes: [] };
 	const note = (line: string): void => {
 		report.notes.push(line);
 		log({ event: "stop-note", detail: line });
@@ -144,7 +150,19 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 
 	// 1. the sb server stops itself.
 	let killSb = true;
-	if (existsSync(deps.sbCli)) {
+	const sbRunning = sbPid !== null && alive(sbPid);
+	// The package's code is loaded already when a recorded sb server runs; with no such server, an unverified package's `cli.mjs` must not start (R8A-F001).
+	const mayRunCli = deps.sbPackageVerified || (sbRecord !== null && sbRunning);
+	if (!mayRunCli) {
+		note("pi-straw-boss is not installed and verified, so its CLI was not run");
+		log({ event: "sb-cli-stop-skipped", reason: "package-not-ok", pid: sbPid });
+		if (sbRunning) {
+			report.unverifiedSb = sbPid;
+			killSb = false;
+			note(`an sb server (pid ${sbPid}) runs from a package that is not verified and no record names it; it was not stopped`);
+			log({ event: "sb-server-unverified", pid: sbPid });
+		}
+	} else if (existsSync(deps.sbCli)) {
 		const limit = deps.onlyCliStopMs ?? timeouts.cliStopMs;
 		const r = await deps.run(deps.nodePath, [deps.sbCli, "stop"], { env: deps.env, replaceEnv: true, timeoutMs: limit });
 		const outcome = String(lastJsonLine(r.stdout)?.outcome ?? "");
@@ -161,12 +179,12 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 	}
 	if (deps.onlyCliStopMs !== undefined) {
 		// A fast stop (the session is ending): nothing more is waited for; Windows ends the rest, and Herdr restores the workspaces at the next start.
-		report.ok = report.cliStop.exit === 0;
+		report.ok = report.cliStop.exit === 0 || (!report.cliStop.ran && report.unverifiedSb === null);
 		return report;
 	}
 
 	// 2. the sb server leaves; one that stays is killed only by the rule.
-	if (sbPid !== null) {
+	if (sbPid !== null && report.unverifiedSb === null) {
 		const gone = await waitGone(sbPid, timeouts.sbWaitMs);
 		if (!gone && killSb) {
 			const outcome = await killOwned(processes, { pid: sbPid, record: sbRecord, handle: null });
@@ -198,7 +216,7 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 	report.herdrAnswers = await deps.herdr.answers();
 	for (const l of report.leftovers) note(`still running from the app's tools folder: pid ${l.pid} (${l.file})`);
 	if (report.herdrAnswers) note("the Herdr server still answers on the app's socket");
-	report.ok = report.leftovers.length === 0 && !report.herdrAnswers;
+	report.ok = report.leftovers.length === 0 && !report.herdrAnswers && report.unverifiedSb === null;
 	log({
 		event: "stop-end",
 		ok: report.ok,

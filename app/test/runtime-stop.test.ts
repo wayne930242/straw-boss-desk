@@ -91,6 +91,7 @@ function world(options: Options = {}) {
 		env,
 		nodePath: "node",
 		sbCli,
+		sbPackageVerified: true,
 		herdrHandle: child,
 		clock,
 		log: (f) => log.push(f),
@@ -253,6 +254,41 @@ describe("the stop sequence", () => {
 			await runStop(w.deps);
 			assert.deepEqual(synced, [], JSON.stringify(current));
 		}
+	});
+});
+
+describe("a pi-straw-boss that is not verified (R8A-F001)", () => {
+	it("does not run cli.mjs stop when no sb server of the record runs, and the stop goes on with Herdr", async () => {
+		const w = world({ records: { herdr: true, sb: false } });
+		w.procs.table.delete(200);
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		const report = await runStop(w.deps);
+		assert.deepEqual(w.order, ["herdr server stop"]);
+		assert.equal(report.cliStop.ran, false);
+		assert.equal(report.ok, true, report.notes.join("; "));
+	});
+
+	it("reports an sb server that no record names instead of stopping or killing it", async () => {
+		const w = world({ records: { herdr: true, sb: false } });
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		w.deps.readServerRecord = () => ({ pid: 200, stopped: false });
+		const report = await runStop(w.deps);
+		assert.equal(w.order.includes("cli.mjs stop"), false);
+		assert.deepEqual(w.procs.killed, []);
+		assert.equal(report.unverifiedSb, 200);
+		assert.equal(report.ok, false);
+		assert.ok(w.log.some((l) => l.event === "sb-server-unverified" && l.pid === 200));
+	});
+
+	it("runs cli.mjs stop for a recorded sb server that runs", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		const report = await runStop(w.deps);
+		assert.equal(w.order[0], "cli.mjs stop");
+		assert.equal(report.ok, true, report.notes.join("; "));
 	});
 });
 

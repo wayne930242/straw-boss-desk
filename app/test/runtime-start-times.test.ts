@@ -257,6 +257,7 @@ describe("a start time is recorded only for a process that is the app's through 
 			env: {},
 			nodePath: "node",
 			sbCli: join(w.layout.agent, "npm", "node_modules", "pi-straw-boss", "dist", "server", "cli.mjs"),
+			sbPackageVerified: true,
 			herdrHandle: handle,
 			clock: fakeClock(),
 			log: (f) => w.log.push(f),

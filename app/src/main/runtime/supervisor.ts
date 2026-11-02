@@ -13,7 +13,7 @@ import { StartFailureError, firstLineOf, type StartFailure } from "./failure.ts"
 import { HerdrControl, type HerdrChild, type SpawnFn } from "./herdr.ts";
 import { SerialQueue, killOwned } from "./identity.ts";
 import type { RuntimeEvent } from "./log.ts";
-import { isInstalled, readInstalled, readStartGate, type Installed, type StartGate } from "./readiness.ts";
+import { isInstalled, readInstalled, readStartGate, STACK_PACKAGE, type Installed, type StartGate } from "./readiness.ts";
 import { checkUpAnswer, runUp, upAnswerOf, type UpSuccess } from "./sbup.ts";
 import { resolveShortNames } from "./short-names.ts";
 import { fingerprintOf, sameFingerprint, StartFile, type StartRecord } from "./start-file.ts";
@@ -560,7 +560,9 @@ export class Supervisor {
 	async #afterGui(): Promise<void> {
 		await this.#times.flush();
 		this.#startWatch();
-		await this.#prune();
+		// A job of the queue: the prune holds `engine.lock` with this process's pid, and a Herdr restart, `upOnce` or `withStackStopped` that came meanwhile must wait for it
+		// rather than meet the lock as an engine run (R8A-F002).
+		await this.#queue.run(() => this.#prune());
 	}
 
 	async #prune(): Promise<void> {
@@ -618,7 +620,7 @@ export class Supervisor {
 		this.#stopWatch();
 		const prepared = this.#prepareForStop();
 		if (prepared === null) {
-			const report: StopReport = { ok: true, cliStop: { ran: false, exit: null, outcome: "", timedOut: false, detail: "" }, killed: [], refused: [], leftovers: [], herdrAnswers: false, notes: ["nothing is installed, so nothing was started"] };
+			const report: StopReport = { ok: true, cliStop: { ran: false, exit: null, outcome: "", timedOut: false, detail: "" }, unverifiedSb: null, killed: [], refused: [], leftovers: [], herdrAnswers: false, notes: ["nothing is installed, so nothing was started"] };
 			this.#setState("idle");
 			this.#emit({ type: "stopped", report });
 			return report;
@@ -637,6 +639,7 @@ export class Supervisor {
 				env,
 				nodePath: installed.node,
 				sbCli: installed.sbCli,
+				sbPackageVerified: this.#sbPackageVerified(),
 				herdrHandle: handle,
 				clock: this.#clock,
 				log,
@@ -655,6 +658,17 @@ export class Supervisor {
 			this.#setState("failed");
 			throw error;
 		}
+	}
+
+	/** True when the `pkg:pi-straw-boss` stage is `ok` in `state/bootstrap.json`: the only package whose `cli.mjs` a stop runs (R8A-F001). */
+	#sbPackageVerified(): boolean {
+		return readStartGate(this.#d.layout).direct.find((d) => d.package === STACK_PACKAGE)?.status === "ok";
+	}
+
+	/** True when `start.json` names an sb server whose pid is alive. */
+	#recordedSbRuns(): boolean {
+		const pid = this.#startFile.read()?.sb?.pid;
+		return pid !== undefined && this.#pidAlive(pid);
 	}
 
 	/** The environment and the install a stop needs: those of this run, else rebuilt from the state files (a stop after a restart of the app, or `--stop-stack`). */
@@ -678,6 +692,11 @@ export class Supervisor {
 		const prepared = this.#prepareForStop();
 		if (prepared === null) return;
 		this.#stopWatch();
+		// The same rule as the stop's: an unverified pi-straw-boss runs no `cli.mjs`, unless the record names an sb server that runs already (R8A-F001).
+		if (!this.#sbPackageVerified() && !this.#recordedSbRuns()) {
+			this.#d.log({ event: "session-end-stop-skipped", reason: "package-not-ok" });
+			return;
+		}
 		const run = this.#d.runSync ?? defaultRunSync;
 		const result = run(prepared.installed.node, [prepared.installed.sbCli, "stop"], { env: prepared.env, timeoutMs: this.#timeouts.sessionEndStopMs });
 		this.#d.log({ event: "session-end-stop", exit: result.code });
