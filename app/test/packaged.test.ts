@@ -36,7 +36,7 @@ for (const kind of BUILD_KINDS) {
 
 		it("ships the compiled app and its shell page", () => {
 			const asar = join(packaged.resources, "app.asar");
-			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/renderer/welcome.html", "dist/renderer/welcome.js", "dist/renderer/style.css", "dist/renderer/i18n/zh-TW.js"]) {
+			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/renderer/welcome.html", "dist/renderer/welcome.js", "dist/renderer/style.css", "dist/renderer/i18n/zh-TW.js", "dist/assets/secret-patterns.json"]) {
 				assert.ok(readAsarFile(asar, file).length > 0, file);
 			}
 		});
