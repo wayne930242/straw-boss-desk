@@ -717,6 +717,16 @@ describe("RC-F003: the temp file and the links of a write", () => {
 		assert.ok(!existsSync(path), "the target was not written");
 	});
 
+	it("a file that appears at the temp name after the name was found free is not overwritten (wx)", () => {
+		mkdirSync(join(agentDir, "rules"), { recursive: true });
+		const path = join(agentDir, "rules", "a.md");
+		const name = `${path}.sbd-tmp-fixed`;
+		const hooks = { tempName: () => name, beforeCreate: () => writeFileSync(name, "someone else's") };
+		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), (error: NodeJS.ErrnoException) => error.code === "EEXIST");
+		assert.equal(readFileSync(name, "utf8"), "someone else's");
+		assert.ok(!existsSync(path));
+	});
+
 	it("a plain file already at the temp name is not overwritten either", () => {
 		mkdirSync(join(agentDir, "rules"), { recursive: true });
 		const path = join(agentDir, "rules", "a.md");

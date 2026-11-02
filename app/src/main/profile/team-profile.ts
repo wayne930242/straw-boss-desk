@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, type Dirent } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 // The team-profile installer (port of the kit's `spike/win/lib/team-profile.mjs`; spec: Tasks 7, team-profile section 7). It copies the files of the
 // profile package (AGENTS.md, rules/, config/) and the active recipe's additions into the pi agent folder without ever overwriting a file the PM changed,
@@ -140,6 +140,8 @@ export interface WriteHooks {
 	tempName?: (path: string) => string;
 	/** Called after the first link check, before the temp file is created. */
 	beforeTemp?: () => void;
+	/** Called after the temp name was found free, right before the exclusive create. */
+	beforeCreate?: () => void;
 	/** Called after the temp file is written, before the last link check and the rename. */
 	beforeRename?: () => void;
 }
@@ -160,9 +162,13 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 	try {
 		hooks.beforeTemp?.();
 		assertNoLinks(root, path, "write path (checked again before its temp file is created)");
+		refuseExisting(tmp);
+		hooks.beforeCreate?.();
 		const fd = openSync(tmp, "wx");
-		created = true;
 		try {
+			// Windows opens through a dangling link even with `wx` and creates its target, so what `wx` made must also be a plain file before anything is written.
+			if (!lstatSync(tmp).isFile()) throw new Error(`refusing to write ${shown(path)}: its temp file ${shown(basename(tmp))} is not a plain file; nothing was changed`);
+			created = true;
 			writeFileSync(fd, data);
 		} finally {
 			closeSync(fd);
@@ -174,6 +180,17 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 		if (created) rmSync(tmp, { force: true });
 		throw error;
 	}
+}
+
+/** Throws EEXIST when anything, a link included, is at path. Windows' `wx` does not stop at a dangling link, so the name is looked at first. */
+function refuseExisting(path: string): void {
+	try {
+		lstatSync(path);
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return;
+		throw error;
+	}
+	throw Object.assign(new Error(`EEXIST: ${shown(basename(path))} already exists; nothing was changed`), { code: "EEXIST" });
 }
 
 /** Deletes a managed file after looking for links once more, since planning ran earlier (P3R-F003). */
