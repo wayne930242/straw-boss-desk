@@ -16,6 +16,23 @@ export const zhTW: Messages = {
 		en: "English",
 		zhTW: "繁體中文",
 	},
+	screen: {
+		guiStopped: {
+			title: "Straw Boss 的頁面已停止",
+			body: "它是被刻意停止的。再啟動一次就能繼續。",
+		},
+		serverStopped: {
+			title: "Straw Boss 服務已停止",
+			body: "它是被刻意停止的。再啟動一次就能繼續。",
+		},
+		start: "啟動",
+		starting: "啟動中…",
+	},
+	banner: {
+		restarting: "Straw Boss 正在重新啟動…",
+		addressChanged: "網址已改變，重新載入中…",
+		starting: "正在啟動 Straw Boss…",
+	},
 	start: {
 		title: "Straw Boss 無法啟動",
 		stopTitle: "Straw Boss 已停止，但仍有程式在執行",

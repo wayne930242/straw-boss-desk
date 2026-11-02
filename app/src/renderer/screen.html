@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Straw Boss Desk</title>
+	<link rel="stylesheet" href="screen.css">
+	<script type="module" src="screen.js"></script>
+</head>
+<body data-mode="none">
+	<div class="strip" id="strip" role="status" hidden>
+		<span class="strip-dot" aria-hidden="true"></span>
+		<span id="strip-text"></span>
+	</div>
+	<main class="card" id="card" hidden>
+		<h1 id="title"></h1>
+		<p class="sentence" id="sentence"></p>
+		<ul class="leftovers" id="leftovers" hidden></ul>
+		<p class="note" id="starting" role="status" hidden data-i18n="screen.starting"></p>
+		<div class="actions">
+			<button type="button" id="retry"></button>
+		</div>
+		<details class="details" id="details" hidden>
+			<summary data-i18n="start.details"></summary>
+			<pre id="reason"></pre>
+		</details>
+	</main>
+</body>
+</html>

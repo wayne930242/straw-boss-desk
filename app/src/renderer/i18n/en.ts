@@ -14,6 +14,24 @@ export const en = {
 		en: "English",
 		zhTW: "繁體中文",
 	},
+	// The runtime page of the shell view (screen.html): the screens the follower shows when the GUI cannot be shown, and the small notices over the GUI while the stack restarts.
+	screen: {
+		guiStopped: {
+			title: "The Straw Boss page was stopped",
+			body: "It was stopped on purpose. Start it again to go on.",
+		},
+		serverStopped: {
+			title: "The Straw Boss service was stopped",
+			body: "It was stopped on purpose. Start it again to go on.",
+		},
+		start: "Start",
+		starting: "Starting…",
+	},
+	banner: {
+		restarting: "Straw Boss is restarting…",
+		addressChanged: "The address changed. Reloading…",
+		starting: "Starting Straw Boss…",
+	},
 	// The failure screen of a start or a stop (spec: Runtime supervisor, Start; the kit's exit codes 2 to 27 as typed failures). One sentence per kind; the tool's own line is
 	// shown under "Details".
 	start: {

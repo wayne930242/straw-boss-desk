@@ -1,4 +1,4 @@
-import { app, BaseWindow, Menu, session, WebContentsView } from "electron";
+import { app, Menu, powerMonitor, session } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,18 +6,22 @@ import { join } from "node:path";
 import { pickLocale } from "../shared/locale.ts";
 import { identityFromProductName } from "./build.ts";
 import { dataRoot, electronDir, computeLayout } from "./paths.ts";
-import { closeWindowViews, GuiPresenter } from "./gui-presenter.ts";
+import { DeskWindow } from "./desk-window.ts";
+import { GuiPresenter } from "./gui-presenter.ts";
+import { bannerState, failureState, screenState } from "./shell-state.ts";
 import { createPlatform } from "./platform/index.ts";
 import { execRunner } from "./platform/exec.ts";
 import { checkPaneLookups } from "./pane-path.ts";
 import { hasStopStack } from "./runtime/args.ts";
 import { loadStartConfig } from "./runtime/config.ts";
 import { RuntimeLog, runtimeRedactor } from "./runtime/log.ts";
+import { attachPower } from "./runtime/power.ts";
 import { Supervisor } from "./runtime/supervisor.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
 
 // The lifecycle: single instance, Chromium's profile inside the app data root, one window holding the two views the design needs, the GUI view (pi-straw-boss) and the shell
-// view (welcome now; wizard, settings, banners later) above it, and the runtime supervisor that starts the stack at launch and stops it at quit (task 8a).
+// view (welcome, the runtime page for notices and screens; wizard and settings later) above it (`desk-window.ts`), and the runtime supervisor that starts the stack at launch,
+// follows it, and stops it at quit (tasks 8a and 8b).
 
 const identity = identityFromProductName(app.getName());
 const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform: process.platform, home: homedir() });
@@ -43,6 +47,8 @@ const supervisor = new Supervisor({
 	appEnv: process.env,
 	config: () => loadStartConfig(layout, home),
 	log: (fields) => runtimeLog.event(fields),
+	// Follow the GUI once the stack runs: restarts, a moved address, a stopped GUI, a gone one (task 8b).
+	follow: {},
 	resolveProxy: (url) => session.defaultSession.resolveProxy(url),
 	// No engine runs in the main process yet: the wizard (task 9) starts it as a `utilityProcess` and answers for its pid here, so Repair leaves a running install's lock alone.
 	isOurEngine: () => false,
@@ -50,68 +56,43 @@ const supervisor = new Supervisor({
 	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
 });
 
-let window: BaseWindow | undefined;
-let guiView: WebContentsView | undefined;
-let shellView: WebContentsView | undefined;
+let desk: DeskWindow | undefined;
+
+// No page of the app may attach a <webview>.
+app.on("web-contents-created", (_event, contents) => {
+	contents.on("will-attach-webview", (event) => event.preventDefault());
+});
 
 // The GUI's address carries the page token: it goes to the view and nowhere else (the presenter keeps it in memory for a window opened later).
 const presenter = new GuiPresenter({ state: () => supervisor.state, guiShown: () => supervisor.guiShown() });
 supervisor.on((event) => {
-	if (event.type === "gui-url") presenter.onGuiUrl(event.url);
+	switch (event.type) {
+		case "gui-url":
+			presenter.onGuiUrl(event.url);
+			break;
+		case "view":
+			desk?.setView(event.view);
+			break;
+		case "screen":
+			desk?.setState(screenState(event.screen));
+			break;
+		case "banner":
+			if (event.kind === undefined) desk?.clearBanner();
+			else desk?.setState(bannerState(event.kind));
+			break;
+		case "failure":
+			// Nothing installed yet is the wizard's to show (task 9): until it exists the welcome page stays, and the failure is in logs/start.jsonl.
+			if (event.failure.kind !== "tool-missing") desk?.setState(failureState(event.failure));
+			break;
+		default:
+			break;
+	}
 });
 
-function layoutViews(): void {
-	if (!window || window.isDestroyed()) return;
-	const { width, height } = window.getContentBounds();
-	for (const view of [guiView, shellView]) view?.setBounds({ x: 0, y: 0, width, height });
-}
-
-function createWindow(): void {
-	window = new BaseWindow({ width: 1280, height: 860, minWidth: 720, minHeight: 520, title: identity.productName });
-
-	// The GUI stays loaded under any shell screen or banner, so it is added first and the shell view sits above it.
-	guiView = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
-	shellView = new WebContentsView({
-		webPreferences: {
-			sandbox: true,
-			contextIsolation: true,
-			nodeIntegration: false,
-			preload: join(import.meta.dirname, "..", "preload", "shell.cjs"),
-			additionalArguments: [
-				`--sbd-locale=${pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()])}`,
-				`--sbd-product=${identity.productName}`,
-				`--sbd-build=${identity.kind}`,
-			],
-		},
-	});
-	window.contentView.addChildView(guiView);
-	window.contentView.addChildView(shellView);
-	layoutViews();
-	window.on("resize", layoutViews);
-	// Windows log off or shutdown: `cli.mjs stop` for 10 s, run to the end here, and Windows ends the rest.
-	window.on("session-end", () => supervisor.stopForSessionEnd());
-	const closing = [guiView, shellView];
-	window.on("closed", () => {
-		presenter.detach();
-		// The views outlive their window on macOS, where the app keeps running: close their pages so a reopen does not pile up hidden GUI pages (R8A-F003).
-		closeWindowViews(closing);
-		window = undefined;
-		guiView = undefined;
-		shellView = undefined;
-	});
-	void shellView.webContents.loadFile(join(import.meta.dirname, "..", "renderer", "welcome.html"));
-	const gui = guiView;
-	const shell = shellView;
+function openWindow(): void {
+	if (desk === undefined || desk.isOpen) return;
 	// A window opened while the stack runs (macOS: the Dock icon or a second launch after the window was closed) shows the GUI at once; the shell view steps aside while it shows.
-	const showing = presenter.attach({
-		show: (url, onLoaded) => {
-			gui.webContents.once("did-finish-load", onLoaded);
-			void gui.webContents.loadURL(url).catch((error: Error) => runtimeLog.event({ event: "gui-load-failed", detail: error.message.slice(0, 200) }));
-			shell.setVisible(false);
-		},
-	});
-	// Blank until the supervisor loads the GUI; a view that never navigates has no renderer, which a CDP client such as Playwright waits on forever.
-	if (!showing) void gui.webContents.loadURL("about:blank");
+	if (!presenter.attach(desk.open(() => presenter.detach()))) desk.blank();
 }
 
 function buildMenu(): void {
@@ -161,8 +142,9 @@ if (!app.requestSingleInstanceLock()) {
 			return;
 		}
 		// macOS: the window may have been closed while the app runs; a second launch opens it again, with the GUI.
-		if (!window) createWindow();
-		if (!window) return;
+		openWindow();
+		const window = desk?.window;
+		if (window === undefined) return;
 		if (window.isMinimized()) window.restore();
 		window.focus();
 	});
@@ -175,13 +157,23 @@ if (!app.requestSingleInstanceLock()) {
 	app.on("window-all-closed", () => {
 		if (process.platform !== "darwin") app.quit();
 	});
-	app.on("activate", () => {
-		if (!window) createWindow();
-	});
+	app.on("activate", () => openWindow());
 	void app.whenReady().then(() => {
 		buildMenu();
-		createWindow();
-		// Failures reach the shell's screens in task 9; until then they are in logs/start.jsonl.
+		desk = new DeskWindow({
+			productName: identity.productName,
+			locale: pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
+			build: identity.kind,
+			distDir: join(import.meta.dirname, ".."),
+			workFolder: () => loadStartConfig(layout, home).workFolder,
+			// Start and Try again are one request: the follower's `up` while the stack runs, a whole start after a failure.
+			onAction: () => void supervisor.retry().catch(() => undefined),
+			onSessionEnd: () => supervisor.stopForSessionEnd(),
+			log: (fields) => runtimeLog.event(fields),
+		});
+		attachPower(powerMonitor, supervisor, (fields) => runtimeLog.event(fields));
+		openWindow();
+		// Failures reach the runtime page through the supervisor's `failure` event; they are in logs/start.jsonl too.
 		void supervisor.start().catch(() => undefined);
 	});
 }

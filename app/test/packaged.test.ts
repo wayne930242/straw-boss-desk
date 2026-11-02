@@ -36,9 +36,15 @@ for (const kind of BUILD_KINDS) {
 
 		it("ships the compiled app and its shell page", () => {
 			const asar = join(packaged.resources, "app.asar");
-			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/renderer/welcome.html", "dist/renderer/welcome.js", "dist/renderer/style.css", "dist/renderer/i18n/zh-TW.js", "dist/assets/secret-patterns.json"]) {
+			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/preload/gui.cjs", "dist/renderer/welcome.html", "dist/renderer/welcome.js", "dist/renderer/style.css", "dist/renderer/screen.html", "dist/renderer/screen.js", "dist/renderer/screen.css", "dist/renderer/i18n/zh-TW.js", "dist/assets/secret-patterns.json"]) {
 				assert.ok(readAsarFile(asar, file).length > 0, file);
 			}
+		});
+
+		it("tells macOS why it wants the camera (Straw Link's QR join), in the Info.plist", { skip: process.platform === "darwin" ? false : "macOS only" }, () => {
+			const r = spawnSync("plutil", ["-extract", "NSCameraUsageDescription", "raw", join(packaged.bundle, "Contents", "Info.plist")], { encoding: "utf8" });
+			assert.equal(r.status, 0, r.stderr);
+			assert.match(r.stdout, /camera/i);
 		});
 
 		it("is ad-hoc signed and verifies on macOS", { skip: process.platform === "darwin" ? false : "macOS only" }, () => {
