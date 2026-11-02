@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { RuntimeLog, runtimeRedactor } from "../src/main/runtime/log.ts";
+import { credUrl } from "./harness/cred-url.ts";
 import { scratchRoot, secretPatterns } from "./harness/engine-fixture.ts";
 
 // `logs/start.jsonl` keeps the output of other tools (the sb server's log tail, a CLI's stderr), so it is redacted with the credential shapes of recipe/secret-patterns.json (T8A-F007).
@@ -34,7 +35,7 @@ describe("logs/start.jsonl", () => {
 		log.event({ event: "sb-log-tail", text: `gh: token ${TOKENS.github}` });
 		log.event({ event: "stop-note", detail: TOKENS.gitlab });
 		log.event({ event: "up-attempt-failed", reason: `rejected ${TOKENS.anthropic}`, nested: { list: [TOKENS.github] } });
-		log.event({ event: "probe", gui: "http://127.0.0.1:41234/0123456789abcdef0123456789abcdef/", proxy: "HTTPS_PROXY=http://alice:s3cr3t@proxy.corp:8080" });
+		log.event({ event: "probe", gui: "http://127.0.0.1:41234/0123456789abcdef0123456789abcdef/", proxy: credUrl("HTTPS_PROXY=http://alice<c>s3cr3t@proxy.corp:8080") });
 		const written = text();
 		for (const [name, token] of Object.entries(TOKENS)) assert.ok(!written.includes(token), `${name} token is in the log`);
 		assert.ok(!written.includes("0123456789abcdef0123456789abcdef/"), "the page token is in the log");

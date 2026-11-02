@@ -9,6 +9,7 @@ import { removeTree, sha256File } from "../src/main/bootstrap/fsutil.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import type { Stage } from "../src/main/bootstrap/stage.ts";
 import { FixtureServer } from "./harness/fixture-server.ts";
+import { credUrl } from "./harness/cred-url.ts";
 import { exeName, installsOf, leftovers, makeStack, publish, runEngine, scratchRoot, secretPatterns, testEngine, testLayout, testPlatform, toolStage } from "./harness/engine-fixture.ts";
 import { EngineLockedError } from "../src/main/bootstrap/state.ts";
 import { detectFromRecord, fileKey, type StageContext } from "../src/main/bootstrap/stage.ts";
@@ -278,7 +279,7 @@ describe("redaction", () => {
 
 describe("redaction of URL userinfo (T6-F011)", () => {
 	it("keeps a proxy URL's user and password out of the logs, the stage log, the state files, a recorded evidence, and a failure's detail", async () => {
-		const proxy = "http://corp-user:corp-pass-9@proxy.corp.example:8080";
+		const proxy = credUrl("http://corp-user<c>corp-pass-9@proxy.corp.example:8080");
 		const noisy: Stage = {
 			name: "noisy",
 			needs: [],

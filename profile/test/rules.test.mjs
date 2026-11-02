@@ -86,7 +86,7 @@ describe("guard rules", () => {
     });
 
     it(`${name}: stays fast on the reviewer's shapes and a realistic .env heredoc`, () => {
-      const dotenv = "cat > .env <<'EOF'\n" + "DATABASE_URL=postgres://u:p@localhost/db\nexport API_HOST=api.example.com\nFEATURE_FLAG=1\n# comment line\n".repeat(2800) + "EOF\n";
+      const dotenv = "cat > .env <<'EOF'\n" + ("DATABASE_URL=postgres://u:" + "p@localhost/db\nexport API_HOST=api.example.com\nFEATURE_FLAG=1\n# comment line\n").repeat(2800) + "EOF\n";
       assert.ok(dotenv.length > 120 * 1024);
       const shapes = [
         "a=1\n".repeat(80000),

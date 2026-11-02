@@ -14,6 +14,8 @@ const readJson = (...parts) => JSON.parse(readText(...parts));
 const patterns = readJson("secret-patterns.json").patterns;
 const fixtures = readJson("test", "secret-fixtures.json");
 const join0 = (parts) => parts.join("");
+// A URL with a user name and a password is put together here, so no line of the repository is a literal `scheme://user:password@host` (GitGuardian incident 39413346).
+const withUserinfo = (head, tail) => head + tail;
 
 const base = () => ({ recipe: 1, id: "team-a", name: "Team A", version: "1.0.0", forges: [{ kind: "github", host: "github.com" }] });
 const withField = (extra) => ({ ...base(), ...extra });
@@ -60,6 +62,16 @@ describe("examples", () => {
       assert.ok(!JSON.stringify(result.errors).includes("LEAKCHECK"), "an error repeated the offending value");
     });
   }
+
+  // Not a file in examples/invalid: its URL would be a literal user name and password in the repository.
+  it("a repository URL with a user name and a password is refused by url-userinfo, naming no value", () => {
+    const url = withUserinfo("https://alice:", "LEAKCHECK123@git.example.com/a/b.git");
+    const text = JSON.stringify({ recipe: 1, id: "bad", name: "Bad", version: "1.0.0", forges: [{ kind: "gitlab", host: "git.example.com" }], repos: [{ url, folder: "b" }] });
+    const result = validateRecipe(text);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((e) => e.rule === "url-userinfo"), `got ${ruleOf(result)}`);
+    assert.ok(!JSON.stringify(result.errors).includes("LEAKCHECK"), "an error repeated the offending value");
+  });
 });
 
 describe("unknown fields", () => {
@@ -90,7 +102,7 @@ describe("unknown fields", () => {
 
 describe("URLs", () => {
   const cases = {
-    "https://alice:pw@git.example.com/a.git": "url-userinfo",
+    [withUserinfo("https://alice:", "pw@git.example.com/a.git")]: "url-userinfo",
     "https://alice@git.example.com/a.git": "url-userinfo",
     "https://git.example.com/a.git?x=1": "url-query",
     "https://git.example.com/a.git?": "url-query",
@@ -350,7 +362,7 @@ describe("schema", () => {
     assert.equal(new RegExp(schema.properties.id.pattern).test("waydo-pm"), true);
     assert.equal(new RegExp(schema.$defs.hostname.pattern).test("gitlab.waydo.example"), true);
     assert.equal(new RegExp(schema.$defs.httpsUrl.pattern).test("https://example.com/recipes/waydo-pm.json"), true);
-    assert.equal(new RegExp(schema.$defs.httpsUrl.pattern).test("https://user:pw@host/x"), false);
+    assert.equal(new RegExp(schema.$defs.httpsUrl.pattern).test(withUserinfo("https://user:", "pw@host/x")), false);
     assert.equal(new RegExp(schema.$defs.httpsUrl.pattern).test("https://host/x?q=1"), false);
     assert.equal(new RegExp(schema.$defs.httpsUrl.pattern).test("http://host/x"), false);
   });

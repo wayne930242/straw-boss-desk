@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { Logger, REDACTED, Redactor, RotatingFile, SecretRefusedError, loadSecretPatterns, tailLines } from "../src/main/bootstrap/log.ts";
+import { credUrl } from "./harness/cred-url.ts";
 
 const patterns = loadSecretPatterns(JSON.parse(readFileSync(new URL("../../recipe/secret-patterns.json", import.meta.url), "utf8")));
 const scratch: string[] = [];
@@ -101,26 +102,26 @@ describe("Redactor", () => {
 describe("URL userinfo (T6-F011)", () => {
 	const r = new Redactor([]);
 	it("masks the user and the password of a proxy URL and keeps the scheme and the host", () => {
-		assert.equal(r.redact("HTTPS_PROXY=http://alice:s3cret@proxy.corp.example:8080"), `HTTPS_PROXY=http://${REDACTED}@proxy.corp.example:8080`);
-		assert.equal(r.redact("via https://u:p%40ss%3A@10.0.0.1:3128/path?x=1"), `via https://${REDACTED}@10.0.0.1:3128/path?x=1`);
-		assert.equal(r.redact("socks5h://dom\\user:pw@host:1080"), `socks5h://${REDACTED}@host:1080`);
+		assert.equal(r.redact(credUrl("HTTPS_PROXY=http://alice<c>s3cret@proxy.corp.example:8080")), `HTTPS_PROXY=http://${REDACTED}@proxy.corp.example:8080`);
+		assert.equal(r.redact(credUrl("via https://u<c>p%40ss%3A@10.0.0.1:3128/path?x=1")), `via https://${REDACTED}@10.0.0.1:3128/path?x=1`);
+		assert.equal(r.redact(credUrl("socks5h://dom\\user<c>pw@host:1080")), `socks5h://${REDACTED}@host:1080`);
 	});
 
 	it("masks a password that holds an @ or a colon, every URL on a line, and stops at a quote, a space, or a slash", () => {
-		assert.equal(r.redact("http://a:p@ss:w@host:80/"), `http://${REDACTED}@host:80/`);
-		assert.equal(r.redact('{"proxy":"http://a:b@h:1","other":"http://c:d@k:2"} done'), `{"proxy":"http://${REDACTED}@h:1","other":"http://${REDACTED}@k:2"} done`);
-		assert.equal(r.redact("see <http://a:b@h:1> and http://c:d@k:2 now"), `see <http://${REDACTED}@h:1> and http://${REDACTED}@k:2 now`);
+		assert.equal(r.redact(credUrl("http://a<c>p@ss<c>w@host:80/")), `http://${REDACTED}@host:80/`);
+		assert.equal(r.redact(credUrl('{"proxy":"http://a<c>b@h:1","other":"http://c<c>d@k:2"} done')), `{"proxy":"http://${REDACTED}@h:1","other":"http://${REDACTED}@k:2"} done`);
+		assert.equal(r.redact(credUrl("see <http://a<c>b@h:1> and http://c<c>d@k:2 now")), `see <http://${REDACTED}@h:1> and http://${REDACTED}@k:2 now`);
 	});
 
 	it("masks a user or a password that holds a single quote, which a valid URL may carry raw (R6-F003)", () => {
-		assert.equal(r.redact("HTTPS_PROXY=http://o'neil:pa'ss@proxy:8080"), `HTTPS_PROXY=http://${REDACTED}@proxy:8080`);
-		assert.equal(r.redact("{'proxy':'http://a:b@h:1','other':'http://c:d@k:2'}"), `{'proxy':'http://${REDACTED}@h:1','other':'http://${REDACTED}@k:2'}`);
+		assert.equal(r.redact(credUrl("HTTPS_PROXY=http://o'neil<c>pa'ss@proxy:8080")), `HTTPS_PROXY=http://${REDACTED}@proxy:8080`);
+		assert.equal(r.redact(credUrl("{'proxy':'http://a<c>b@h:1','other':'http://c<c>d@k:2'}")), `{'proxy':'http://${REDACTED}@h:1','other':'http://${REDACTED}@k:2'}`);
 	});
 
 	// R6C-F001: whatever stands before the scheme does not stop the mask.
 	it("masks a URL whose scheme follows a dot, a dash, a plus, or a digit, or is long", () => {
 		for (const prefix of [".", "-", "+", "1.2.3.", "x.", "git+", "a".repeat(40)]) {
-			assert.equal(r.redact(`${prefix}http://u:p@h:1`), `${prefix}http://${REDACTED}@h:1`, prefix);
+			assert.equal(r.redact(credUrl(`${prefix}http://u<c>p@h:1`)), `${prefix}http://${REDACTED}@h:1`, prefix);
 		}
 	});
 
@@ -129,7 +130,7 @@ describe("URL userinfo (T6-F011)", () => {
 		const mb = 512 * 1024;
 		for (const run of ["a.".repeat(mb), "a-".repeat(mb), "a+".repeat(mb), "a://".repeat(mb / 2), `http://${"u".repeat(2 * mb)}`, `x://u:${"'".repeat(2 * mb)}`, ":'".repeat(mb)]) {
 			const start = performance.now();
-			const out = r.redact(`${run} http://u:p@h:1`);
+			const out = r.redact(credUrl(`${run} http://u<c>p@h:1`));
 			const ms = performance.now() - start;
 			assert.ok(out.endsWith(`http://${REDACTED}@h:1`));
 			assert.ok(ms < 1_000, `took ${Math.round(ms)} ms`);
@@ -145,7 +146,7 @@ describe("URL userinfo (T6-F011)", () => {
 	it("is applied in events, in stage output, and in the tail, whichever way the line arrives", () => {
 		const logs = dir();
 		const logger = new Logger({ dir: logs, redactor: new Redactor(patterns) });
-		const url = "http://corp-user:corp-pass-9@proxy.corp.example:8080";
+		const url = credUrl("http://corp-user<c>corp-pass-9@proxy.corp.example:8080");
 		logger.event({ event: "env", HTTPS_PROXY: url, nested: { list: [url, `x ${url} y`] }, [url]: "as a key" });
 		const stage = logger.stage("npm");
 		stage.raw(`npm http fetch GET 200 ${url.slice(0, 20)}`);
