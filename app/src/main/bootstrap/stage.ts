@@ -78,6 +78,11 @@ export interface StageContext {
 	/** Non-fatal file system trouble (a locked old folder that stayed behind), reported in the result line as `fsErrors`. */
 	readonly fsErrors: string[];
 	/**
+	 * Called by a stage right before it changes a place that has no staging copy (npm's prefix under the agent folder). A failure after that cannot promise
+	 * that the old install is still the active one, so the stage's record says `failed` instead of keeping the old `ok` (T7-F003).
+	 */
+	markInPlace(): void;
+	/**
 	 * Runs a program by absolute path; the command and its output go to the stage's log. The child gets `options.env` and nothing of the app's own
 	 * environment; without it, only the system essentials (`systemEnv`).
 	 */
@@ -352,7 +357,7 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 
-function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[]): StageContext {
+function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[], inPlace: { touched: boolean }): StageContext {
 	const log = deps.logFor(stage.name);
 	/** The scrubbed environment of the programs that unpack a download (`tar`, a self-extractor): the system essentials and nothing of the app's own (T5-F005). */
 	const unpackEnv = systemEnv(deps.layout.platform, deps.appEnv);
@@ -384,6 +389,9 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 		proxy: deps.proxy,
 		log,
 		fsErrors,
+		markInPlace() {
+			inPlace.touched = true;
+		},
 		async exec(file, args, options) {
 			const started = Date.now();
 			log.event({ event: "exec", file, args: [...args] });
@@ -473,7 +481,8 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 	const record = deps.state.record(stage.name);
 	const staging = new Set<string>();
 	const fsErrors: string[] = [];
-	const ctx = makeContext(stage, deps, record, staging, fsErrors);
+	const inPlace = { touched: false };
+	const ctx = makeContext(stage, deps, record, staging, fsErrors, inPlace);
 	const log = ctx.log;
 	const done = (outcome: Omit<StageOutcome, "stage" | "ms" | "fsErrors">): StageOutcome => {
 		const full: StageOutcome = { stage: stage.name, ms: Date.now() - started, fsErrors, ...outcome };
@@ -529,6 +538,8 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 		at: now().toISOString(),
 		hashes: record?.hashes ?? {},
 		dependsOn: record?.dependsOn ?? {},
+		// A block from the last failure stays until a run of this stage succeeds: a kill in the middle of this attempt must not lift it.
+		...(record?.startBlock ? { startBlock: record.startBlock } : {}),
 	});
 
 	for (let attempt = 1; ; attempt++) {
@@ -563,9 +574,17 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			}
 			const detail = deps.redact(error.message);
 			const note = { category: error.category, version: planned, message: detail, at: now().toISOString() };
-			// A record that finished before keeps its version, hashes, and evidence: the old version is still the active one.
-			const keep = record !== null && record.status === "ok";
-			await deps.state.setRecord(stage.name, keep ? { ...record, lastFailure: note } : { status: "failed", version: planned ?? "", evidence: "", at: note.at, hashes: {}, dependsOn: {}, lastFailure: note });
+			// A record that finished before keeps its version, hashes, and evidence: the old version is still the active one. Not so for a stage that had
+			// already changed a place without a staging copy (npm's prefix): the old install may be gone or altered, so the record says `failed` (T7-F003).
+			const keep = record !== null && record.status === "ok" && !inPlace.touched;
+			// A package left loadable by this failure, or by an earlier one that no run has cleared yet, keeps the start blocked.
+			const startBlock = error.startBlock ?? record?.startBlock;
+			await deps.state.setRecord(
+				stage.name,
+				keep
+					? { ...record, lastFailure: note, ...(startBlock ? { startBlock } : {}) }
+					: { status: "failed", version: planned ?? "", evidence: "", at: note.at, hashes: {}, dependsOn: {}, lastFailure: note, ...(startBlock ? { startBlock } : {}) },
+			);
 			return done({
 				status: "failed",
 				attempts: attempt,

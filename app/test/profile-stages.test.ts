@@ -5,6 +5,7 @@ import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { agentPackageDir, checkLockedIntegrity, installedVersion, piInvocation, piSource } from "../src/main/bootstrap/pi-cli.ts";
 import { engineRecipeOf } from "../src/main/bootstrap/recipe-config.ts";
+import { packageMayLoadSentence } from "../src/main/bootstrap/errors.ts";
 import { assertRegistryIntegrity } from "../src/main/bootstrap/npm.ts";
 import { StackError, type NpmPin, type Stack } from "../src/main/bootstrap/stack.ts";
 import type { Stage, StageContext, StageOutcome } from "../src/main/bootstrap/stage.ts";
@@ -53,6 +54,9 @@ interface Fixture {
 	appEnv: Record<string, string>;
 	sources: string;
 	log: string;
+	/** What the stand-in recorded of settings.json's entry at each `pi remove` (FAKE_PI_SNAPSHOT), and of the npm variables at each call (FAKE_PI_ENV). */
+	snapshot: string;
+	envLog: string;
 	lock: Record<string, string>;
 	fail: { install: string[]; remove: string[] };
 }
@@ -87,7 +91,7 @@ async function fixture(): Promise<Fixture> {
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: PROFILE, version, pi: { skills: ["./skills"] } }));
 		if (version === "0.2.0") writeFileSync(join(dir, "rules", "extra.md"), "an extra rule\n");
 	}
-	return { base: made.base, root: made.root, layout, appEnv, sources, log: join(made.base, "pi-calls.log"), lock: {}, fail: { install: [], remove: [] } };
+	return { base: made.base, root: made.root, layout, appEnv, sources, log: join(made.base, "pi-calls.log"), snapshot: join(made.base, "pi-snapshots.log"), envLog: join(made.base, "pi-env.log"), lock: {}, fail: { install: [], remove: [] } };
 }
 
 const stackFor = (profile: NpmPin, pkgs: NpmPin[] = []): Stack => ({ ...makeStack({}), profile: { ...profile }, piPackages: pkgs, npmGlobal: [{ name: "@earendil-works/pi-coding-agent", version: "1.4.0", integrity: "sha512-x", bin: "pi" }] });
@@ -97,6 +101,8 @@ const envOf = (f: Fixture, extra: Record<string, string> = {}): Record<string, s
 	NPM_CONFIG_FETCH_RETRIES: "0",
 	FAKE_PI_SOURCES: f.sources,
 	FAKE_PI_LOG: f.log,
+	FAKE_PI_SNAPSHOT: f.snapshot,
+	FAKE_PI_ENV: f.envLog,
 	FAKE_PI_LOCK: JSON.stringify(f.lock),
 	FAKE_PI_FAIL: JSON.stringify(f.fail),
 	...extra,
@@ -108,6 +114,7 @@ const standalone = (stages: Stage[]): Stage[] => {
 	return stages.map((s) => ({ ...s, needs: s.needs.filter((n) => names.has(n)) }));
 };
 
+const jsonLines = (file: string): Array<Record<string, any>> => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as Record<string, any>) : []);
 const calls = (f: Fixture): string[] => (existsSync(f.log) ? readFileSync(f.log, "utf8").split("\n").filter((l) => l !== "") : []);
 
 interface RunOut {
@@ -400,18 +407,114 @@ describe("the team-pkg:<name> stages", () => {
 		assert.doesNotMatch(log, /rollback-failed/);
 	});
 
-	it("RC-F001: when pi remove fails as well, the failure says the package may still be enabled, and the log says rollback-failed, not rolled-back", async () => {
+	it("RC-F001: when pi remove fails as well, the log says rollback-failed, not rolled-back, and an entry pi never wrote is not left for pi to load", async () => {
 		const f = await fixture();
 		f.lock = lock();
 		f.fail = { install: [], remove: ["team-skills"] };
 		const out = await go(f, stack(), RECIPE, { FAKE_PI_UNLISTED: JSON.stringify(["team-skills"]) });
 		const outcome = out.outcomes["team-pkg:team-skills"];
 		assert.equal(outcome?.status, "failed", JSON.stringify(outcome));
-		assert.match(outcome?.failure?.detail ?? "", /removing it failed \(pi remove exit 1\), so it may still be enabled with its extensions; remove it from settings\.json before starting pi/);
+		assert.match(outcome?.failure?.detail ?? "", /could not be removed with pi remove \(exit 1\); it was taken off pi's package list instead, so pi loads none of it/);
 		const log = readFileSync(join(f.layout.logs, "bootstrap.jsonl"), "utf8");
 		assert.match(log, /rollback-failed/);
 		assert.doesNotMatch(log, /"rolled-back"/);
-		assert.equal(installedVersion(f.layout, "team-skills"), "0.1.3", "the package is still there, and the message says so");
+		assert.equal(installedVersion(f.layout, "team-skills"), "0.1.3", "the package's files are still there, and the message says so");
+		assert.deepEqual(new StateStore(f.layout).startBlocks(), [], "nothing is listed, so nothing can load and the start is not blocked");
+	});
+
+	describe("T7-F002: a recipe package whose rollback fails never stays loadable", () => {
+		const entryOf = (f: Fixture): unknown => (settings(f).packages as unknown[]).find((e) => (typeof e === "string" ? e : (e as { source: string }).source) === "npm:team-skills@0.1.3");
+
+		it("is listed skills-only before the lock is checked, so the entry pi remove finds already has no extensions", async () => {
+			const f = await fixture();
+			f.lock = { ...lock(), "team-skills@0.1.3": `sha512-${Buffer.alloc(64, 5).toString("base64")}` };
+			await go(f, stack(), RECIPE);
+			const removals = jsonLines(f.snapshot).filter((e) => e.name === "team-skills");
+			assert.deepEqual(removals, [{ name: "team-skills", entry: { source: "npm:team-skills@0.1.3", extensions: [] } }], "at pi remove the entry was { source, extensions: [] }, not pi's plain string");
+		});
+
+		it("takes the listing out of settings.json when pi remove fails after the lock check failed: nothing of the package loads, the category stays integrity, the start is not blocked", async () => {
+			const f = await fixture();
+			f.lock = { ...lock(), "team-skills@0.1.3": `sha512-${Buffer.alloc(64, 5).toString("base64")}` };
+			f.fail = { install: [], remove: ["team-skills"] };
+			const out = await go(f, stack(), RECIPE);
+			const outcome = out.outcomes["team-pkg:team-skills"];
+			assert.equal(outcome?.status, "failed", JSON.stringify(outcome));
+			assert.equal(outcome?.failure?.category, "integrity");
+			assert.match(outcome?.failure?.detail ?? "", /taken off pi's package list instead/);
+			assert.doesNotMatch(outcome?.failure?.detail ?? "", /edit|remove it from settings\.json/i, "the message does not ask a PM to edit a file");
+			assert.equal(entryOf(f), undefined, "the entry is gone: pi loads none of it");
+			assert.ok(existsSync(join(agentPackageDir(f.layout, "team-skills"), "package.json")), "its files stay");
+			const log = readFileSync(join(f.layout.logs, "bootstrap.jsonl"), "utf8");
+			assert.match(log, /rollback-failed/);
+			assert.match(log, /"event":"unlisted"[^\n]*"listing":"absent"/);
+			const store = new StateStore(f.layout);
+			assert.equal(store.record("team-pkg:team-skills")?.status, "failed");
+			assert.deepEqual(store.startBlocks(), []);
+		});
+
+		it("records a start block when settings.json cannot be fixed either, with a sentence of its own, keeps it through a failure that touches nothing, and a successful run clears it", async () => {
+			const f = await fixture();
+			f.lock = lock();
+			f.fail = { install: [], remove: ["team-skills"] };
+			const unfixable = { FAKE_PI_CORRUPT: JSON.stringify(["team-skills"]) };
+			const out = await go(f, stack(), RECIPE, unfixable);
+			const outcome = out.outcomes["team-pkg:team-skills"];
+			assert.equal(outcome?.status, "failed", JSON.stringify(outcome));
+			assert.equal(outcome?.failure?.sentence, packageMayLoadSentence("team-skills"));
+			assert.match(outcome?.failure?.sentence ?? "", /will not start your agents until it has been/);
+			assert.doesNotMatch(`${outcome?.failure?.sentence}\n${outcome?.failure?.detail}`, /edit|remove it from settings\.json/i, "neither sentence nor detail asks a PM to edit a file");
+			assert.match(outcome?.failure?.detail ?? "", /the app does not start pi until a later run of team-pkg:team-skills has removed it/);
+			const expected = { stage: "team-pkg:team-skills", kind: "package-may-load", package: "team-skills", sentence: packageMayLoadSentence("team-skills") };
+			assert.deepEqual(new StateStore(f.layout).startBlocks(), [expected], "read from state/bootstrap.json by a fresh store, the way the supervisor reads it");
+			assert.deepEqual((JSON.parse(readFileSync(join(f.layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { startBlock?: unknown }> }).stages["team-pkg:team-skills"]?.startBlock, { kind: "package-may-load", package: "team-skills", sentence: packageMayLoadSentence("team-skills") });
+			const bad = { ...pin(published.team), integrity: `sha512-${Buffer.alloc(64, 7).toString("base64")}` };
+			// A later run that fails before it touches anything (the registry does not confirm the pin) leaves the block where it was.
+			const again = await go(f, stackFor(pin(published.profile), [pin(published.one)]), { ...RECIPE, packages: [bad] });
+			assert.equal(again.outcomes["team-pkg:team-skills"]?.failure?.category, "integrity");
+			assert.deepEqual(new StateStore(f.layout).startBlocks(), [expected], "the block outlives a failure that did not remove the package");
+			// A run that removes the package properly clears it.
+			f.fail = { install: [], remove: [] };
+			const ok = await go(f, stack(), RECIPE);
+			assert.equal(ok.outcomes["team-pkg:team-skills"]?.status, "installed", JSON.stringify(ok.outcomes["team-pkg:team-skills"]));
+			assert.deepEqual(new StateStore(f.layout).startBlocks(), []);
+			assert.deepEqual(entryOf(f), { source: "npm:team-skills@0.1.3", extensions: [] });
+		});
+
+		it("keeps a block through the running record, so a kill in the middle of the next attempt does not lift it", async () => {
+			const f = await fixture();
+			const block = { kind: "package-may-load" as const, package: "team-skills", sentence: packageMayLoadSentence("team-skills") };
+			await new StateStore(f.layout).setRecord("team-pkg:team-skills", { status: "failed", version: "0.1.3", evidence: "", at: "2026-11-02T00:00:00.000Z", hashes: {}, dependsOn: {}, startBlock: block });
+			let seen: unknown = "never ran";
+			const probe: Stage = {
+				name: "team-pkg:team-skills",
+				needs: [],
+				async detect() {
+					return null;
+				},
+				async install(ctx) {
+					seen = new StateStore(ctx.layout).record("team-pkg:team-skills")?.startBlock;
+				},
+				async verify() {
+					return { text: "x", version: "0.1.3" };
+				},
+				async activate() {},
+			};
+			const run = testEngine(f.root, () => [probe], { appEnv: f.appEnv, layout: f.layout });
+			await run.run(stackFor(pin(published.profile)));
+			assert.deepEqual(seen, block);
+			assert.deepEqual(new StateStore(f.layout).startBlocks(), [], "and the run that succeeded cleared it");
+		});
+
+		it("pkg:<name> and profile get the same fallback: the plain entry of a stack package is taken out when pi remove fails after a lock mismatch", async () => {
+			const f = await fixture();
+			f.lock = { ...lockOf(pin(published.profile)), "pkg-one@1.0.0": `sha512-${Buffer.alloc(64, 3).toString("base64")}` };
+			f.fail = { install: [], remove: ["pkg-one"] };
+			const out = await go(f, stackFor(pin(published.profile), [pin(published.one)]), { ...RECIPE, packages: [] });
+			assert.equal(out.outcomes["pkg:pkg-one"]?.failure?.category, "integrity");
+			assert.ok(!(settings(f).packages as unknown[]).includes("npm:pkg-one@1.0.0"), "not listed any more");
+			assert.deepEqual(new StateStore(f.layout).startBlocks(), []);
+		});
 	});
 
 	it("takes a recipe package out when npm recorded another tarball than its pin", async () => {
@@ -427,6 +530,100 @@ describe("the team-pkg:<name> stages", () => {
 		for (const name of ["pkg-one", PROFILE, "@earendil-works/pi-coding-agent"]) {
 			assert.throws(() => profileStages(s, engineRecipeOf({ ...RECIPE, packages: [{ name, version: "1.0.0", integrity: published.one.integrity }] }, s), platform), StackError, name);
 		}
+	});
+});
+
+describe("T7-F003: a stage whose tarball is not the pin is never skipped-verified, and its failed reinstall does not keep an old ok", () => {
+	const RECIPE_ONE = { ...RECIPE, packages: [pin(published.team)] };
+	const stack = (): Stack => stackFor(pin(published.profile), [pin(published.one)]);
+	const goodLock = (): Record<string, string> => lockOf(pin(published.profile), pin(published.one), pin(published.team));
+	const lockFile = (f: Fixture): string => join(f.layout.agent, "npm", "package-lock.json");
+	/** npm records another tarball for `name` in the lock file, the way a later run of npm or a changed registry answer would leave it. */
+	function tamperLock(f: Fixture, name: string): void {
+		const lock = JSON.parse(readFileSync(lockFile(f), "utf8")) as { packages: Record<string, { integrity: string }> };
+		(lock.packages[`node_modules/${name}`] as { integrity: string }).integrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
+		writeFileSync(lockFile(f), JSON.stringify(lock));
+	}
+	const statuses = (out: RunOut): Record<string, string> => Object.fromEntries(Object.entries(out.outcomes).map(([k, v]) => [k, v.status]));
+
+	it("detect re-reads the lock: a lock entry that no longer equals the pin fails profile, pkg:*, and team-pkg:*, and the next run installs them again", async () => {
+		const f = await fixture();
+		f.lock = goodLock();
+		await go(f, stack(), RECIPE_ONE);
+		const names: Array<[string, string]> = [["profile", PROFILE], ["pkg:pkg-one", "pkg-one"], ["team-pkg:team-skills", "team-skills"]];
+		for (const [stageName, pkgName] of names) {
+			const second = await go(f, stack(), RECIPE_ONE);
+			assert.equal(second.outcomes[stageName]?.status, "skipped-verified", `${stageName} before the change`);
+			tamperLock(f, pkgName);
+			const third = await go(f, stack(), RECIPE_ONE);
+			assert.equal(third.outcomes[stageName]?.status, "installed", `${stageName} after the lock changed: ${JSON.stringify(statuses(third))}`);
+			const reasons = jsonLines(join(f.layout.logs, "bootstrap.jsonl")).filter((e) => e.stage === stageName && e.event === "detect-failed").map((e) => String(e.reason));
+			assert.ok(reasons.some((r) => /npm's lock records another integrity for/.test(r)), `${stageName}: ${reasons.join(" | ")}`);
+		}
+	});
+
+	it("detect fails when the lock has no entry for the package at all", async () => {
+		const f = await fixture();
+		f.lock = goodLock();
+		await go(f, stack(), RECIPE_ONE);
+		rmSync(lockFile(f));
+		const again = await go(f, stack(), RECIPE_ONE);
+		for (const name of ["profile", "pkg:pkg-one", "team-pkg:team-skills"]) assert.equal(again.outcomes[name]?.status, "installed", name);
+	});
+
+	it("a reinstall that fails after pi install records failed, and the old ok is not kept: with the lock and the listing repaired by hand it is installed again, not skipped-verified", async () => {
+		const f = await fixture();
+		f.lock = goodLock();
+		await go(f, stack(), RECIPE_ONE);
+		const okRecord = new StateStore(f.layout).record("pkg:pkg-one");
+		assert.equal(okRecord?.status, "ok");
+		// the settings entry is lost, so detect fails; the reinstall then records another tarball, and pi remove fails too
+		writeFileSync(join(f.layout.agent, "settings.json"), JSON.stringify({ ...settings(f), packages: (settings(f).packages as unknown[]).filter((e) => e !== "npm:pkg-one@1.0.0") }));
+		f.lock = { ...goodLock(), "pkg-one@1.0.0": `sha512-${Buffer.alloc(64, 4).toString("base64")}` };
+		f.fail = { install: [], remove: ["pkg-one"] };
+		const failed = await go(f, stack(), RECIPE_ONE);
+		assert.equal(failed.outcomes["pkg:pkg-one"]?.status, "failed", JSON.stringify(failed.outcomes["pkg:pkg-one"]));
+		const record = new StateStore(f.layout).record("pkg:pkg-one");
+		assert.equal(record?.status, "failed", "not the old ok");
+		assert.equal(record?.lastFailure?.category, "integrity");
+		assert.deepEqual(record?.hashes, {}, "and none of the old install's hashes");
+		// Repair what the review's trace needs for the old record to pass: the lock says the pin again, the entry is back, package.json is the same bytes.
+		const lock = JSON.parse(readFileSync(lockFile(f), "utf8")) as { packages: Record<string, unknown> };
+		lock.packages["node_modules/pkg-one"] = { version: "1.0.0", integrity: published.one.integrity };
+		writeFileSync(lockFile(f), JSON.stringify(lock));
+		writeFileSync(join(f.layout.agent, "settings.json"), JSON.stringify({ ...settings(f), packages: [...(settings(f).packages as unknown[]), "npm:pkg-one@1.0.0"] }));
+		f.fail = { install: [], remove: [] };
+		f.lock = goodLock();
+		const next = await go(f, stack(), RECIPE_ONE);
+		assert.equal(next.outcomes["pkg:pkg-one"]?.status, "installed", "a failed record is never a verified one");
+	});
+
+	it("a failure before pi install touched anything keeps the old ok and its version (the old install is still the active one)", async () => {
+		const f = await fixture();
+		f.lock = lockOf(pin(published.profile), pin(published.profile2));
+		await go(f, stackFor(pin(published.profile)), { ...RECIPE, packages: [] });
+		assert.equal(new StateStore(f.layout).record("profile")?.version, "0.1.0");
+		// the stack moves to 0.2.0, but the registry does not confirm the pin: nothing was installed
+		const wrong = { ...pin(published.profile2), integrity: `sha512-${Buffer.alloc(64, 8).toString("base64")}` };
+		const out = await go(f, stackFor(wrong), { ...RECIPE, packages: [] });
+		assert.equal(out.outcomes.profile?.failure?.category, "integrity");
+		const record = new StateStore(f.layout).record("profile");
+		assert.equal(record?.status, "ok");
+		assert.equal(record?.version, "0.1.0");
+		assert.equal(record?.lastFailure?.category, "integrity");
+		assert.equal(installedVersion(f.layout, PROFILE), "0.1.0");
+	});
+});
+
+describe("T7-F010: npm's configuration files cannot turn the lock off", () => {
+	it("every pi install and pi remove gets NPM_CONFIG_PACKAGE_LOCK=true and NPM_CONFIG_SAVE=true, which outrank a user's package-lock=false and save=false", async () => {
+		const f = await fixture();
+		const stack = stackFor(pin(published.profile), [pin(published.one)]);
+		f.lock = { ...lockOf(pin(published.profile)), "pkg-one@1.0.0": `sha512-${Buffer.alloc(64, 3).toString("base64")}` };
+		await go(f, stack, { ...RECIPE, packages: [] });
+		const seen = jsonLines(f.envLog);
+		assert.deepEqual(seen.map((e) => `${e.command} ${e.name}`), [`install ${PROFILE}`, "install pkg-one", "remove pkg-one"]);
+		for (const e of seen) assert.deepEqual([e.lock, e.save], ["true", "true"], `${e.command} ${e.name}`);
 	});
 });
 

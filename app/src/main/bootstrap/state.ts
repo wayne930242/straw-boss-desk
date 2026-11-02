@@ -3,6 +3,7 @@ import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, sta
 import { dirname, join } from "node:path";
 import type { Layout } from "../paths.ts";
 import type { Processes } from "../platform/index.ts";
+import { packageMayLoadSentence } from "./errors.ts";
 import { JsonFileError, readJsonFile, removeTree, writeFileAtomic, type JsonValue } from "./fsutil.ts";
 
 // `state/bootstrap.json` (per stage: status, version, evidence, hashes) and `state/current.json` (the active version of each tool), and the engine's lock.
@@ -28,6 +29,19 @@ export interface StageWarning {
 	sentence: string;
 }
 
+/**
+ * Why the app must not start pi (T7-F002): a package failed its check, `pi remove` failed too, and the package could not be taken off pi's package list, so pi
+ * would load it. Written on the record of the stage that failed; the next run of that stage that succeeds writes a record without it. The supervisor reads
+ * it through `StateStore.startBlocks()`.
+ */
+export interface StartBlock {
+	kind: "package-may-load";
+	/** The npm package name. */
+	package: string;
+	/** The plain English line for the PM; the catalog carries zh-TW from `kind` and `package`. */
+	sentence: string;
+}
+
 export interface StageRecord {
 	status: StageStatus;
 	/** The version this stage made active, or the one it was installing while `running`. */
@@ -43,6 +57,8 @@ export interface StageRecord {
 	lastFailure?: FailureNote;
 	/** What the stage found that does not fail it (the preflight's unreachable recipe forge host). */
 	warnings?: StageWarning[];
+	/** Set while the last failure left a package that may still load code; start refuses while any record has it (T7-F002). */
+	startBlock?: StartBlock;
 }
 
 export interface BootstrapState {
@@ -80,7 +96,15 @@ function asRecord(value: unknown): StageRecord | null {
 				isObject(w) && typeof w.kind === "string" && typeof w.sentence === "string" ? [{ kind: w.kind, ...(typeof w.host === "string" ? { host: w.host } : {}), sentence: w.sentence }] : [],
 			)
 		: [];
-	return { status, version, evidence, at, hashes, dependsOn, ...(lastFailure ? { lastFailure } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
+	// A start block that does not parse is still a block: dropping it would let pi start.
+	const startBlock = value.startBlock === undefined ? undefined : asStartBlock(value.startBlock);
+	return { status, version, evidence, at, hashes, dependsOn, ...(lastFailure ? { lastFailure } : {}), ...(warnings.length > 0 ? { warnings } : {}), ...(startBlock ? { startBlock } : {}) };
+}
+
+function asStartBlock(value: unknown): StartBlock {
+	const block = isObject(value) ? value : {};
+	const name = typeof block.package === "string" ? block.package : "";
+	return { kind: "package-may-load", package: name, sentence: typeof block.sentence === "string" && block.sentence !== "" ? block.sentence : packageMayLoadSentence(name === "" ? undefined : name) };
 }
 
 function asBootstrap(value: JsonValue): BootstrapState | null {
@@ -170,6 +194,11 @@ export class StateStore {
 
 	record(stage: string): StageRecord | null {
 		return this.bootstrap().stages[stage] ?? null;
+	}
+
+	/** The stages whose last failure left a package that may still load code. The supervisor refuses to start pi while this is not empty (T7-F002); read it from a fresh store. */
+	startBlocks(): Array<{ stage: string } & StartBlock> {
+		return Object.entries(this.bootstrap().stages).flatMap(([stage, record]) => (record.startBlock ? [{ stage, ...record.startBlock }] : []));
 	}
 
 	/** The active version of `tool`, or null. */

@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import type { AppPlatform } from "../../paths.ts";
-import { install, isPackageListed, loadProfile, markSkillsOnly, type InstallResult, type Notice } from "../../profile/team-profile.ts";
-import { StageError } from "../errors.ts";
+import { install, isPackageListed, loadProfile, markSkillsOnly, packageListing, unlistPackages, type InstallResult, type Notice } from "../../profile/team-profile.ts";
+import { packageMayLoadSentence, StageError } from "../errors.ts";
 import { assertRegistryIntegrity, type NpmRun } from "../npm.ts";
-import { agentPackageDir, assertLockedIntegrity, installedVersion, piInstall, piRemove, piSource } from "../pi-cli.ts";
+import { agentPackageDir, assertLockedIntegrity, checkLockedIntegrity, installedVersion, piInstall, piRemove, piSource } from "../pi-cli.ts";
 import type { EngineRecipe } from "../recipe-config.ts";
 import { StackError, type NpmPin, type Stack } from "../stack.ts";
 import { detectFromRecord, fileKey, type Evidence, type Stage, type StageContext } from "../stage.ts";
@@ -34,6 +34,17 @@ export function warningsOf(notices: readonly Notice[]): StageWarning[] {
 }
 
 const describeChanges = (result: InstallResult): string => result.changes.map((c) => `${c.kind} ${c.file}${"key" in c ? ` ${c.key}` : ""}`).join(", ");
+
+/**
+ * Whether npm's lock file still records the pin's integrity for the package on disk. `detect` reads it on every run (T7-F003): a record and the hash of
+ * `package.json` say nothing about the tarball npm recorded, which a failed same-version reinstall or a later run of npm can change.
+ */
+function lockStillMatches(ctx: StageContext, pin: NpmPin): boolean {
+	const check = checkLockedIntegrity(ctx.layout, pin);
+	if (check.kind === "match") return true;
+	ctx.log.event({ event: "detect-failed", reason: check.kind === "mismatch" ? `npm's lock records another integrity for ${pin.name}@${pin.version} than the pin` : `npm's lock records no integrity for ${pin.name}@${pin.version}` });
+	return false;
+}
 
 /** Looks the installer up for `ctx`: the installed profile package's files, the recipe, and the agent folder. `dryRun` reads and plans only. */
 function runInstaller(ctx: StageContext, pin: NpmPin, dryRun: boolean): InstallResult {
@@ -66,6 +77,7 @@ export function profileStage(options: ProfileStageOptions = {}): Stage {
 			};
 			if (installedVersion(ctx.layout, pin.name) !== pin.version) return why(`${pin.name} on disk is not ${pin.version}`);
 			if (!isPackageListed(ctx.layout.agent, pin.name, pin.version, false)) return why(`settings.json does not list ${piSource(pin)}`);
+			if (!lockStillMatches(ctx, pin)) return null;
 			let plan: InstallResult;
 			try {
 				plan = runInstaller(ctx, pin, true);
@@ -144,6 +156,7 @@ async function detectPackage(ctx: StageContext, pin: NpmPin, skillsOnly: boolean
 		ctx.log.event({ event: "detect-failed", reason: `${pin.name} on disk is not ${pin.version}, or settings.json does not list it${skillsOnly ? " with extensions []" : ""}` });
 		return null;
 	}
+	if (!lockStillMatches(ctx, pin)) return null;
 	return found;
 }
 
@@ -175,21 +188,42 @@ export function piPackageStage(pin: NpmPin, needs: readonly string[], options: P
 	};
 }
 
-/** `pi remove` after a failure that must not leave the package enabled; a removal that fails too is said plainly (RC-F001: the log never claims a rollback that did not happen). */
+/**
+ * `pi remove` after a failure that must not leave the package enabled. A removal that fails too is said plainly (RC-F001: the log never claims a rollback that
+ * did not happen), and then the package's listing is taken out of settings.json directly, so pi does not load it (T7-F002). When even that does not take
+ * (settings.json unwritable or unreadable), the failure carries a start block: the engine records it on the stage, and the supervisor does not start pi until a
+ * later run of the stage removes the package. The message never asks the PM to edit a file.
+ */
 async function removeAfterFailure(ctx: StageContext, pin: NpmPin, why: Error, npm?: NpmRun): Promise<never> {
 	const removed = await piRemove(ctx, pin, npm);
-	if (removed.timedOut || removed.code !== 0) {
-		const line = `${removed.stderr}\n${removed.stdout}`.trim().split(/\r?\n/)[0] ?? "";
-		ctx.log.event({ event: "rollback-failed", package: pin.name, detail: `pi remove exit ${removed.code}: ${line}` });
-		throw new StageError(
-			"other",
-			{ stage: ctx.stage },
-			`${pin.name} could not be accepted (${why.message}), and removing it failed (pi remove exit ${removed.code}), so it may still be enabled with its extensions; remove it from settings.json before starting pi`,
-		);
+	if (!removed.timedOut && removed.code === 0) {
+		ctx.log.event({ event: "rolled-back", package: pin.name, detail: "pi remove exit 0; not left enabled with its extensions" });
+		if (why instanceof StageError) throw new StageError(why.category, why.params, `${why.message}\n(${pin.name} was removed again)`);
+		throw new StageError("other", { stage: ctx.stage }, `${pin.name} could not be accepted, so it was removed again: ${why.message}`);
 	}
-	ctx.log.event({ event: "rolled-back", package: pin.name, detail: "pi remove exit 0; not left enabled with its extensions" });
-	if (why instanceof StageError) throw new StageError(why.category, why.params, `${why.message}\n(${pin.name} was removed again)`);
-	throw new StageError("other", { stage: ctx.stage }, `${pin.name} could not be accepted, so it was removed again: ${why.message}`);
+	const line = `${removed.stderr}\n${removed.stdout}`.trim().split(/\r?\n/)[0] ?? "";
+	ctx.log.event({ event: "rollback-failed", package: pin.name, detail: `pi remove exit ${removed.code}: ${line}` });
+	let unlistError: string | null = null;
+	try {
+		unlistPackages({ agentDir: ctx.layout.agent, packages: [pin] });
+	} catch (error) {
+		unlistError = (error as Error).message;
+	}
+	const listing = packageListing(ctx.layout.agent, pin.name, pin.version);
+	ctx.log.event({ event: "unlisted", package: pin.name, listing, ...(unlistError === null ? {} : { error: unlistError }) });
+	if (listing === "absent") {
+		const detail = `${why.message}\n(${pin.name} could not be removed with pi remove (exit ${removed.code}); it was taken off pi's package list instead, so pi loads none of it, and its files stay under ${agentPackageDir(ctx.layout, pin.name)})`;
+		if (why instanceof StageError) throw new StageError(why.category, why.params, detail);
+		throw new StageError("other", { stage: ctx.stage }, `${pin.name} could not be accepted: ${detail}`);
+	}
+	const startBlock = { kind: "package-may-load", package: pin.name, sentence: packageMayLoadSentence(pin.name) } as const;
+	const still = listing === "skills-only" ? "still listed with its extensions off, so its skills, prompts, and themes still load" : listing === "listed" ? "still listed, so pi loads it with its extensions" : "not readable, so what pi loads is unknown";
+	throw new StageError(
+		"other",
+		{ stage: ctx.stage, reason: "package-may-load", name: pin.name },
+		`${pin.name} could not be accepted (${why.message}), pi remove failed (exit ${removed.code}), and its listing in settings.json is ${still}${unlistError === null ? "" : ` (${unlistError})`}; the app does not start pi until a later run of ${ctx.stage} has removed it`,
+		{ startBlock },
+	);
 }
 
 /** `team-pkg:<name>`: one package of the recipe, listed skills-only; a package that cannot be listed that way is removed again. */
@@ -203,11 +237,12 @@ export function teamPackageStage(pin: NpmPin, needs: readonly string[], options:
 		async install(ctx) {
 			await assertRegistryIntegrity(ctx, pin, options.npm);
 			await piInstall(ctx, pin, options.npm);
-			// `pi install` lists the package with every resource type on. If it cannot then be listed skills-only, or is not what the pin names, take it out
-			// again: a recipe package must never stay enabled with its extensions (team-profile section 5).
+			// `pi install` lists the package with every resource type on, and its install scripts have run. A recipe package must never stay enabled with its
+			// extensions (team-profile section 5), so it is narrowed to skills-only first, before anything that can fail: whatever fails next, the entry
+			// that is left (a failed removal included) loads no extension. Then the lock check, and a package that cannot be accepted is taken out again.
 			try {
-				assertLockedIntegrity(ctx, pin);
 				markSkillsOnly({ agentDir: ctx.layout.agent, packages: [pin] });
+				assertLockedIntegrity(ctx, pin);
 			} catch (error) {
 				await removeAfterFailure(ctx, pin, error as Error, options.npm);
 			}

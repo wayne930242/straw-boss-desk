@@ -34,11 +34,19 @@ export function piInvocation(ctx: StageContext): { file: string; script: string 
 	return { file: nodeBinaryPath(ctx.layout, node), script: join(dir, ...entry.split("/")) };
 }
 
+/**
+ * What pi's npm gets on top of the constructed environment. The integrity check after an install reads the lock file npm writes, and a user's own npm
+ * configuration (`package-lock=false`, `save=false`) would leave no entry in it, so every package stage would fail "npm recorded no integrity". The
+ * environment outranks the user and project configuration files. The registry, the user configuration file itself, and the scripts setting are left
+ * to the PM (T7-F010: pinning them would drop a company mirror; the pin's sha512 is checked either way).
+ */
+export const PI_NPM_ENV: Readonly<Record<string, string>> = { NPM_CONFIG_PACKAGE_LOCK: "true", NPM_CONFIG_SAVE: "true" };
+
 /** Runs `pi <args>` with the constructed environment (the OS proxy among it). The command and its output go to the stage log. */
 export function runPi(ctx: StageContext, args: readonly string[], timeoutMs: number, extraEnv?: Readonly<Record<string, string>>): Promise<RunResult> {
 	const { file, script } = piInvocation(ctx);
 	// The cwd is the data root's tools folder, where no project file (`.pi/`) can be: `pi install` without `-l` writes the user scope, the agent folder.
-	return ctx.exec(file, [script, ...args], { env: ctx.childEnv(extraEnv), cwd: ctx.layout.tools.root, timeoutMs });
+	return ctx.exec(file, [script, ...args], { env: ctx.childEnv({ ...PI_NPM_ENV, ...extraEnv }), cwd: ctx.layout.tools.root, timeoutMs });
 }
 
 const LOCKED_LINE = /\b(EBUSY|EPERM|EACCES|EMFILE|ENOTEMPTY)\b/;
@@ -46,13 +54,20 @@ const LOCKED_LINE = /\b(EBUSY|EPERM|EACCES|EMFILE|ENOTEMPTY)\b/;
 /** `pi install npm:<name>@<version>`: a failure is classified from npm's own lines (pi prints them), the way the `pi` stage's npm steps are. */
 export async function piInstall(ctx: StageContext, pin: NpmPin, options: NpmRun = {}): Promise<void> {
 	const what = `${pin.name}@${pin.version}`;
-	const result = await runPi(ctx, ["install", piSource(pin)], options.timeoutMs ?? 1_800_000, options.env);
+	const source = piSource(pin);
+	// From here on npm changes the prefix in place: a failure can no longer promise that the old install is intact (T7-F003).
+	ctx.markInPlace();
+	const result = await runPi(ctx, ["install", source], options.timeoutMs ?? 1_800_000, options.env);
 	if (result.timedOut || result.code !== 0) throw npmFailure(ctx.stage, what, result, `pi install ${piSource(pin)}`);
 	for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/)) if (LOCKED_LINE.test(line)) ctx.fsErrors.push(line.trim().slice(0, 300));
 }
 
 /** `pi remove npm:<name>@<version>`: the result is the caller's to judge (a failed removal is reported, not thrown). */
-export const piRemove = (ctx: StageContext, pin: Pick<NpmPin, "name" | "version">, options: NpmRun = {}): Promise<RunResult> => runPi(ctx, ["remove", piSource(pin)], options.timeoutMs ?? 300_000, options.env);
+export function piRemove(ctx: StageContext, pin: Pick<NpmPin, "name" | "version">, options: NpmRun = {}): Promise<RunResult> {
+	const source = piSource(pin);
+	ctx.markInPlace();
+	return runPi(ctx, ["remove", source], options.timeoutMs ?? 300_000, options.env);
+}
 
 export type LockCheck = { kind: "match" } | { kind: "mismatch"; recorded: string } | { kind: "absent" };
 

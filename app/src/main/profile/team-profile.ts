@@ -645,6 +645,50 @@ export function markSkillsOnly({ agentDir, packages, hooks = {} }: { agentDir: s
 	return marked;
 }
 
+const sourceOfEntry = (entry: unknown): unknown => (typeof entry === "string" ? entry : isPlain(entry) ? entry.source : undefined);
+
+/**
+ * Takes the listing of each package out of settings.json's `packages`, so pi no longer loads it; the package's files stay where they are. This is the fallback
+ * when `pi remove` fails after a package failed its check (T7-F002). Returns the sources it took out; a settings.json that is missing or lists nothing is not an error.
+ */
+export function unlistPackages({ agentDir, packages, hooks = {} }: { agentDir: string; packages: ReadonlyArray<{ name: string; version: string }>; hooks?: WriteHooks }): string[] {
+	const path = managedPath(agentDir, "settings.json", "settings path");
+	const doc = readJsonOr<null>(path, null);
+	if (doc === null || !Array.isArray(doc.packages)) return [];
+	const sources = new Set(packages.map((pkg) => `npm:${pkg.name}@${pkg.version}`));
+	const list = doc.packages as unknown[];
+	const kept = list.filter((entry) => !sources.has(sourceOfEntry(entry) as string));
+	if (kept.length === list.length) return [];
+	const removed = list.filter((entry) => sources.has(sourceOfEntry(entry) as string)).map((entry) => sourceOfEntry(entry) as string);
+	doc.packages = kept;
+	writeAtomic(agentDir, path, `${JSON.stringify(doc, null, 2)}\n`, hooks);
+	return removed;
+}
+
+/** How settings.json lists a package: not at all, with an empty `extensions` list, in any other form, or `unknown` when the file cannot be read as an object. */
+export type Listing = "absent" | "skills-only" | "listed" | "unknown";
+
+export function packageListing(agentDir: string, name: string, version: string): Listing {
+	let doc: Json | null;
+	try {
+		doc = readJsonOr<null>(join(agentDir, "settings.json"), null);
+	} catch {
+		return "unknown";
+	}
+	if (doc === null) return "absent";
+	if (!isPlain(doc)) return "unknown";
+	if (doc.packages === undefined) return "absent";
+	if (!Array.isArray(doc.packages)) return "unknown";
+	const source = `npm:${name}@${version}`;
+	let found: Listing = "absent";
+	for (const entry of doc.packages as unknown[]) {
+		if (sourceOfEntry(entry) !== source) continue;
+		if (isPlain(entry) && Array.isArray(entry.extensions) && entry.extensions.length === 0) found = found === "listed" ? "listed" : "skills-only";
+		else found = "listed";
+	}
+	return found;
+}
+
 /** True when settings.json lists `npm:name@version` (the stage's exact pin) and, with `skillsOnly`, with an empty `extensions` list. */
 export function isPackageListed(agentDir: string, name: string, version: string, skillsOnly: boolean): boolean {
 	let doc: Json | null;
