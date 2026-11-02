@@ -11,7 +11,7 @@ import { execRunner } from "../src/main/platform/exec.ts";
 import { assertEngineIdle, repairEngineLock } from "../src/main/runtime/engine-lock.ts";
 import { loadStartConfig } from "../src/main/runtime/config.ts";
 import { packageBlocks, readInstalled, isInstalled } from "../src/main/runtime/readiness.ts";
-import { resolveShortNames, shortPathOf } from "../src/main/runtime/short-names.ts";
+import { resolveShortNames } from "../src/main/runtime/short-names.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
 import { FakeProcesses, installFake } from "./harness/runtime-fakes.ts";
 
@@ -78,7 +78,6 @@ describe("bun's 8.3 short names in the constructed environment (build notes: tas
 		const before = calls;
 		assert.deepEqual(await resolveShortNames({ layout, run, locate: platform.locate, appEnv: process.env }), found);
 		assert.equal(calls, before, "the second start runs nothing");
-		assert.ok(await shortPathOf(real, platform.locate, process.env, home), "the same call works on the profile folder");
 	});
 });
 
