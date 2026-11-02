@@ -28,10 +28,11 @@ const GUI_URL = /((?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}\/)[A-Za-z0-9_~-]{16
  * `scheme://user:password@host`: the userinfo of a URL, as a company proxy variable carries it (`HTTPS_PROXY=http://user:pass@proxy:8080`, which reaches
  * every child the engine starts, T6-F011). The user and the password are masked; the scheme and the host stay. The user has no colon, the password may hold
  * anything up to the last `@` before the next slash, a space, a double quote, or `<>`: those four never appear raw in a valid URL, while a single quote may
- * (R6-F003). A URL with a user and no password (`ssh://git@host`) is left alone. The scheme starts only where a run of scheme characters starts and is at
- * most 32 characters long, so a long run such as `a.a.a…` is scanned once, not once per dot (R6-F001).
+ * (R6-F003). A URL with a user and no password (`ssh://git@host`) is left alone. A match starts only right after `://` with a scheme character before it, so
+ * whatever comes before (`git+https`, `x.http`, a scheme of any length) stays as it is, and a long run such as `a.a.a…` is never rescanned from each dot
+ * (R6-F001, R6C-F001). A compact single-quoted list such as `['http://h:8080','a@b.c']` is masked up to the later `@`: too much, never too little (R6C-F002).
  */
-const URL_USERINFO = /((?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/)[^/\s:@"<>]+:[^/\s"<>]*@/g;
+const URL_USERINFO = /(?<=[A-Za-z0-9+.-]:\/\/)[^/\s:@"<>]+:[^/\s"<>]*@/g;
 
 /** A PEM block, `-----BEGIN <label>-----` to the matching `-----END <label>-----` (to the end of the text when there is none), whatever its label. */
 const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----[\s\S]*?(?:-----END \1-----|$)/g;
@@ -103,7 +104,7 @@ export class Redactor {
 		const exact = this.#exactPattern();
 		if (exact) out = out.replace(exact, REDACTED);
 		out = out.replace(GUI_URL, `$1${TOKEN}`);
-		out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
+		out = out.replace(URL_USERINFO, `${REDACTED}@`);
 		for (const pattern of this.#patterns) out = out.replace(pattern, REDACTED);
 		return out;
 	}

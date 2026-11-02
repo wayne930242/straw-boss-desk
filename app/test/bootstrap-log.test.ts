@@ -117,9 +117,17 @@ describe("URL userinfo (T6-F011)", () => {
 		assert.equal(r.redact("{'proxy':'http://a:b@h:1','other':'http://c:d@k:2'}"), `{'proxy':'http://${REDACTED}@h:1','other':'http://${REDACTED}@k:2'}`);
 	});
 
+	// R6C-F001: whatever stands before the scheme does not stop the mask.
+	it("masks a URL whose scheme follows a dot, a dash, a plus, or a digit, or is long", () => {
+		for (const prefix of [".", "-", "+", "1.2.3.", "x.", "git+", "a".repeat(40)]) {
+			assert.equal(r.redact(`${prefix}http://u:p@h:1`), `${prefix}http://${REDACTED}@h:1`, prefix);
+		}
+	});
+
 	// R6-F001: the scheme used to start after every dot of a run, so a long `a.a.a…` line took seconds; a stage-log line may reach 1 MB.
-	it("scans a 1 MB line of scheme characters in linear time, and still masks a URL at its end", () => {
-		for (const run of ["a.".repeat(512 * 1024), "a-".repeat(512 * 1024), "a+".repeat(512 * 1024)]) {
+	it("scans a 1 MB line in linear time, and still masks a URL at its end", () => {
+		const mb = 512 * 1024;
+		for (const run of ["a.".repeat(mb), "a-".repeat(mb), "a+".repeat(mb), "a://".repeat(mb / 2), `http://${"u".repeat(2 * mb)}`, `x://u:${"'".repeat(2 * mb)}`, ":'".repeat(mb)]) {
 			const start = performance.now();
 			const out = r.redact(`${run} http://u:p@h:1`);
 			const ms = performance.now() - start;
