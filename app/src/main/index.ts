@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pickLocale } from "../shared/locale.ts";
 import { identityFromProductName } from "./build.ts";
 import { dataRoot, electronDir, computeLayout } from "./paths.ts";
+import { GuiPresenter } from "./gui-presenter.ts";
 import { createPlatform } from "./platform/index.ts";
 import { execRunner } from "./platform/exec.ts";
 import { checkPaneLookups } from "./pane-path.ts";
@@ -49,13 +50,10 @@ let window: BaseWindow | undefined;
 let guiView: WebContentsView | undefined;
 let shellView: WebContentsView | undefined;
 
+// The GUI's address carries the page token: it goes to the view and nowhere else (the presenter keeps it in memory for a window opened later).
+const presenter = new GuiPresenter({ state: () => supervisor.state, guiShown: () => supervisor.guiShown() });
 supervisor.on((event) => {
-	if (event.type !== "gui-url" || !guiView) return;
-	// The GUI's address carries the page token: it goes to the view and nowhere else. The shell view steps aside while the GUI shows.
-	const contents = guiView.webContents;
-	contents.once("did-finish-load", () => supervisor.guiShown());
-	void contents.loadURL(event.url).catch((error: Error) => runtimeLog.event({ event: "gui-load-failed", detail: error.message.slice(0, 200) }));
-	shellView?.setVisible(false);
+	if (event.type === "gui-url") presenter.onGuiUrl(event.url);
 });
 
 function layoutViews(): void {
@@ -82,8 +80,6 @@ function createWindow(): void {
 			],
 		},
 	});
-	// Blank until the supervisor loads the GUI; a view that never navigates has no renderer, which a CDP client such as Playwright waits on forever.
-	void guiView.webContents.loadURL("about:blank");
 	window.contentView.addChildView(guiView);
 	window.contentView.addChildView(shellView);
 	layoutViews();
@@ -91,11 +87,24 @@ function createWindow(): void {
 	// Windows log off or shutdown: `cli.mjs stop` for 10 s, run to the end here, and Windows ends the rest.
 	window.on("session-end", () => supervisor.stopForSessionEnd());
 	window.on("closed", () => {
+		presenter.detach();
 		window = undefined;
 		guiView = undefined;
 		shellView = undefined;
 	});
 	void shellView.webContents.loadFile(join(import.meta.dirname, "..", "renderer", "welcome.html"));
+	const gui = guiView;
+	const shell = shellView;
+	// A window opened while the stack runs (macOS: the Dock icon or a second launch after the window was closed) shows the GUI at once; the shell view steps aside while it shows.
+	const showing = presenter.attach({
+		show: (url, onLoaded) => {
+			gui.webContents.once("did-finish-load", onLoaded);
+			void gui.webContents.loadURL(url).catch((error: Error) => runtimeLog.event({ event: "gui-load-failed", detail: error.message.slice(0, 200) }));
+			shell.setVisible(false);
+		},
+	});
+	// Blank until the supervisor loads the GUI; a view that never navigates has no renderer, which a CDP client such as Playwright waits on forever.
+	if (!showing) void gui.webContents.loadURL("about:blank");
 }
 
 function buildMenu(): void {
@@ -144,6 +153,8 @@ if (!app.requestSingleInstanceLock()) {
 			app.quit();
 			return;
 		}
+		// macOS: the window may have been closed while the app runs; a second launch opens it again, with the GUI.
+		if (!window) createWindow();
 		if (!window) return;
 		if (window.isMinimized()) window.restore();
 		window.focus();
