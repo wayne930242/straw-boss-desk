@@ -16,6 +16,8 @@ defaults:
     shell: bash
 
 jobs:
+  # Time budget (spec: CI anchor, Workflows). This job alone took 28.9 min on Windows before the task 8a e2e moved out and 39.8 min of a 40 min limit with it, so a slow runner
+  # would have timed it out for no fault of the code (T8A-F016). Runner variance alone is about 11 min on Windows. Each job now has the same 40 min limit and its own work.
   ci:
     name: ci (${{ matrix.os }})
     strategy:
@@ -107,22 +109,15 @@ jobs:
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: node --test --test-timeout=1500000 test/e2e-light-profile.test.ts
 
-      # The task 8a anchor, supervisor half: a real Herdr, sb server and pi started, restarted and stopped from an installed root (same download cache). The Electron
-      # half (the app killed, a second launch, --stop-stack, quit) is test/e2e/runtime.e2e.ts, which the development-build step below runs.
-      - name: Runtime supervisor, e2e
-        working-directory: app
-        env:
-          SBD_E2E_RUNTIME: "1"
-          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
-        run: node --test --test-timeout=1500000 test/e2e-runtime.test.ts
-
+      # The task 8a e2e files (test/e2e-runtime.test.ts and test/e2e/runtime.e2e.ts) run in the `runtime` job below, so this job stays well inside its limit
+      # (T8A-F016). The development build runs the rest of the Playwright suite here.
       - name: Playwright, development build
         working-directory: app
         env:
           SBD_E2E: "1"
           SBD_E2E_KIND: dev
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
-        run: npm run test:e2e
+        run: node --test --test-concurrency=1 test/e2e/app.e2e.ts
 
       - name: Playwright, release build
         working-directory: app
@@ -138,3 +133,58 @@ jobs:
           name: screenshots-${{ matrix.os }}
           path: app/test-results/screenshots
           if-no-files-found: warn
+
+  # The task 8a anchor: a real Herdr, sb server and pi started, restarted and stopped from an installed root, and the packaged app's lifecycle against the real stack.
+  # Each file installs a whole root, so they are their own job (T8A-F016) and run in parallel with `ci`. They use the development build only (the release build skips the
+  # lifecycle by design) and the same download cache as `ci`.
+  runtime:
+    name: runtime e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      # A guarded fixture that the hosted-runner guard refuses fails the job instead of skipping (spec: Fixtures that change the machine).
+      SBD_REQUIRE_HOSTED_FIXTURES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install the app's dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Package the development build (electron-builder --dir)
+        working-directory: app
+        run: npm run pack -- --dir
+
+      - name: Cache the e2e-light downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sbd-e2e-downloads
+          key: e2e-downloads-${{ runner.os }}-${{ hashFiles('stack.json') }}
+          restore-keys: e2e-downloads-${{ runner.os }}-
+
+      # Supervisor half: the supervisor started, restarted and stopped against the real programs.
+      - name: Runtime supervisor, e2e
+        working-directory: app
+        env:
+          SBD_E2E_RUNTIME: "1"
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-timeout=1500000 test/e2e-runtime.test.ts
+
+      # App half: the app killed, a second launch, --stop-stack, quit (and, on macOS, a window closed and opened again).
+      - name: Playwright, lifecycle on the development build
+        working-directory: app
+        env:
+          SBD_E2E: "1"
+          SBD_E2E_KIND: dev
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-concurrency=1 test/e2e/runtime.e2e.ts
