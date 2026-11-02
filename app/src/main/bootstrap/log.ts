@@ -113,7 +113,7 @@ export class Redactor {
 export type LogValue = string | number | boolean | null | undefined | LogValue[] | { [key: string]: LogValue };
 
 /** Redacts every string of a value, and every key, before it is serialized: a secret with a quote or a backslash in it would not match once JSON-escaped. */
-function redactValue(redactor: Redactor, value: LogValue): LogValue {
+export function redactValue(redactor: Redactor, value: LogValue): LogValue {
 	if (typeof value === "string") return redactor.redact(value);
 	if (Array.isArray(value)) return value.map((v) => redactValue(redactor, v));
 	if (value !== null && typeof value === "object") {
