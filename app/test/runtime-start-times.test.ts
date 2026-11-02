@@ -6,7 +6,8 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { fingerprintOf, parseStartRecord, sameFingerprint, StartFile, type StartRecord } from "../src/main/runtime/start-file.ts";
 import { StartTimes } from "../src/main/runtime/start-times.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
-import { FakeProcesses } from "./harness/runtime-fakes.ts";
+import { runStop } from "../src/main/runtime/stop.ts";
+import { FakeChild, FakeProcesses, fakeClock, scriptedRun } from "./harness/runtime-fakes.ts";
 
 // Start times in state/start.json (spec: Start times: Recording, Re-recording, Adopting).
 
@@ -91,7 +92,7 @@ describe("Recording (macOS: at once)", () => {
 		const { file, procs, times, tool, record } = setup({ eager: true });
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S1", executable: tool("node") });
 		await file.update(() => record());
-		await times.herdrReady("started");
+		await times.herdrReady("started", new FakeChild(100));
 		await times.sbReady(200, "started");
 		const got = file.read();
 		assert.deepEqual(got?.herdr, { pid: 100, startTime: "H1" });
@@ -111,10 +112,11 @@ describe("Recording (macOS: at once)", () => {
 		const { file, procs, times, record, log } = setup({ eager: true });
 		procs.add(100, { startTime: "H1", executable: null });
 		await file.update(() => record());
-		await times.herdrReady("started");
+		const child = new FakeChild(100);
+		await times.herdrReady("started", child);
 		assert.equal(file.read()?.herdr?.startTime, "H1");
 		procs.add(100, { startTime: null, executable: null });
-		await times.herdrReady("started");
+		await times.herdrReady("started", child);
 		assert.equal(file.read()?.herdr?.startTime, null);
 		assert.ok(log.some((l) => l.event === "start-time-unreadable"));
 	});
@@ -155,7 +157,7 @@ describe("Recording (Windows: nothing before the GUI shows, then one call)", () 
 		const { file, procs, times, tool, record } = setup({ eager: false });
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S1", executable: tool("node") });
 		await file.update(() => record());
-		await times.herdrReady("started");
+		await times.herdrReady("started", new FakeChild(100));
 		await times.sbReady(200, "started");
 		assert.deepEqual(procs.inspectCalls, [], "nothing is read before the GUI shows");
 		assert.deepEqual(file.read()?.herdr, { pid: 100, startTime: null });
@@ -186,7 +188,7 @@ describe("Re-recording", () => {
 		const { file, procs, times, tool, record } = setup({ eager: true });
 		await file.update(() => record({ herdr: { pid: 100, startTime: "H1" }, sb: { pid: 200, startTime: "S1", slotDir: "/slot" } }));
 		procs.add(201, { startTime: "S2", executable: tool("node") });
-		await times.rerecord("sb", 201, { byApp: false });
+		await times.rerecord("sb", 201, {});
 		const got = file.read();
 		assert.deepEqual(got?.sb, { pid: 201, startTime: "S2", slotDir: "/slot" });
 		assert.deepEqual(got?.herdr, { pid: 100, startTime: "H1" }, "the other process keeps its record");
@@ -197,7 +199,7 @@ describe("Re-recording", () => {
 		const { file, procs, times, record } = setup({ eager: true });
 		await file.update(() => record());
 		procs.add(101, { startTime: "H2", executable: null });
-		await times.rerecord("herdr", 101, { byApp: true });
+		await times.rerecord("herdr", 101, { handle: new FakeChild(101) });
 		assert.deepEqual(file.read()?.herdr, { pid: 101, startTime: "H2" });
 	});
 
@@ -205,7 +207,7 @@ describe("Re-recording", () => {
 		const { file, procs, times, record, log } = setup({ eager: true });
 		await file.update(() => record({ sb: { pid: 200, startTime: "S1", slotDir: "/slot" } }));
 		procs.add(555, { startTime: "X", executable: "/usr/bin/python3" });
-		await times.rerecord("sb", 555, { byApp: false });
+		await times.rerecord("sb", 555, {});
 		assert.deepEqual(file.read()?.sb, { pid: 555, startTime: null, slotDir: "/slot" });
 		assert.ok(log.some((l) => l.event === "start-time-refused" && l.pid === 555));
 	});
@@ -215,7 +217,7 @@ describe("Re-recording", () => {
 		await file.update(() => record());
 		procs.inspectDelayMs = 15;
 		procs.add(301, { startTime: "a", executable: tool("node") }).add(302, { startTime: "b", executable: tool("node") }).add(303, { startTime: "c", executable: tool("herdr") });
-		await Promise.all([times.rerecord("sb", 301, { byApp: false }), times.rerecord("sb", 302, { byApp: false }), times.rerecord("herdr", 303, { byApp: true })]);
+		await Promise.all([times.rerecord("sb", 301, {}), times.rerecord("sb", 302, {}), times.rerecord("herdr", 303, { handle: new FakeChild(303) })]);
 		assert.equal(procs.maxConcurrentInspect, 1);
 		assert.equal(file.read()?.sb?.pid, 302, "the later restart wins");
 		assert.equal(file.read()?.sb?.startTime, "b");
@@ -225,7 +227,101 @@ describe("Re-recording", () => {
 	it("leaves nothing when the record is gone", async () => {
 		const { file, procs, times, tool } = setup({ eager: true });
 		procs.add(1, { startTime: "t", executable: tool("node") });
-		await times.rerecord("sb", 1, { byApp: false });
+		await times.rerecord("sb", 1, {});
 		assert.equal(file.read(), null);
+	});
+});
+
+describe("a start time is recorded only for a process that is the app's through the whole read (T8A-F001)", () => {
+	// A stop whose CLIs do nothing and whose Herdr never answers: only the kill step decides.
+	async function stopWith(w: ReturnType<typeof setup>, handle: FakeChild | null) {
+		const run = scriptedRun([{ match: () => true, answer: { code: 0 } }]);
+		return runStop({
+			layout: w.layout,
+			processes: w.procs,
+			run,
+			startFile: w.file,
+			herdr: { stopServer: async () => ({ code: 1, text: "no server" }), answers: async () => false } as never,
+			env: {},
+			nodePath: "node",
+			sbCli: join(w.layout.agent, "npm", "node_modules", "pi-straw-boss", "dist", "server", "cli.mjs"),
+			herdrHandle: handle,
+			clock: fakeClock(),
+			log: (f) => w.log.push(f),
+			pidAlive: (pid) => w.procs.has(pid),
+		});
+	}
+
+	it("records nothing when the Herdr the app started ended during the read and its pid went to a program under <root>/tools, and a stop then kills nothing", async () => {
+		const w = setup({ eager: false });
+		w.procs.add(100, { startTime: "H1", executable: w.tool("herdr") });
+		await w.file.update(() => w.record({ sb: null }));
+		const child = new FakeChild(100);
+		await w.times.herdrReady("started", child);
+		// Windows: the read is a PowerShell call after the GUI shows. Herdr ends while it runs and another program of the app (a node under tools) gets the pid; the read
+		// returns that program's start time and executable, which pass the executable check, so only the handle can tell.
+		const read = w.procs.inspect.bind(w.procs);
+		w.procs.inspect = async (pids) => {
+			child.end(1);
+			w.procs.table.set(100, { startTime: "STRANGER", executable: w.tool("node") });
+			return read(pids);
+		};
+		await w.times.flush();
+		assert.equal(w.file.read()?.herdr?.startTime, null, "the stranger's start time is not Herdr's");
+		assert.ok(w.log.some((l) => l.event === "start-time-refused" && l.pid === 100));
+		assert.ok(!w.log.some((l) => l.event === "start-time-recorded"));
+		const report = await stopWith(w, child);
+		assert.deepEqual(w.procs.killed, [], "the program that holds the pid now is never killed");
+		assert.deepEqual(report.refused.map((r) => [r.what, r.pid, r.reason]), [["herdr", 100, "no-start-time"]]);
+	});
+
+	it("records nothing when the handle had already ended before the read ran", async () => {
+		const w = setup({ eager: false });
+		w.procs.add(100, { startTime: "H1", executable: w.tool("herdr") });
+		await w.file.update(() => w.record({ sb: null }));
+		const child = new FakeChild(100);
+		await w.times.herdrReady("started", child);
+		child.end(1);
+		await w.times.flush();
+		assert.equal(w.file.read()?.herdr?.startTime, null);
+	});
+
+	it("records nothing for a restarted Herdr whose handle ended during the read, and keeps recording one whose handle is still held", async () => {
+		const w = setup({ eager: false });
+		await w.file.update(() => w.record());
+		const gone = new FakeChild(101);
+		w.procs.add(101, { startTime: "H2", executable: w.tool("herdr") });
+		const read = w.procs.inspect.bind(w.procs);
+		w.procs.inspect = async (pids) => {
+			gone.end(1);
+			return read(pids);
+		};
+		await w.times.rerecord("herdr", 101, { handle: gone });
+		assert.deepEqual(w.file.read()?.herdr, { pid: 101, startTime: null }, "the old record is gone and no new one was written");
+		w.procs.inspect = read;
+		w.procs.add(102, { startTime: "H3", executable: w.tool("herdr") });
+		await w.times.rerecord("herdr", 102, { handle: new FakeChild(102) });
+		assert.deepEqual(w.file.read()?.herdr, { pid: 102, startTime: "H3" });
+	});
+
+	it("never trusts a restarted Herdr given without a handle: the executable check applies", async () => {
+		const w = setup({ eager: false });
+		await w.file.update(() => w.record());
+		w.procs.add(103, { startTime: "H4", executable: "/usr/bin/python3" });
+		await w.times.rerecord("herdr", 103, {});
+		assert.equal(w.file.read()?.herdr?.startTime, null);
+	});
+
+	it("refuses a start time whose executable is outside <root>/tools even while the handle is held, and still records one whose executable cannot be read", async () => {
+		const w = setup({ eager: true });
+		await w.file.update(() => w.record({ sb: null }));
+		w.procs.add(100, { startTime: "H1", executable: "/usr/bin/python3" });
+		const child = new FakeChild(100);
+		await w.times.herdrReady("started", child);
+		assert.equal(w.file.read()?.herdr?.startTime, null);
+		assert.ok(w.log.some((l) => l.event === "start-time-refused" && /not under/.test(String(l.why))));
+		w.procs.add(100, { startTime: "H1", executable: null });
+		await w.times.herdrReady("started", child);
+		assert.equal(w.file.read()?.herdr?.startTime, "H1", "an unreadable executable is covered by the handle alone");
 	});
 });

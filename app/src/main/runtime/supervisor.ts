@@ -409,11 +409,11 @@ export class Supervisor {
 		}
 		if (options.restart) {
 			// Drops the old record and reads the new pid's start time, queued behind any read in flight; on Windows the read does not hold the restart.
-			const recorded = this.#times.rerecord("herdr", pid, { byApp: true });
+			const recorded = this.#times.rerecord("herdr", pid, { handle: child });
 			if (layout.platform === "darwin") await recorded;
 			else void recorded.catch((error: Error) => log({ event: "rerecord-failed", detail: error.message }));
 		} else {
-			await this.#times.herdrReady("started");
+			await this.#times.herdrReady("started", child);
 		}
 	}
 
@@ -578,7 +578,7 @@ export class Supervisor {
 	noteSbServer(pid: number): Promise<void> {
 		this.#lastSbPid = pid;
 		this.#d.log({ event: "sb-server-restarted", pid });
-		return this.#times.rerecord("sb", pid, { byApp: false, ...(this.#slotDir !== null ? { slotDir: this.#slotDir } : {}) });
+		return this.#times.rerecord("sb", pid, { ...(this.#slotDir !== null ? { slotDir: this.#slotDir } : {}) });
 	}
 
 	// ---- stop --------------------------------------------------------------------------------------------------------

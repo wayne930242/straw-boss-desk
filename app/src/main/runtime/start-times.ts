@@ -1,6 +1,6 @@
 import type { Layout } from "../paths.ts";
 import type { ProcessInfo, Processes } from "../platform/types.ts";
-import { isUnderTools, SerialQueue } from "./identity.ts";
+import { handleHeld, isUnderTools, SerialQueue, type ProcHandle } from "./identity.ts";
 import type { RuntimeEvent } from "./log.ts";
 import type { ProcessRecord, StartFile, StartRecord } from "./start-file.ts";
 
@@ -10,7 +10,10 @@ import type { ProcessRecord, StartFile, StartRecord } from "./start-file.ts";
 //   - a process the app did not start (`up`'s answer, the follower's `server.json` pid) is recorded only when the same read shows its executable under `<root>/tools`;
 //   - a process the app finds running (adoption) keeps its old record only when the start time read now equals it; a mismatch or no record drops the start time;
 //   - on Windows each read is a PowerShell start of 2 to 5 s, so nothing is read before the GUI shows (the Herdr the app started is covered by its handle); the
-//     reads of a start are one call after the GUI shows, and every later read waits its turn in a queue so two never overlap. macOS reads at once (`ps`).
+//     reads of a start are one call after the GUI shows, and every later read waits its turn in a queue so two never overlap. macOS reads at once (`ps`);
+//   - the Herdr the app started is recorded only if its handle is still held, and not exited, when the read has returned (T8A-F001): the handle is what keeps its
+//     pid from being given to another program, so a handle that ended during a late read means the start time may be a stranger's. Its executable must also lie
+//     under `<root>/tools` whenever the read can tell.
 
 export type Kind = "herdr" | "sb";
 
@@ -24,6 +27,8 @@ export class StartTimes {
 	readonly #log: RuntimeEvent;
 	readonly #queue = new SerialQueue();
 	readonly #plan: Partial<Record<Kind, Plan>> = {};
+	/** The handle of the Herdr the app started, for the plan `record-trusted`: it must still be held after the read. */
+	#herdrHandle: ProcHandle | null = null;
 	readonly #eager: boolean;
 
 	constructor(deps: { layout: Layout; processes: Processes; startFile: StartFile; log: RuntimeEvent; eager?: boolean }) {
@@ -35,9 +40,15 @@ export class StartTimes {
 		this.#eager = deps.eager ?? deps.layout.platform === "darwin";
 	}
 
-	/** The Herdr server of this run, already written to `start.json` without a start time: one the app started (its handle covers it; the start time is recorded on top) or one it found and reused (adopted). */
-	async herdrReady(how: "started" | "reused"): Promise<void> {
+	/**
+	 * The Herdr server of this run, already written to `start.json` without a start time: one the app started (its handle covers it; the start time is recorded on
+	 * top, only while the handle is still held after the read) or one it found and reused (adopted).
+	 */
+	herdrReady(how: "reused"): Promise<void>;
+	herdrReady(how: "started", handle: ProcHandle): Promise<void>;
+	async herdrReady(how: "started" | "reused", handle?: ProcHandle): Promise<void> {
 		this.#plan.herdr = how === "started" ? "record-trusted" : "adopt";
+		this.#herdrHandle = how === "started" ? (handle ?? null) : null;
 		if (this.#eager) await this.flush();
 	}
 
@@ -55,8 +66,10 @@ export class StartTimes {
 	flush(): Promise<void> {
 		return this.#queue.run(async () => {
 			const plan = { ...this.#plan };
+			const herdrHandle = this.#herdrHandle;
 			this.#plan.herdr = undefined;
 			this.#plan.sb = undefined;
+			this.#herdrHandle = null;
 			const current = this.#file.read();
 			const wanted: number[] = [];
 			if (plan.herdr !== undefined && plan.herdr !== "none" && current?.herdr) wanted.push(current.herdr.pid);
@@ -67,14 +80,15 @@ export class StartTimes {
 			await this.#file.update((record) => {
 				if (record === null) return null;
 				const next: StartRecord = { ...record };
-				if (plan.herdr !== undefined && record.herdr) next.herdr = this.#apply("herdr", plan.herdr, record.herdr, byPid.get(record.herdr.pid));
-				if (plan.sb !== undefined && record.sb) next.sb = { ...this.#apply("sb", plan.sb, record.sb, byPid.get(record.sb.pid)), slotDir: record.sb.slotDir };
+				if (plan.herdr !== undefined && record.herdr) next.herdr = this.#apply("herdr", plan.herdr, record.herdr, byPid.get(record.herdr.pid), herdrHandle);
+				if (plan.sb !== undefined && record.sb) next.sb = { ...this.#apply("sb", plan.sb, record.sb, byPid.get(record.sb.pid), null), slotDir: record.sb.slotDir };
 				return next;
 			});
 		});
 	}
 
-	#apply(kind: Kind, plan: Plan, held: ProcessRecord, info: ProcessInfo | undefined): ProcessRecord {
+	/** `handle`: the app's handle for the process, consulted only by `record-trusted`, and consulted here, after the read has returned (T8A-F001). */
+	#apply(kind: Kind, plan: Plan, held: ProcessRecord, info: ProcessInfo | undefined, handle: ProcHandle | null): ProcessRecord {
 		const keep = (startTime: string | null): ProcessRecord => ({ pid: held.pid, startTime });
 		const read = info?.startTime ?? null;
 		switch (plan) {
@@ -91,6 +105,17 @@ export class StartTimes {
 			case "record-trusted":
 				if (read === null) {
 					this.#log({ event: "start-time-unreadable", kind, pid: held.pid });
+					return keep(null);
+				}
+				// The read took 2 to 5 s on Windows; the process may have ended during it and its pid gone to another program. Only a handle that is still held now proves
+				// the pid was ours through the whole read (the OS keeps the pid until the handle's exit is reaped).
+				if (!handleHeld(handle) || handle.pid !== held.pid) {
+					this.#log({ event: "start-time-refused", kind, pid: held.pid, why: "the process handle is no longer held, so the pid may belong to another program" });
+					return keep(null);
+				}
+				// An executable that can be read must be the app's own; one that cannot be read is covered by the handle alone.
+				if (info?.executable != null && !isUnderTools(this.#layout, info.executable)) {
+					this.#log({ event: "start-time-refused", kind, pid: held.pid, why: "its executable is not under the app's tools folder" });
 					return keep(null);
 				}
 				this.#log({ event: "start-time-recorded", kind, pid: held.pid, trusted: true });
@@ -112,11 +137,13 @@ export class StartTimes {
 
 	/**
 	 * A restart: the process of `kind` now has `pid`. The old record goes first (the new pid is written with no start time, so nothing is ever killed by the old
-	 * one), then the new pid's start time is read the same way as a first one and written. `byApp`: the app started the process (its handle covers it, so no executable check).
+	 * one), then the new pid's start time is read the same way as a first one and written. `handle`: the app started the process and holds this handle (it covers the pid
+	 * only while it is held after the read); without one the executable check applies, as for any pid the app did not start.
 	 * Queued behind any read in flight. Resolves when the record is written.
 	 */
-	rerecord(kind: Kind, pid: number, options: { byApp: boolean; slotDir?: string }): Promise<void> {
-		this.#log({ event: "rerecord", kind, pid, byApp: options.byApp });
+	rerecord(kind: Kind, pid: number, options: { handle?: ProcHandle | null; slotDir?: string }): Promise<void> {
+		const handle = options.handle ?? null;
+		this.#log({ event: "rerecord", kind, pid, byApp: handle !== null });
 		return this.#queue.run(async () => {
 			await this.#file.update((record) => {
 				if (record === null) return null;
@@ -130,7 +157,7 @@ export class StartTimes {
 				const held = kind === "herdr" ? record.herdr : record.sb;
 				// The record may have moved on while the read ran (another restart): only the pid that was read is written.
 				if (held === null || held.pid !== pid) return record;
-				const done = this.#apply(kind, options.byApp ? "record-trusted" : "record", held, info);
+				const done = this.#apply(kind, handle !== null ? "record-trusted" : "record", held, info, handle);
 				return kind === "herdr" ? { ...record, herdr: done } : record.sb ? { ...record, sb: { ...done, slotDir: record.sb.slotDir } } : record;
 			});
 		});
