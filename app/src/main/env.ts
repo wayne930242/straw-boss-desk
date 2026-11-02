@@ -168,7 +168,10 @@ export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optiona
 	if (proxy?.env.NO_PROXY !== undefined) mergeNoProxy(out, proxy.env.NO_PROXY, win);
 
 	const own = P.delimiter;
-	const entries = toolPathEntries(layout, current);
+	// Windows: `tools\shims` (pi.cmd, bash.cmd) comes right after the launchers and before the npm prefix, whose own `pi.cmd` wrapper a pane would otherwise find first (R6-F004).
+	// The paths file the launchers read stays as it is: the shims and launchers call the real programs themselves.
+	const tool = toolPathEntries(layout, current);
+	const entries = win ? [...tool.slice(0, 2), layout.tools.shims, ...tool.slice(2)] : tool;
 	const base = win ? (lookup(appEnv, "PATH", true)?.[1] ?? "").split(own).filter((e) => e !== "") : MAC_BASE_PATH;
 	const same = (a: string, b: string): boolean => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
 	const rest = base.filter((e) => !entries.some((own2) => same(own2, e)));

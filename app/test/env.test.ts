@@ -62,7 +62,7 @@ describe("buildEnv", () => {
 		}
 	});
 
-	it("puts tools/bin first on PATH (on Windows tools/bin-exe next, T5-F001), then Node, the npm prefix, Git, and Herdr, then the rest", () => {
+	it("puts tools/bin first on PATH (on Windows tools/bin-exe, then tools/shims, T5-F001, R6-F004), then Node, the npm prefix, Git, and Herdr, then the rest", () => {
 		const mac = fakeLayout("darwin");
 		const macEnv = buildEnv({ layout: mac, current, appEnv: { PATH: "/opt/homebrew/bin:/usr/bin" } });
 		assert.deepEqual(macEnv.PATH?.split(":"), [
@@ -72,9 +72,13 @@ describe("buildEnv", () => {
 		const win = fakeLayout("win32");
 		const winEnv = buildEnv({ layout: win, current, appEnv: { Path: `C:\\Windows\\System32;${win.tools.bin};C:\\Windows` } });
 		assert.deepEqual(winEnv.PATH?.split(";"), [
-			`${win.root}\\tools\\bin`, `${win.root}\\tools\\bin-exe`, `${win.root}\\tools\\node\\24.22.1`, `${win.root}\\tools\\npm`, `${win.root}\\tools\\git\\2.56.0\\cmd`, `${win.root}\\tools\\git\\2.56.0\\bin`, `${win.root}\\tools\\herdr\\0.9.5`,
+			`${win.root}\\tools\\bin`, `${win.root}\\tools\\bin-exe`, `${win.root}\\tools\\shims`, `${win.root}\\tools\\node\\24.22.1`, `${win.root}\\tools\\npm`, `${win.root}\\tools\\git\\2.56.0\\cmd`, `${win.root}\\tools\\git\\2.56.0\\bin`, `${win.root}\\tools\\herdr\\0.9.5`,
 			"C:\\Windows\\System32", "C:\\Windows",
 		], "Windows keeps the rest of the inherited PATH, once");
+		// R6-F004: a pane's `pi` finds the desk's pi.cmd in tools\\shims before npm's own wrapper in tools\\npm.
+		const at = (folder: string) => (winEnv.PATH ?? "").split(";").indexOf(folder);
+		assert.ok(at(win.tools.shims) >= 0 && at(win.tools.shims) < at(win.tools.npm));
+		assert.equal((macEnv.PATH ?? "").includes("shims"), false, "macOS has no shims folder");
 	});
 
 	it("sets ZDOTDIR on macOS only", () => {
