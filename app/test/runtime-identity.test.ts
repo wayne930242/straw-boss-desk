@@ -175,7 +175,10 @@ describe("the listing and the reads never touch a process command line", () => {
 			assert.ok(call.file === ps || call.file === lsof, call.file);
 			const text = call.args.join(" ");
 			if (call.file === ps) assert.equal(text, "-o pid=,lstart= -p 100");
-			else assert.match(text, /^(-a -p 100 )?-d txt -Fpn$/);
+			else {
+				assert.match(text, /^(-a -p 100 )?-d txt -Fpn$/);
+				assert.equal(call.options?.env?.LC_ALL, "en_US.UTF-8", "lsof prints a non-ASCII path raw, whatever the app's locale");
+			}
 			assert.ok(!/\bargs\b|\bcommand\b|\bcomm\b|-ww|-E\b/.test(text), `no command line asked for in: ${text}`);
 		}
 		assert.deepEqual([...parseLsofExecutables("p100\nn/r/tools/node/bin/node\nn/usr/lib/dyld\n")], [[100, "/r/tools/node/bin/node"]], "the first n line is the program, the rest are libraries");
