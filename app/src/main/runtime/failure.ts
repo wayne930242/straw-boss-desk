@@ -30,6 +30,7 @@ export type StartFailureKind =
 	| "loader" // kit 19
 	| "intercom" // kit 19
 	| "acl" // kit 19
+	| "acl-admin" // kit 19, an `acl` refusal that names the Administrators group: the app runs with an administrator token (T8A-F005)
 	| "usage" // kit 20
 	| "no-url" // kit 21
 	| "slot" // kit 22
@@ -62,6 +63,7 @@ export const KIT_EXIT_CODE: Readonly<Record<StartFailureKind, number | null>> = 
 	loader: 19,
 	intercom: 19,
 	acl: 19,
+	"acl-admin": 19,
 	usage: 20,
 	"no-url": 21,
 	slot: 22,

@@ -45,6 +45,7 @@ export const zhTW: Messages = {
 			loader: "Straw Boss 缺少一個元件。請執行「修復」重新安裝。",
 			intercom: "Straw Boss 的一個元件版本太舊。請執行「修復」重新安裝。",
 			acl: "Straw Boss 服務的資料夾無法加以保護，或屬於另一個帳號。詳細資料會說明該怎麼做。",
+			"acl-admin": "Straw Boss Desk 無法以系統管理員身分執行。請照一般方式開啟（不要選「以系統管理員身分執行」）。",
 			usage: "應用程式用錯誤的方式呼叫 Straw Boss 服務。這是程式錯誤；請收集診斷資料。",
 			"no-url": "Straw Boss 服務沒有提供頁面的網址。請再試一次。",
 			slot: "Straw Boss 服務在另一個資料夾執行，不是這個應用程式的資料夾。請收集診斷資料。",

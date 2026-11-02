@@ -41,9 +41,17 @@ export function upAnswerOf(run: { code: number | null; stdout: string; stderr: s
 }
 
 /** Which row of the `up` exit table an answer is. `ok` also needs a URL. */
-export type UpClass = "ok" | "nourl" | "usage" | "loader" | "intercom" | "acl" | "cannotrun" | "lock" | "start" | "hello" | "exit" | "herdr" | "version" | "server" | "gui" | "base" | "basebusy" | "integration" | "tower" | "other";
+export type UpClass = "ok" | "nourl" | "usage" | "loader" | "intercom" | "acl" | "acladmin" | "cannotrun" | "lock" | "start" | "hello" | "exit" | "herdr" | "version" | "server" | "gui" | "base" | "basebusy" | "integration" | "tower" | "other";
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
+
+/**
+ * True when the text of an `acl` refusal names the Administrators group (`BA`, `S-1-5-32-544`, or its name). pi-straw-boss 0.51.0 protects its folder with
+ * `icacls /inheritance:r /grant:r <user> SYSTEM` and then wants exactly the owner and SYSTEM; under a full administrator token (Run as administrator, UAC off, the
+ * built-in Administrator) the folder also carries an explicit `BA` entry, and the refusal says "the folder grants BA, who is neither the owner nor SYSTEM"
+ * (seam U12). The app never touches that folder's ACL; it only says what to do.
+ */
+export const namesAdministrators = (text: string): boolean => /\bBA\b|S-1-5-32-544|\bAdministrators\b/.test(text);
 
 export function classifyUp(answer: UpAnswer): UpClass {
 	if (answer.exit === 0) return typeof answer.ok?.url === "string" && answer.ok.url !== "" ? "ok" : "nourl";
@@ -52,7 +60,8 @@ export function classifyUp(answer: UpAnswer): UpClass {
 	if (answer.exit === 3) {
 		const startError = isObject(err?.startError) ? err.startError : null;
 		const code = str(startError?.code);
-		return code === "loader" || code === "intercom" || code === "acl" ? code : "cannotrun";
+		if (code === "acl") return namesAdministrators(`${str(startError?.text)}\n${str(err?.reason)}`) ? "acladmin" : "acl";
+		return code === "loader" || code === "intercom" ? code : "cannotrun";
 	}
 	if (answer.exit === 1 && err !== null) {
 		const step = str(err.step);
@@ -71,6 +80,7 @@ const KIND_OF: Readonly<Record<Exclude<UpClass, "ok">, StartFailureKind>> = {
 	loader: "loader",
 	intercom: "intercom",
 	acl: "acl",
+	acladmin: "acl-admin",
 	cannotrun: "cannot-run",
 	lock: "lock",
 	start: "start",

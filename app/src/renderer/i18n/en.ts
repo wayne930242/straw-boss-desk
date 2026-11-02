@@ -45,6 +45,7 @@ export const en = {
 			loader: "A part of Straw Boss is missing. Run Repair to reinstall it.",
 			intercom: "A part of Straw Boss is too old. Run Repair to reinstall it.",
 			acl: "The Straw Boss service's folder cannot be protected, or belongs to another account. The details say what to do.",
+			"acl-admin": "Straw Boss Desk can't run as administrator. Open it normally (not 'Run as administrator').",
 			usage: "The app called the Straw Boss service wrongly. This is a bug; collect diagnostics.",
 			"no-url": "The Straw Boss service gave no address for the page. Try again.",
 			slot: "The Straw Boss service runs in another folder than this app's. Collect diagnostics.",

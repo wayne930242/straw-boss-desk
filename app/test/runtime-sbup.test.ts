@@ -75,7 +75,7 @@ describe("the kit's exit codes are typed failures with a sentence in both catalo
 	it("carries every code of start.ps1 (2 to 27) as a kind", () => {
 		const expected: Record<string, number> = {
 			"tool-missing": 2, "foreign-stack": 3, "herdr-silent": 4, lock: 10, start: 11, hello: 12, exit: 13, herdr: 14, version: 15, server: 16, gui: 17, other: 18,
-			"cannot-run": 19, loader: 19, intercom: 19, acl: 19, usage: 20, "no-url": 21, slot: 22, "base-busy": 23, base: 24, integration: 25, "no-base": 26, tower: 27,
+			"cannot-run": 19, loader: 19, intercom: 19, acl: 19, "acl-admin": 19, usage: 20, "no-url": 21, slot: 22, "base-busy": 23, base: 24, integration: 25, "no-base": 26, tower: 27,
 		};
 		for (const [kind, code] of Object.entries(expected)) assert.equal(KIT_EXIT_CODE[kind as keyof typeof KIT_EXIT_CODE], code, kind);
 		assert.deepEqual([...new Set(Object.values(expected))].sort((x, y) => x - y), [2, 3, 4, ...Array.from({ length: 18 }, (_, i) => i + 10)], "2 to 4 and 10 to 27: the codes 5 to 9 were reserved or never used");
@@ -96,6 +96,13 @@ describe("classifyUp", () => {
 		assert.equal(classifyUp(answer({ exit: 0, ok: { pid: 1 } })), "nourl");
 		assert.equal(classifyUp(answer({ exit: 2 })), "usage");
 		for (const code of ["loader", "intercom", "acl"]) assert.equal(classifyUp(failure({ startError: { code } }, 3)), code);
+		// An `acl` refusal that names the Administrators group is its own row (T8A-F005); any other acl text stays `acl`.
+		const grantsBA = "could not protect C:\\agent\\straw-boss before writing to it: the folder grants BA, who is neither the owner nor SYSTEM; the folder has 3 ACEs, not 2";
+		assert.equal(classifyUp(failure({ startError: { code: "acl", text: grantsBA } }, 3)), "acladmin");
+		assert.equal(classifyUp(failure({ startError: { code: "acl", text: "the folder grants S-1-5-32-544, who is neither the owner nor SYSTEM" } }, 3)), "acladmin");
+		assert.equal(classifyUp(failure({ startError: { code: "acl", text: "the folder grants BUILTIN\\Administrators, who is neither the owner nor SYSTEM" } }, 3)), "acladmin");
+		assert.equal(classifyUp(failure({ startError: { code: "acl", text: "the folder grants S-1-5-21-1-2-3-1001, who is neither the owner nor SYSTEM" } }, 3)), "acl");
+		assert.equal(classifyUp(failure({ startError: { code: "acl", text: "icacls was not found; the folder is owned by BABA" } }, 3)), "acl", "BA is a word of its own, not a part of another");
 		assert.equal(classifyUp(failure({ startError: { code: "other" } }, 3)), "cannotrun");
 		assert.equal(classifyUp(answer({ exit: 3 })), "cannotrun");
 		for (const wait of ["lock", "start", "hello", "exit"]) assert.equal(classifyUp(failure({ step: "server", wait })), wait);
@@ -190,6 +197,13 @@ describe("runUp: the retry rules", () => {
 		const error = await failureOf(runUp(acl));
 		assert.equal(error.failure.kind, "acl");
 		assert.equal(error.failure.startError?.code, "acl");
+		// Under an administrator token: its own kind, still without a retry, and the tool's text stays under Details.
+		const admin = deps([failure({ startError: { code: "acl", text: "could not protect C:\\agent\\straw-boss before writing to it: the folder grants BA, who is neither the owner nor SYSTEM" }, reason: "cannot run" }, 3)]);
+		const asAdmin = await failureOf(runUp(admin));
+		assert.equal(asAdmin.failure.kind, "acl-admin");
+		assert.equal(asAdmin.failure.startError?.code, "acl");
+		assert.match(asAdmin.failure.startError?.text ?? "", /grants BA/);
+		assert.equal(admin.ran, 1, "an elevated token is not retried");
 		assert.ok(!error.failure.startError?.text.includes(TOKEN));
 		const failedRepair = deps([failure({ startError: { code: "loader" } }, 3)], { repairPackage: async () => false });
 		assert.equal((await failureOf(runUp(failedRepair))).failure.kind, "loader");

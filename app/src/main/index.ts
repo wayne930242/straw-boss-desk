@@ -37,6 +37,7 @@ const supervisor = new Supervisor({
 	home,
 	platform,
 	run,
+	// SAFETY: a `ChildProcess` has every member of `HerdrChild`; the cast only narrows `spawn`'s many overloads to the one call the supervisor makes.
 	spawn: spawn as unknown as SpawnFn,
 	appEnv: process.env,
 	config: () => loadStartConfig(layout, home),
