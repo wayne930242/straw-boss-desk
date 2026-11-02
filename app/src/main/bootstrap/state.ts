@@ -302,7 +302,7 @@ export function osPidAlive(pid: number): boolean {
 	}
 }
 
-interface LockOwner {
+export interface LockOwner {
 	pid: number;
 	startTime: string | null;
 }
@@ -342,7 +342,7 @@ export async function acquireEngineLock(layout: Layout, processes: Processes, pi
 		}
 		const text = readText(file);
 		if (text === null) continue; // released between the failed create and the read
-		const owner = parseOwner(text);
+		const owner = parseLockOwner(text);
 		if (owner === null) {
 			if (ageMs(file) < grace) throw new EngineLockedError(`another engine is writing ${file}`);
 		} else if (await ownerAlive(owner, processes, pid, mine, pidAlive)) {
@@ -405,7 +405,7 @@ function ageMs(file: string): number {
 	}
 }
 
-function parseOwner(text: string): LockOwner | null {
+export function parseLockOwner(text: string): LockOwner | null {
 	try {
 		const value: unknown = JSON.parse(text);
 		if (isObject(value) && typeof value.pid === "number") return { pid: value.pid, startTime: typeof value.startTime === "string" ? value.startTime : null };

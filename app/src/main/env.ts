@@ -65,8 +65,19 @@ export function systemEnv(platform: "win32" | "darwin", appEnv: EnvLike): EnvMap
  * paths). A program that reaches bun without its launcher (a spawn without a shell finds the `bun.exe` shim) gets these from here; on Windows the paths
  * are long names, and bun reads them as ANSI, which only the launcher's short names survive (build notes: task 5b, T5-F001).
  */
-export const optionalToolEnv = (layout: Layout, tool: string): EnvMap =>
-	tool === "bun" ? { BUN_INSTALL: bunHome(layout), BUN_INSTALL_CACHE_DIR: bunCacheDir(layout), DO_NOT_TRACK: "1" } : {};
+export const optionalToolEnv = (layout: Layout, tool: string, shortNames?: ShortNames): EnvMap =>
+	tool === "bun" ? { BUN_INSTALL: shortNames?.bunHome ?? bunHome(layout), BUN_INSTALL_CACHE_DIR: shortNames?.bunCache ?? bunCacheDir(layout), DO_NOT_TRACK: "1" } : {};
+
+/**
+ * The 8.3 short names of bun's two folders, resolved once by the supervisor (`runtime/short-names.ts`) and kept beside `state/layout.json`. bun 1.2.23 reads its
+ * environment as ANSI on Windows, so in a root with characters outside the ANSI code page the long names reach it as `?` and its cache lands in the project
+ * (task 5 build notes). A spawn without a shell reaches the `bun.exe` shim in `tools/bin-exe` with the constructed environment and nothing in between, so the
+ * environment itself must carry the short names. Absent on macOS and wherever the volume has no short names.
+ */
+export interface ShortNames {
+	bunHome: string;
+	bunCache: string;
+}
 
 /** `<root>/tools/bun-home`: bun's `BUN_INSTALL`, so its cache and global packages stay under the app's `tools/` and not in the PM's `~/.bun`. */
 export const bunHome = (layout: Layout): string => (layout.platform === "win32" ? win32 : posix).join(layout.tools.root, "bun-home");
@@ -86,6 +97,8 @@ export interface BuildEnvInput {
 	proxy?: OsProxy;
 	/** Decrypted from `secrets/linear.bin`. Pass it only for the Herdr server's environment, so panes and `ttt` see it and no file holds it. */
 	linearApiKey?: string;
+	/** Windows: bun's folders by their 8.3 names, for a recipe that names bun. */
+	shortNames?: ShortNames;
 }
 
 /** The value of `name` in `env`, Windows-style (case-insensitive) when `fold` is set. */
@@ -133,7 +146,7 @@ function mergeNoProxy(out: EnvMap, resolved: string, win: boolean): void {
 	out.no_proxy = value;
 }
 
-export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optionalTools }: BuildEnvInput): EnvMap {
+export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optionalTools, shortNames }: BuildEnvInput): EnvMap {
 	const win = layout.platform === "win32";
 	const P = win ? win32 : posix;
 	const out: EnvMap = {};
@@ -193,7 +206,7 @@ export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optiona
 		out.GIT_EXEC_PATH = posix.join(toolDir(layout, "git", current.git), "libexec", "git-core");
 		out.GIT_TEMPLATE_DIR = posix.join(toolDir(layout, "git", current.git), "share", "git-core", "templates");
 	}
-	for (const tool of optionalTools ?? []) Object.assign(out, optionalToolEnv(layout, tool));
+	for (const tool of optionalTools ?? []) Object.assign(out, optionalToolEnv(layout, tool, shortNames));
 	if (linearApiKey !== undefined && linearApiKey !== "") out.LINEAR_API_KEY = linearApiKey;
 
 	for (const name of Object.keys(out)) {
