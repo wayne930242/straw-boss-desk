@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, type Dirent } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, type Dirent } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 // The team-profile installer (port of the kit's `spike/win/lib/team-profile.mjs`; spec: Tasks 7, team-profile section 7). It copies the files of the
@@ -11,6 +11,11 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 // devices), RC-F003 (`writeAtomic` creates its temp file with `wx` and looks for links again right before each write), RC-F004 (`use-team` switches only
 // managed files, once each), RC-F005 and P3R-F002 (`neutralize` keeps recipe text from reshaping the Markdown around the team block), P3R-F003 (a
 // deletion looks for links again right before it).
+//
+// What stays open (the same-user model: whoever can swap a folder for a link inside the agent folder can already replace the installed binaries, spec
+// T4-F008): a parent folder swapped for a link in the instant between the last link check and the system call that follows it (Node has no `openat`), for a
+// write, a rename, a delete, and for the reads of `use-team` (it checks that each file is regular, then reads it); and a `<target>.sbd-tmp-<hex>` file left
+// beside the target when such a swap is undone before the rename.
 
 const STATE_DIR = ".straw-boss-profile";
 const MANIFEST = "manifest.json";
@@ -71,6 +76,9 @@ function setPath(obj: Json, path: readonly string[], value: unknown): void {
 }
 
 const shown = (v: unknown): string => JSON.stringify(String(v).slice(0, 80));
+
+/** An object with its keys sorted at every level: how the manifest is written, so a rewrite of unchanged content is byte-identical (T7-F012 b). */
+const sortObj = (o: Json): Json => Object.fromEntries(Object.keys(o).sort().map((k) => [k, isPlain(o[k]) ? sortObj(o[k] as Json) : o[k]]));
 
 /**
  * Names Windows opens as a device whatever the extension (`NUL.md` is still the null device): CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0 to COM9 and LPT0 to
@@ -142,6 +150,8 @@ export interface WriteHooks {
 	beforeTemp?: () => void;
 	/** Called after the temp name was found free, right before the exclusive create. */
 	beforeCreate?: () => void;
+	/** Called with the temp name right after the exclusive create, before the check that the name still holds what was created. */
+	afterCreate?: (tmp: string) => void;
 	/** Called after the temp file is written, before the last link check and the rename. */
 	beforeRename?: () => void;
 }
@@ -166,8 +176,8 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 		hooks.beforeCreate?.();
 		const fd = openSync(tmp, "wx");
 		try {
-			// Windows opens through a dangling link even with `wx` and creates its target, so what `wx` made must also be a plain file before anything is written.
-			if (!lstatSync(tmp).isFile()) throw new Error(`refusing to write ${shown(path)}: its temp file ${shown(basename(tmp))} is not a plain file; nothing was changed`);
+			hooks.afterCreate?.(tmp);
+			assertCreatedPlainFile(fd, tmp, path);
 			created = true;
 			writeFileSync(fd, data);
 		} finally {
@@ -179,6 +189,18 @@ export function writeAtomic(agentDir: string, path: string, data: string | Buffe
 	} catch (error) {
 		if (created) rmSync(tmp, { force: true });
 		throw error;
+	}
+}
+
+/**
+ * Windows opens through a dangling link even with `wx` and creates its target, and the entry can be swapped between the create and now: what is at the temp
+ * name must be a plain file, and the very file the descriptor holds (same device and inode), before anything is written (T7-F006).
+ */
+function assertCreatedPlainFile(fd: number, tmp: string, path: string): void {
+	const named = lstatSync(tmp, { bigint: true });
+	const opened = fstatSync(fd, { bigint: true });
+	if (!named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) {
+		throw new Error(`refusing to write ${shown(path)}: its temp file ${shown(basename(tmp))} is not a plain file, or is not the file that was created; nothing was changed`);
 	}
 }
 
@@ -199,6 +221,30 @@ function removeManaged(agentDir: string, path: string, what: string): void {
 	rmSync(path, { force: true });
 }
 
+/**
+ * Whether two paths are one file (same device and inode). On a case-insensitive volume (the default on macOS and Windows) the old and the new spelling of
+ * a profile file that only changed its letter case are one file, and a string comparison of the two names cannot tell (T7-F004).
+ */
+function sameFile(a: string, b: string): boolean {
+	try {
+		const x = lstatSync(a, { bigint: true });
+		const y = lstatSync(b, { bigint: true });
+		return x.ino !== 0n && x.dev === y.dev && x.ino === y.ino;
+	} catch {
+		return false;
+	}
+}
+
+/** `file` for a regular file, `absent` for nothing, `other` for anything else, a link included (it is looked at, never followed). */
+function fileKind(path: string): "file" | "absent" | "other" {
+	try {
+		return lstatSync(path).isFile() ? "file" : "other";
+	} catch (error) {
+		if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") return "absent";
+		throw error;
+	}
+}
+
 /** SHA256 of a regular file; anything else (a folder, a device) is refused rather than read. */
 function fileHash(path: string, rel: string): string {
 	if (!lstatSync(path).isFile()) throw new Error(`${shown(rel)} exists but is not a regular file; nothing was changed`);
@@ -215,17 +261,21 @@ function readJsonOr<T>(path: string, fallback: T): Json | T {
 	}
 }
 
-/** A file of the profile package read as text; a link, a folder, or a device in its place is refused, so a file the package points at elsewhere is never read. */
-function readPackageFile(file: string): string {
+/**
+ * A file of the profile package read as text. A link on the way (the package folder, `rules/`, `config/`, a folder below them), and a link, a folder, or a
+ * device in the file's own place, are refused, so nothing the package points at elsewhere is ever read (T7-F005).
+ */
+function readPackageFile(profileDir: string, file: string): string {
+	assertNoLinks(dirname(profileDir), dirname(file), "profile folder");
 	if (!lstatSync(file).isFile()) throw new Error(`${file} is not a regular file; the profile package is damaged`);
 	return readFileSync(file, "utf8");
 }
 
 /** A JSON file of the profile package that must hold an object; a package that ships anything else is refused by name. */
-function readJsonObject(file: string): Json {
+function readJsonObject(profileDir: string, file: string): Json {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readPackageFile(file));
+		parsed = JSON.parse(readPackageFile(profileDir, file));
 	} catch (error) {
 		throw new Error(`${file} is not readable JSON (${(error as Error).message.split("\n")[0]}); the profile package is damaged`);
 	}
@@ -246,19 +296,21 @@ export interface Profile {
 
 /** What the profile package ships and the installer copies: AGENTS.md and rules/, plus the two config objects. Skills stay in the package. */
 export function loadProfile(profileDir: string): Profile {
-	const pkg = readJsonObject(join(profileDir, "package.json"));
+	const pkg = readJsonObject(profileDir, join(profileDir, "package.json"));
 	const version = safeSegment(pkg.version, "profile version");
 	const files = new Map<string, string>();
-	for (const rel of ["AGENTS.md"]) files.set(rel, readPackageFile(join(profileDir, rel)));
+	for (const rel of ["AGENTS.md"]) files.set(rel, readPackageFile(profileDir, join(profileDir, rel)));
+	// A `rules` that is a link is refused before it is listed, a dangling one too: only a real folder, or nothing, is a profile without rules.
+	assertNoLinks(profileDir, join(profileDir, "rules"), "profile folder");
 	if (existsSync(join(profileDir, "rules"))) {
-		for (const rel of walk(join(profileDir, "rules"), profileDir)) files.set(safeRel(rel, "profile file"), readPackageFile(join(profileDir, ...rel.split("/"))));
+		for (const rel of walk(join(profileDir, "rules"), profileDir)) files.set(safeRel(rel, "profile file"), readPackageFile(profileDir, join(profileDir, ...rel.split("/"))));
 	}
 	return {
 		name: String(pkg.name),
 		version,
 		files,
-		settings: readJsonObject(join(profileDir, "config", "settings.json")),
-		herdr: readJsonObject(join(profileDir, "config", "herdr-agents.json")),
+		settings: readJsonObject(profileDir, join(profileDir, "config", "settings.json")),
+		herdr: readJsonObject(profileDir, join(profileDir, "config", "herdr-agents.json")),
 	};
 }
 
@@ -383,12 +435,28 @@ export function install({ profile, agentDir, recipe = null, dryRun = false, afte
 	const shipped = new Map(profile.files);
 	shipped.set("AGENTS.md", composeAgents(profile.files.get("AGENTS.md") as string, recipe));
 
+	// A recorded name this profile no longer ships that is, on this volume, the file a shipped name now opens (a case-only rename on a case-insensitive
+	// volume): its record belongs to the shipped name, and the "no longer shipped" pass below must not delete the file the rule now lives in (T7-F004).
+	const respelled = new Set<string>();
+	const recordFor = (rel: string, path: string): string | undefined => {
+		const exact = oldFiles[rel];
+		if (exact !== undefined) return exact;
+		for (const [was, hash] of Object.entries(oldFiles)) {
+			if (was === rel || shipped.has(was) || respelled.has(was)) continue;
+			if (sameFile(managedPath(agentDir, was, "manifest path"), path)) {
+				respelled.add(was);
+				return hash;
+			}
+		}
+		return undefined;
+	};
+
 	// ---- copied files ----
 	for (const [rel, raw] of shipped) {
 		const text = normalizeText(raw);
 		const hash = sha256(Buffer.from(text, "utf8"));
 		const path = managedPath(agentDir, rel, "profile file");
-		const recorded = oldFiles[rel];
+		const recorded = existsSync(path) ? recordFor(rel, path) : undefined;
 		if (!existsSync(path)) {
 			writes.push([path, text]);
 			changes.push({ kind: "file-written", file: rel });
@@ -420,7 +488,7 @@ export function install({ profile, agentDir, recipe = null, dryRun = false, afte
 	// The manifest is the only place these paths come from, and anything can have written it: each one is checked like any other path.
 	for (const [rel, recorded] of Object.entries(oldFiles)) {
 		const path = managedPath(agentDir, rel, "manifest path");
-		if (shipped.has(rel)) continue;
+		if (shipped.has(rel) || respelled.has(rel)) continue;
 		if (!existsSync(path)) continue;
 		if (fileHash(path, rel) === recorded) {
 			removes.push(path);
@@ -474,7 +542,6 @@ export function install({ profile, agentDir, recipe = null, dryRun = false, afte
 	}
 
 	// ---- manifest ----
-	const sortObj = (o: Json): Json => Object.fromEntries(Object.keys(o).sort().map((k) => [k, isPlain(o[k]) ? sortObj(o[k] as Json) : o[k]]));
 	const manifestText = `${JSON.stringify(sortObj(next), null, 2)}\n`;
 	const manifestChanged = !existsSync(manifestPath) || readFileSync(manifestPath, "utf8") !== manifestText;
 
@@ -532,7 +599,14 @@ export function useTeamVersion({ profile, agentDir, files, now = new Date(), hoo
 			backup: managedPath(agentDir, backupRel, "backup path"),
 		};
 	});
-	for (const p of plan) if (!existsSync(p.pending)) throw new Error(`no pending version of ${p.rel}`);
+	// Each pending copy and each existing target must be a regular file before the first switch: a folder or a FIFO found halfway would leave the files before
+	// it switched and the manifest recording them (T7-F011).
+	for (const p of plan) {
+		const pending = fileKind(p.pending);
+		if (pending === "absent") throw new Error(`no pending version of ${p.rel}`);
+		if (pending === "other") throw new Error(`the pending version of ${p.rel} is not a regular file; nothing was changed`);
+		if (fileKind(p.target) === "other") throw new Error(`${shown(p.rel)} exists but is not a regular file; nothing was changed`);
+	}
 	const done: Array<{ file: string; backup: string }> = [];
 	for (const p of plan) {
 		if (existsSync(p.target)) writeAtomic(agentDir, p.backup, readFileSync(p.target), hooks);
@@ -540,7 +614,7 @@ export function useTeamVersion({ profile, agentDir, files, now = new Date(), hoo
 		writeAtomic(agentDir, p.target, bytes, hooks);
 		// The manifest records the new hash before the pending copy goes, so a crash in between leaves a state the next install sorts out.
 		recorded[p.rel] = sha256(bytes);
-		writeAtomic(agentDir, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, hooks);
+		writeAtomic(agentDir, manifestPath, `${JSON.stringify(sortObj(manifest), null, 2)}\n`, hooks);
 		removeManaged(agentDir, p.pending, "pending path");
 		done.push({ file: p.rel, backup: posix(p.backupRel) });
 	}

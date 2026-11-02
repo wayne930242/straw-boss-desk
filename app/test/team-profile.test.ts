@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, type PathLike } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, type PathLike } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
@@ -946,5 +946,234 @@ describe("RC-F005 and P3R-F002: recipe text cannot reshape the Markdown around t
 		assert.ok(!lines.some((l) => /^ {0,3}(=+|-+)\s*$/.test(l)), "no setext underline");
 		const fences = lines.filter((l) => /^ {0,3}(`{3,}|~{3,})/.test(l));
 		assert.equal(fences.length % 2, 0, "every fence is closed");
+	});
+});
+
+describe("T7-F004: a case-only rename of a profile file", () => {
+	// The default volumes of macOS and Windows treat `Guard.md` and `guard.md` as one file; a case-sensitive one keeps two. Both outcomes are checked, so the
+	// test says something on either kind of volume the machine has.
+	const caseInsensitive = (): boolean => existsSync(join(tmp, "AGENT"));
+	const rules = (): string[] => readdirSync(join(agentDir, "rules")).sort();
+
+	it("keeps the rule when the profile only changes the letter case of its name, and a verify finds nothing left to do", () => {
+		install({ profile: makeProfile(profileDir, { rules: { "Guard.md": "guard rule\n" } }), agentDir });
+		const next = makeProfile(profileDir, { version: "1.1.0", rules: { "guard.md": "guard rule\n" } });
+		const result = install({ profile: next, agentDir });
+		assert.ok(!kinds(result).includes("file-removed:rules/Guard.md") || !caseInsensitive(), "the rule's file is not deleted on a case-insensitive volume");
+		if (caseInsensitive()) {
+			assert.deepEqual(rules(), ["Guard.md"], "the file is still there, under the spelling it was written with");
+			assert.equal(read(agentDir, "rules/guard.md"), "guard rule\n", "and opens under the new spelling");
+			assert.deepEqual(Object.keys(manifest().files).filter((f) => f.startsWith("rules/")), ["rules/guard.md"], "the manifest follows the profile's spelling");
+			assert.deepEqual(result.notices, []);
+		} else {
+			assert.deepEqual(rules(), ["guard.md"], "two files on a case-sensitive volume: the old one, unchanged, is deleted");
+		}
+		const verify = install({ profile: next, agentDir, dryRun: true });
+		assert.deepEqual(verify.changes, [], "verify: nothing to write");
+		assert.equal(verify.manifestChanged, false);
+	});
+
+	it("treats the old spelling's record as the new name's: an unedited file takes the new text, an edited one is kept with a pending copy", () => {
+		install({ profile: makeProfile(profileDir, { rules: { "Guard.md": "guard rule\n" } }), agentDir });
+		const v2 = makeProfile(profileDir, { version: "1.1.0", rules: { "guard.md": "guard rule v2\n" } });
+		const unedited = install({ profile: v2, agentDir });
+		assert.equal(read(agentDir, "rules/guard.md"), "guard rule v2\n");
+		assert.deepEqual(unedited.notices, []);
+		if (caseInsensitive()) assert.ok(kinds(unedited).includes("file-replaced:rules/guard.md"), kinds(unedited).join());
+		assert.deepEqual(install({ profile: v2, agentDir, dryRun: true }).changes, []);
+
+		// the PM edits the rule, then the profile renames it again by case and changes the text
+		put(agentDir, "rules/guard.md", "my own guard rule\n");
+		const v3 = makeProfile(profileDir, { version: "1.2.0", rules: { "GUARD.md": "guard rule v3\n" } });
+		const edited = install({ profile: v3, agentDir });
+		if (caseInsensitive()) {
+			assert.equal(read(agentDir, "rules/guard.md"), "my own guard rule\n", "the PM's edit survives the rename");
+			assert.deepEqual(edited.notices.map((n) => `${n.kind}:${"file" in n ? n.file : ""}`), ["file-kept:rules/GUARD.md"], "reported once, as an edit (not as a file with no record)");
+			assert.equal((edited.notices[0] as { reason: string }).reason, "edited");
+			assert.equal(read(agentDir, ".straw-boss-profile/pending/1.2.0/rules/GUARD.md"), "guard rule v3\n");
+			assert.equal(listFiles(join(agentDir, "rules")).length, 1);
+		}
+	});
+});
+
+describe("T7-F005: a link at rules/ or config/ of the profile package", () => {
+	const secretDir = (): string => {
+		const dir = join(tmp, "outside");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "secret.txt"), "outside the package\n");
+		return dir;
+	};
+	/** Replaces the package's folder `name` with a junction or link to `target`. */
+	const relink = (name: string, target: string): void => {
+		rmSync(join(profileDir, name), { recursive: true, force: true });
+		dirLink(target, join(profileDir, name));
+	};
+
+	it("refuses a rules folder that is a link, and does not list or copy what it points at", () => {
+		makeProfile(profileDir);
+		relink("rules", secretDir());
+		assert.throws(() => loadProfile(profileDir), /symbolic link or junction/);
+	});
+
+	it("refuses a dangling rules link too", () => {
+		makeProfile(profileDir);
+		relink("rules", join(tmp, "nowhere"));
+		assert.throws(() => loadProfile(profileDir), /symbolic link or junction/);
+	});
+
+	it("refuses a config folder that is a link, even when the files it points at are valid JSON objects", () => {
+		makeProfile(profileDir);
+		const elsewhere = join(tmp, "elsewhere-config");
+		mkdirSync(elsewhere, { recursive: true });
+		writeFileSync(join(elsewhere, "settings.json"), '{"defaultModel":"theirs"}');
+		writeFileSync(join(elsewhere, "herdr-agents.json"), "{}");
+		relink("config", elsewhere);
+		assert.throws(() => loadProfile(profileDir), /symbolic link or junction/);
+	});
+
+	it("refuses a package folder that is itself a link", () => {
+		makeProfile(profileDir);
+		const real = join(tmp, "profile-real");
+		renameSync(profileDir, real);
+		dirLink(real, profileDir);
+		assert.throws(() => loadProfile(profileDir), /symbolic link or junction/);
+	});
+
+	it("loads a package whose folders are plain, with or without a rules folder", () => {
+		makeProfile(profileDir);
+		assert.deepEqual([...loadProfile(profileDir).files.keys()], ["AGENTS.md", "rules/a.md"]);
+		rmSync(join(profileDir, "rules"), { recursive: true });
+		assert.deepEqual([...loadProfile(profileDir).files.keys()], ["AGENTS.md"]);
+	});
+});
+
+describe("T7-F006: the check after the exclusive create of a temp file", () => {
+	const outside = (): string => {
+		const dir = join(tmp, "outside");
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	};
+	const target = (): string => {
+		mkdirSync(join(agentDir, "rules"), { recursive: true });
+		return join(agentDir, "rules", "a.md");
+	};
+
+	it("a temp name swapped for another plain file right after the create is refused: the check compares the file that was created with the one at the name", () => {
+		const path = target();
+		const tempName = `${path}.sbd-tmp-fixed`;
+		const hooks = {
+			tempName: () => tempName,
+			afterCreate: (tmp: string) => {
+				renameSync(tmp, `${tmp}.moved`);
+				writeFileSync(tmp, "someone else's");
+			},
+		};
+		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /is not a plain file, or is not the file that was created/);
+		assert.equal(readFileSync(tempName, "utf8"), "someone else's", "what is at the name is not ours, so it stays");
+		assert.ok(!existsSync(path), "the target was not written");
+	});
+
+	it("a temp name swapped for a link right after the create is refused, and nothing is written through it", (t) => {
+		const path = target();
+		const victim = join(outside(), "victim.txt");
+		const tempName = `${path}.sbd-tmp-fixed`;
+		const hooks = {
+			tempName: () => tempName,
+			afterCreate: (tmp: string) => {
+				renameSync(tmp, `${tmp}.moved`);
+				symlinkSync(victim, tmp, "file");
+			},
+		};
+		if (!link(t, victim, join(outside(), "probe-link"), "file")) return;
+		assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /is not a plain file/);
+		assert.ok(!existsSync(victim), "the link was not followed");
+		assert.ok(!existsSync(path));
+	});
+
+	it("a dangling link planted at the temp name just before the create: macOS' exclusive create refuses it; Windows' follows it, and the check refuses what it made", (t) => {
+		const path = target();
+		const createdThrough = join(outside(), "created-by-wx.txt");
+		const tempName = `${path}.sbd-tmp-fixed`;
+		const hooks = { tempName: () => tempName, beforeCreate: () => symlinkSync(createdThrough, tempName, "file") };
+		if (!link(t, createdThrough, join(outside(), "probe-link"), "file")) return;
+		if (process.platform === "win32") {
+			assert.throws(() => writeAtomic(agentDir, path, "data", hooks), /is not a plain file/);
+			assert.ok(existsSync(createdThrough), "wx did create the link's target (the Windows behavior the check exists for), empty");
+			assert.equal(readFileSync(createdThrough, "utf8"), "", "and nothing was written into it");
+		} else {
+			assert.throws(() => writeAtomic(agentDir, path, "data", hooks), (error: NodeJS.ErrnoException) => error.code === "EEXIST");
+			assert.ok(!existsSync(createdThrough), "the exclusive create did not follow the link");
+		}
+		assert.ok(!existsSync(path), "the target was not written");
+	});
+});
+
+describe("T7-F011: use-team checks every file is regular before the first switch", () => {
+	/** Two rules the PM edited, then a profile update that puts a pending copy of each aside. */
+	function twoPending(): Profile {
+		install({ profile: makeProfile(profileDir, { rules: { "a.md": "a v1\n", "b.md": "b v1\n" } }), agentDir });
+		put(agentDir, "rules/a.md", "my a\n");
+		put(agentDir, "rules/b.md", "my b\n");
+		const next = makeProfile(profileDir, { version: "1.1.0", rules: { "a.md": "a v2\n", "b.md": "b v2\n" } });
+		install({ profile: next, agentDir });
+		return next;
+	}
+	const untouched = (): void => {
+		assert.equal(read(agentDir, "rules/a.md"), "my a\n", "the first file was not switched");
+		assert.equal(read(agentDir, "rules/b.md"), "my b\n");
+		assert.ok(existsSync(join(agentDir, ".straw-boss-profile/pending/1.1.0/rules/a.md")), "its pending copy is still there");
+		assert.ok(!existsSync(join(agentDir, ".straw-boss-profile/backup")), "no backup was made");
+	};
+
+	it("a folder where the second pending copy should be stops everything before the first switch", () => {
+		const profile = twoPending();
+		const before = read(agentDir, ".straw-boss-profile/manifest.json");
+		const pendingB = join(agentDir, ".straw-boss-profile/pending/1.1.0/rules/b.md");
+		rmSync(pendingB);
+		mkdirSync(pendingB);
+		assert.throws(() => useTeamVersion({ profile, agentDir, files: ["rules/a.md", "rules/b.md"] }), /pending version of rules\/b\.md is not a regular file; nothing was changed/);
+		untouched();
+		assert.equal(read(agentDir, ".straw-boss-profile/manifest.json"), before);
+	});
+
+	it("a folder where the second target should be stops everything too", () => {
+		const profile = twoPending();
+		rmSync(join(agentDir, "rules/b.md"));
+		mkdirSync(join(agentDir, "rules/b.md"));
+		assert.throws(() => useTeamVersion({ profile, agentDir, files: ["rules/a.md", "rules/b.md"] }), /exists but is not a regular file; nothing was changed/);
+		assert.equal(read(agentDir, "rules/a.md"), "my a\n");
+		assert.ok(!existsSync(join(agentDir, ".straw-boss-profile/backup")));
+	});
+
+	it("a link where a pending copy should be is not followed", (t) => {
+		const profile = twoPending();
+		const pendingB = join(agentDir, ".straw-boss-profile/pending/1.1.0/rules/b.md");
+		const elsewhere = join(tmp, "elsewhere.txt");
+		writeFileSync(elsewhere, "not the team's\n");
+		rmSync(pendingB);
+		if (!link(t, elsewhere, pendingB, "file")) return;
+		assert.throws(() => useTeamVersion({ profile, agentDir, files: ["rules/a.md", "rules/b.md"] }), /symbolic link or junction|is not a regular file/);
+		untouched();
+	});
+
+	it("still switches regular files, and a missing pending copy still says so", () => {
+		const profile = twoPending();
+		assert.equal(useTeamVersion({ profile, agentDir, files: ["rules/a.md", "rules/b.md"] }).length, 2);
+		assert.equal(read(agentDir, "rules/b.md"), "b v2\n");
+		assert.throws(() => useTeamVersion({ profile, agentDir, files: ["rules/a.md"] }), /no pending version of rules\/a\.md/);
+	});
+});
+
+describe("T7-F012 b: use-team writes the manifest in the installer's order", () => {
+	it("after switching a file that had no record, an installer run finds no manifest change (so the profile stage does not reinstall through npm)", () => {
+		put(agentDir, "rules/a.md", "mine\n");
+		const profile = makeProfile(profileDir, { rules: { "a.md": "rule a v1\n", "b.md": "rule b v1\n" } });
+		install({ profile, agentDir });
+		assert.ok(!Object.hasOwn(manifest().files, "rules/a.md"), "a.md has no record: the PM had it first");
+		useTeamVersion({ profile, agentDir, files: ["rules/a.md"] });
+		assert.deepEqual(Object.keys(manifest().files), Object.keys(manifest().files).toSorted(), "the keys are sorted");
+		const after = install({ profile, agentDir, dryRun: true });
+		assert.deepEqual(after.changes, []);
+		assert.equal(after.manifestChanged, false);
 	});
 });
