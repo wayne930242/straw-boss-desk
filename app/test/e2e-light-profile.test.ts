@@ -41,7 +41,11 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 	before(async () => {
 		world = createWorld("p");
 		await noteUserPath(world);
-		first = await runWorld(world, { recipe: recipe("1.0.0", "- the CI rule"), profile: true });
+		// T7-F010: a user's npm configuration that turns the lock file and the save off, which would leave no integrity to check. It is a file in the scratch
+		// folder (npm reads any path named by NPM_CONFIG_USERCONFIG), never a file of the machine's user; the app forces both settings back on for pi's npm.
+		const hostile = join(world.base, "user-npm-config.ini");
+		writeFileSync(hostile, "package-lock=false\nsave=false\n");
+		first = await runWorld(world, { recipe: recipe("1.0.0", "- the CI rule"), profile: true, npmEnv: { NPM_CONFIG_USERCONFIG: hostile } });
 	});
 
 	after(async () => {

@@ -223,6 +223,8 @@ export interface RunOptions {
 	only?: readonly string[];
 	/** Add the profile and package stages (`profile`, `pkg:*`, `team-pkg:*`, `claude`, and `pi-settings` on Windows) to the tool stages (task 7). */
 	profile?: boolean;
+	/** Extra environment for the npm and pi calls of the profile and package stages, on top of the constructed one (what `ProfileStageOptions.npm.env` takes). */
+	npmEnv?: Readonly<Record<string, string>>;
 }
 
 const countingFetch = (world: World, sink: string[]): Fetch => (url, init) => {
@@ -246,7 +248,7 @@ export async function runWorld(world: World, options: RunOptions = {}): Promise<
 		appEnv: world.appEnv,
 		retryDelayMs: 1000,
 		stages: (stack, recipe, platform) =>
-			[...toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}), ...(options.profile ? profileStages(stack, recipe, platform) : [])].filter(
+			[...toolStages(stack, recipe, platform, options.preflight ? { preflight: options.preflight } : {}), ...(options.profile ? profileStages(stack, recipe, platform, options.npmEnv ? { npm: { env: options.npmEnv } } : {}) : [])].filter(
 				(stage) => options.only === undefined || options.only.includes(stage.name),
 			),
 	});

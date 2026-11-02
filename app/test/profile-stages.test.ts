@@ -731,7 +731,9 @@ describe("the recipe's team part", () => {
 
 describe("running pi and reading what it left", () => {
 	it("names a package folder under node_modules, and refuses a name that is not an npm name", () => {
-		const layout = testLayout(scratchRoot("sbd-prof-n-").root);
+		const made = scratchRoot("sbd-prof-n-");
+		scratch.push(made.base);
+		const layout = testLayout(made.root);
 		assert.equal(agentPackageDir(layout, "@scope/name"), join(layout.agent, "npm", "node_modules", "@scope", "name"));
 		for (const name of ["../x", "a/b/c", "A", "x y", "@scope", "..", "a\\b", "", "x".repeat(215)]) assert.throws(() => agentPackageDir(layout, name), StackError, JSON.stringify(name));
 		assert.equal(piSource({ name: "@s/n", version: "1.0.0" }), "npm:@s/n@1.0.0");

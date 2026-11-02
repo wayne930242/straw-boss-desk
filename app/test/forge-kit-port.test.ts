@@ -182,6 +182,8 @@ describe("the POSIX launcher at run time (kit: the POSIX launcher at run time)",
 		setup(bin, "gh");
 		const r = spawnSync("gh", ["--version"], { encoding: "utf8", cwd: tmp, env: { PATH: `${bin}:${process.env.PATH ?? ""}`, CI: "1" } });
 		assert.equal(r.status, 0, r.stderr);
+		// A gh of the machine would also exit 0 with no CI line: the stand-in's own ARGS line says it was the one that ran (T7-F012 c).
+		assert.ok(r.stdout.includes("ARGS:[--version]"), `the app's stand-in ran, not a gh from the machine: ${r.stdout.slice(0, 120)}`);
 		assert.equal(envOf(r.stdout).CI, undefined);
 	});
 
