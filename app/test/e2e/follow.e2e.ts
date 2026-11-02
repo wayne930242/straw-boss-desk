@@ -115,19 +115,19 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	const underTools = () => platform.processes.listUnder(world.layout.tools.root);
 	const herdrBinary = () => childEnvOf(world).HERDR_BIN_PATH as string;
 	const herdr = (args: string[], timeoutMs = 30_000) => run(herdrBinary(), args, { env: childEnvOf(world), timeoutMs });
-	/** A prompt to the home base's pi: retried until Herdr knows the pane as an agent (the pi has to start and be detected first); the last refusal comes with Herdr's own list. */
+	/**
+	 * A line typed into the home base's pi, as its user does: `agent prompt` refuses a pane whose agent Herdr does not call a named one (the tower's pi in a base is
+	 * not), so the line goes in as keys once the pane's agent is idle.
+	 */
 	async function promptBase(text: string): Promise<void> {
 		const pane = startRecord()?.base?.pane as string;
 		assert.ok(pane, "start.json names the home base's pane");
-		let last = { code: 1 as number | null, stdout: "", stderr: "" };
-		const deadline = Date.now() + 180_000;
-		while (Date.now() < deadline) {
-			last = await herdr(["agent", "prompt", pane, text], 60_000);
-			if (last.code === 0) return;
-			await sleep(3000);
-		}
-		const agents = await herdr(["agent", "list"], 20_000);
-		assert.fail(`no agent at ${pane} to prompt: ${last.stdout.slice(0, 300)} ${last.stderr.slice(0, 200)}; agent list: ${agents.stdout.slice(0, 600)}`);
+		await until("the base's pi to be idle", 180_000, async () => {
+			const agents = await herdr(["agent", "list"], 20_000);
+			return agents.code === 0 && new RegExp(`"agent_status":"idle"[^}]*"pane_id":"${pane}"|"pane_id":"${pane}"[^}]*"agent_status":"idle"`).test(agents.stdout);
+		});
+		await sleep(1500);
+		await new WorldHerdr(world).type(pane, text);
 	}
 	const herdrAnswers = async () => (await herdr(["workspace", "list"], 15_000)).code === 0;
 
@@ -455,6 +455,18 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			const heard = await until("the parent to hear of the child", 300_000, () => {
 				const all = strings(lines());
 				return all.find((s) => s.includes(`Sub-agent "${CHILD_NAME}"`) && /completed|failed/.test(s));
+			}).catch(async (error: Error) => {
+				// What the runner can show of a dispatch that went nowhere: the parent's last events, and the other panes of the workspace with the end of what they print.
+				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
+				console.log(`--- the parent's last events ---\n${events.join("\n")}`);
+				const panes = await h.cli(["pane", "list"], 20_000);
+				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 1500)}`);
+				for (const match of panes.stdout.matchAll(/"pane_id":"([^"]+)"/g)) {
+					if (match[1] === pane || match[1] === base?.pane) continue;
+					const read = await h.cli(["pane", "read", match[1] as string, "--lines", "25"], 20_000);
+					console.log(`--- pane ${match[1]} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-1800)}`);
+				}
+				throw error;
 			});
 			assert.match(heard, new RegExp(`Sub-agent "${CHILD_NAME}" completed`), `the child's result: ${heard.slice(0, 600)}`);
 			assert.ok(heard.includes(RESULT_PREFIX), "the child's final answer carries what it saw");
