@@ -118,8 +118,7 @@ export async function extractArchive(request: ExtractRequest): Promise<Extracted
 		await tar(request, tarPath, ["-xf", archiveArgument(archive, dest), ...strip], dest);
 		checkExtractedTree(archive, dest);
 	} catch (error) {
-		removeTree(dest);
-		mkdirSync(dest, { recursive: true });
+		clearAfterFailure(dest);
 		throw error;
 	}
 	return { entries: names.length, tar: tarPath };
@@ -174,11 +173,23 @@ export async function extractSelfExtractor(request: SelfExtractRequest): Promise
 		}
 		checkExtractedTree(installer, dest);
 	} catch (error) {
-		removeTree(dest);
-		mkdirSync(dest, { recursive: true });
+		clearAfterFailure(dest);
 		throw error;
 	}
 	return { entries: countFiles(dest), tar: installer };
+}
+
+/**
+ * Empties `dest` after a failed extraction. When that fails too (on Windows, a program still runs from the staging folder: the `locked` failure of the self-extractor),
+ * the original error is the answer and is rethrown by the caller; the folder stays and the next sweep deletes it (R5-F003).
+ */
+function clearAfterFailure(dest: string): void {
+	try {
+		removeTree(dest);
+		mkdirSync(dest, { recursive: true });
+	} catch {
+		// the sweep at the start of the next run deletes the staging folder
+	}
 }
 
 function countFiles(dir: string): number {

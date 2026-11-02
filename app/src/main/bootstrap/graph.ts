@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Layout } from "../paths.ts";
-import { removeTree, renameRetry } from "./fsutil.ts";
+import { removeAside, removeTree, renameRetry } from "./fsutil.ts";
 import type { Lane, Stage, StageOutcome } from "./stage.ts";
 
 // The stage graph (spec: Bootstrap engine): stages whose `needs` are done run; independent downloads three at a time, npm steps one at a time.
@@ -129,6 +129,10 @@ export interface SweepResult {
 export interface SweepOptions {
 	/** Deletes a file or folder tree; a test passes one that throws. Default: `removeTree`. */
 	remove?: (path: string) => void;
+	/** Deletes a leftover `.replaced` copy. Default: `remove` when given, else a single attempt without retries (R5-F002: a copy a running program holds will not go however long it waits). */
+	removeAside?: (path: string) => void;
+	/** Moves a leftover back into place; a test passes one that throws. Default: `renameRetry`. */
+	rename?: (from: string, to: string) => void;
 }
 
 /**
@@ -137,7 +141,10 @@ export interface SweepOptions {
  * - `tools/<tool>/<version>.staging`, `tools/<name>.staging`, and the `.staging` files of `tools/bin` are deleted;
  * - `<x>.replaced` is the previous copy that `activateDir` and `activateFiles` move aside before the new one is renamed into place. When `<x>` is
  *   there, the new copy won and the old one is deleted; when `<x>` is missing the run was killed between the two renames, `current.json` still
- *   names `<x>`, and the old copy is moved back (T4-F010 a). When several asides exist for one `<x>` (`<x>.replaced-2`), the newest is the one moved back;
+ *   names `<x>`, and the old copy is moved back (T4-F010 a). When several asides exist for one `<x>` (`<x>.replaced-2`), the highest number is the newest
+ *   (`freeAside` never reuses a lower number while a higher one is held, R5-F001) and is the one moved back; a move back that fails (a folder aside a
+ *   running program holds) is kept and reported, never thrown, so one held copy cannot fail every run;
+ * - a leftover copy is deleted with one attempt, a staging folder with the retrying removal (R5-F002);
  * - a deletion that fails (Windows: the old copy of a running `bun.exe` can be renamed but not deleted) never stops the sweep: the path is kept,
  *   reported in `kept`, and tried again by the next sweep (T5-F004);
  * - the same rules cover the private `gitconfig`, which sits in the root: `gitconfig.staging` is deleted, and `gitconfig.replaced` is moved back
@@ -148,10 +155,12 @@ export interface SweepOptions {
  */
 export function sweepLeftovers(layout: Layout, options: SweepOptions = {}): SweepResult {
 	const remove = options.remove ?? removeTree;
+	const removeLeftover = options.removeAside ?? options.remove ?? removeAside;
+	const rename = options.rename ?? renameRetry;
 	const result: SweepResult = { removed: [], restored: [], kept: [] };
-	const drop = (path: string): void => {
+	const drop = (path: string, how: (path: string) => void = remove): void => {
 		try {
-			remove(path);
+			how(path);
 			result.removed.push(path);
 		} catch (error) {
 			result.kept.push({ path, error: (error as Error).message });
@@ -183,11 +192,17 @@ export function sweepLeftovers(layout: Layout, options: SweepOptions = {}): Swee
 			let rest = list;
 			if (!present.has(original)) {
 				const newest = list[0] as { name: string };
-				renameRetry(join(dir, newest.name), join(dir, original));
-				result.restored.push(join(dir, newest.name));
-				rest = list.slice(1);
+				try {
+					rename(join(dir, newest.name), join(dir, original));
+					result.restored.push(join(dir, newest.name));
+					rest = list.slice(1);
+				} catch (error) {
+					// A folder a running program holds cannot be moved back; it stays where it is, the older copies are not deleted either, and the next sweep tries again.
+					result.kept.push({ path: join(dir, newest.name), error: (error as Error).message });
+					rest = [];
+				}
 			}
-			for (const { name } of rest) drop(join(dir, name));
+			for (const { name } of rest) drop(join(dir, name), removeLeftover);
 		}
 	};
 	const tools = layout.tools.root;
