@@ -174,8 +174,11 @@ describe("the listing and the reads never touch a process command line", () => {
 		for (const call of run.calls) {
 			assert.ok(call.file === ps || call.file === lsof, call.file);
 			const text = call.args.join(" ");
-			if (call.file === ps) assert.equal(text, "-o pid=,lstart= -p 100");
-			else {
+			if (call.file === ps) {
+				assert.equal(text, "-o pid=,lstart= -p 100");
+				assert.equal(call.options?.env?.LC_ALL, "C", "the date format does not depend on the PM's language");
+				assert.equal(call.options?.env?.TZ, "UTC0", "lstart is local time, so a time zone change must not change a recorded start time (T8A-F010)");
+			} else {
 				assert.match(text, /^(-a -p 100 )?-d txt -Fpn$/);
 				assert.equal(call.options?.env?.LC_ALL, "en_US.UTF-8", "lsof prints a non-ASCII path raw, whatever the app's locale");
 			}

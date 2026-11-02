@@ -92,8 +92,9 @@ export function createMacProcesses(run: CommandRunner, locate: Locate): Processe
 
 	async function startTimes(pids: readonly number[]): Promise<Map<number, string>> {
 		if (pids.length === 0) return new Map();
-		// LC_ALL=C keeps the date format the same whatever the PM's language.
-		const r = await run(ps, ["-o", "pid=,lstart=", "-p", pids.join(",")], { timeoutMs: LIMIT_MS, env: { LC_ALL: "C" } });
+		// LC_ALL=C keeps the date format the same whatever the PM's language, and TZ=UTC0 keeps `lstart` the same whatever the system time zone: it prints local time, so a PM
+		// who travels, or whose zone changes with daylight saving, would otherwise see every recorded start time differ from the process's own (T8A-F010).
+		const r = await run(ps, ["-o", "pid=,lstart=", "-p", pids.join(",")], { timeoutMs: LIMIT_MS, env: { LC_ALL: "C", TZ: "UTC0" } });
 		return parsePsStart(r.stdout);
 	}
 
