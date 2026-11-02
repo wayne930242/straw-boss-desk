@@ -540,7 +540,70 @@ describe("Adopting a stack that is already running", () => {
 		await seeded(fresh, { herdr: { pid: 100, startTime: null }, sb: null });
 		fresh.upQueue.push(fresh.upOk({ server: "found" }));
 		await fresh.supervisor.start();
-		assert.equal(fresh.startRecord()?.sb?.startTime, null, "found with no record: no kill fallback this run");
+		assert.equal(fresh.startRecord()?.sb?.startTime, "S0", "found with no record: recorded now, because its executable is the app's (T8A-F013)");
+		const stranger = world();
+		await seeded(stranger, { sb: null });
+		stranger.procs.add(200, { startTime: "S0", executable: "/usr/bin/python3" });
+		stranger.upQueue.push(stranger.upOk({ server: "found" }));
+		await stranger.supervisor.start();
+		assert.equal(stranger.startRecord()?.sb?.startTime, null, "found, but another program holds the pid: never recorded");
+	});
+
+	it("records a found sb server that a pi session restarted since the last run (a new pid), with the executable check (T8A-F013)", async () => {
+		const w = world();
+		await seeded(w);
+		w.sb.pid = 201;
+		w.upQueue.push(w.upOk({ server: "found" }));
+		await w.supervisor.start();
+		assert.deepEqual(w.startRecord()?.sb, { pid: 201, startTime: "S201", slotDir: join(w.layout.agent, "straw-boss") });
+	});
+
+	it("reads no start time for a recorded Herdr whose pid is gone, as after a restart of the computer (T8A-F013)", async () => {
+		const w = world();
+		w.sb.pid = 200;
+		await w.supervisor.startFile.update(() => ({
+			schema: 1,
+			fingerprint: fingerprintOf(w.layout),
+			startedAt: "2026-11-02T00:00:00.000Z",
+			herdr: { pid: 999, startTime: "H-old" },
+			sb: null,
+			base: null,
+			guiMs: null,
+		}));
+		await w.supervisor.start();
+		assert.ok(!w.procs.inspectCalls.some((call) => call.includes(999)), "the gone pid was not looked up (on Windows each lookup is a PowerShell start before the GUI shows)");
+		assert.deepEqual(w.order.slice(0, 2), ["spawn herdr 100", "up"]);
+		// A recorded pid that is alive is still looked up, to give a Herdr that is starting its time.
+		const alive = world();
+		alive.procs.add(999, { startTime: "H-old", executable: alive.herdrBin });
+		await alive.supervisor.startFile.update(() => ({ schema: 1, fingerprint: fingerprintOf(alive.layout), startedAt: "2026-11-02T00:00:00.000Z", herdr: { pid: 999, startTime: "H-old" }, sb: null, base: null, guiMs: null }));
+		alive.setHerdrUp(false);
+		await alive.supervisor.start().catch(() => undefined);
+		assert.ok(alive.procs.inspectCalls.some((call) => call.includes(999)));
+	});
+
+	it("stops a recorded Herdr that starts answering after the wait under another fingerprint, before it starts a new one (T8A-F011)", async () => {
+		const w = world({ timeouts: { herdrStartMs: 3_000 } });
+		w.procs.add(999, { startTime: "H-old", executable: w.herdrBin });
+		await w.supervisor.startFile.update(() => ({
+			schema: 1,
+			fingerprint: { ...fingerprintOf(w.layout), agentDir: "/somewhere/else" },
+			startedAt: "2026-11-02T00:00:00.000Z",
+			herdr: { pid: 999, startTime: "H-old" },
+			sb: null,
+			base: null,
+			guiMs: null,
+		}));
+		// The recorded server is alive and silent when it is looked up, and answers right after.
+		const inspect = w.procs.inspect.bind(w.procs);
+		w.procs.inspect = async (pids) => {
+			if (pids.includes(999)) w.setHerdrUp(true);
+			return inspect(pids);
+		};
+		const result = await w.supervisor.start();
+		assert.equal(result.herdrReused, false);
+		assert.deepEqual(w.order.slice(0, 2), ["herdr server stop", "spawn herdr 100"], "the old server is stopped through its CLI first, so its answer is never taken for the new one's");
+		assert.ok(w.log.some((l) => l.event === "herdr-foreign" && l.why === "another fingerprint"));
 	});
 
 	it("stops a Herdr that answers under another fingerprint, or under none, and starts anew", async () => {

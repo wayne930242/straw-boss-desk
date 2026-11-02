@@ -17,8 +17,8 @@ import type { ProcessRecord, StartFile, StartRecord } from "./start-file.ts";
 
 export type Kind = "herdr" | "sb";
 
-/** What the deferred read does for a process. `none`: nothing is read and the process keeps no start time this run. */
-type Plan = "record-trusted" | "record" | "adopt" | "none";
+/** What the deferred read does for a process. */
+type Plan = "record-trusted" | "record" | "adopt";
 
 export class StartTimes {
 	readonly #layout: Layout;
@@ -53,12 +53,12 @@ export class StartTimes {
 	}
 
 	/**
-	 * The sb server of this run, already written to `start.json` (an adopted one with the record it had), from `up`'s answer. `found` is a server the app did not start in this call: it keeps the record it had only when the start time still
-	 * matches the same pid (adoption). Any other answer means `up` started or replaced it: it is recorded, with the executable check.
+	 * The sb server of this run, already written to `start.json`, from `up`'s answer. `adopted`: `up` found the server the record already named (same pid), so it keeps that record only
+	 * when the start time still matches (adoption). Any other answer, a server `up` started or replaced, or a `found` one under a pid the record did not name (a pi session restarted
+	 * it since), is recorded with the executable check, as the spec's Re-recording says for a pid the app did not start (T8A-F013).
 	 */
-	async sbReady(pid: number, server: string): Promise<void> {
-		const record = this.#file.read()?.sb ?? null;
-		this.#plan.sb = server === "found" ? (record?.pid === pid ? "adopt" : "none") : "record";
+	async sbReady(adopted: boolean): Promise<void> {
+		this.#plan.sb = adopted ? "adopt" : "record";
 		if (this.#eager) await this.flush();
 	}
 
@@ -72,8 +72,8 @@ export class StartTimes {
 			this.#herdrHandle = null;
 			const current = this.#file.read();
 			const wanted: number[] = [];
-			if (plan.herdr !== undefined && plan.herdr !== "none" && current?.herdr) wanted.push(current.herdr.pid);
-			if (plan.sb !== undefined && plan.sb !== "none" && current?.sb) wanted.push(current.sb.pid);
+			if (plan.herdr !== undefined && current?.herdr) wanted.push(current.herdr.pid);
+			if (plan.sb !== undefined && current?.sb) wanted.push(current.sb.pid);
 			if (wanted.length === 0) return;
 			const infos = await this.#processes.inspect(wanted);
 			const byPid = new Map(infos.map((i) => [i.pid, i]));
@@ -92,8 +92,6 @@ export class StartTimes {
 		const keep = (startTime: string | null): ProcessRecord => ({ pid: held.pid, startTime });
 		const read = info?.startTime ?? null;
 		switch (plan) {
-			case "none":
-				return held;
 			case "adopt": {
 				if (held.startTime !== null && read !== null && read === held.startTime) {
 					this.#log({ event: "start-time-adopted", kind, pid: held.pid });

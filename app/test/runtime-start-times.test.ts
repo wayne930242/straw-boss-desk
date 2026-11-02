@@ -93,7 +93,7 @@ describe("Recording (macOS: at once)", () => {
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S1", executable: tool("node") });
 		await file.update(() => record());
 		await times.herdrReady("started", new FakeChild(100));
-		await times.sbReady(200, "started");
+		await times.sbReady(false);
 		const got = file.read();
 		assert.deepEqual(got?.herdr, { pid: 100, startTime: "H1" });
 		assert.equal(got?.sb?.startTime, "S1");
@@ -103,7 +103,7 @@ describe("Recording (macOS: at once)", () => {
 		const { file, procs, times, record, log } = setup({ eager: true });
 		procs.add(200, { startTime: "S1", executable: "/usr/bin/python3" });
 		await file.update(() => record());
-		await times.sbReady(200, "started");
+		await times.sbReady(false);
 		assert.equal(file.read()?.sb?.startTime, null);
 		assert.ok(log.some((l) => l.event === "start-time-refused" && l.pid === 200));
 	});
@@ -128,27 +128,39 @@ describe("Adopting", () => {
 		await file.update(() => record({ herdr: { pid: 100, startTime: "H1" }, sb: { pid: 200, startTime: "S1", slotDir: "/slot" } }));
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S1", executable: tool("node") });
 		await times.herdrReady("reused");
-		await times.sbReady(200, "found");
+		await times.sbReady(true);
 		assert.equal(file.read()?.herdr?.startTime, "H1");
 		assert.equal(file.read()?.sb?.startTime, "S1");
 
 		// Both pids are now other processes (the machine rebooted and the numbers were reused).
 		procs.add(100, { startTime: "H2", executable: "/usr/bin/sleep" }).add(200, { startTime: "S2", executable: "/usr/bin/sleep" });
 		await times.herdrReady("reused");
-		await times.sbReady(200, "found");
+		await times.sbReady(true);
 		assert.equal(file.read()?.herdr?.startTime, null, "no kill fallback for a Herdr whose start time differs");
 		assert.equal(file.read()?.sb?.startTime, null);
 	});
 
-	it("gives no kill fallback to a found sb server it has no record for, or whose pid is not the recorded one", async () => {
+	it("gives no kill fallback to a found sb server whose record has no start time", async () => {
 		const { file, procs, times, tool, record } = setup({ eager: true });
-		procs.add(200, { startTime: "S1", executable: tool("node") }).add(300, { startTime: "S3", executable: tool("node") });
+		procs.add(300, { startTime: "S3", executable: tool("node") });
 		await file.update(() => record({ sb: { pid: 300, startTime: null, slotDir: "/slot" } }));
-		await times.sbReady(300, "found");
-		assert.equal(file.read()?.sb?.startTime, null, "found, with no record: nothing recorded");
-		await file.update(() => record({ sb: { pid: 300, startTime: "S3", slotDir: "/slot" } }));
-		await times.sbReady(200, "found");
-		assert.equal(file.read()?.sb?.pid, 300, "a record is for a pid; `up` named another, which this module leaves to the supervisor's write");
+		await times.sbReady(true);
+		assert.equal(file.read()?.sb?.startTime, null, "found, same pid, no record: nothing is recorded on top of a record that was never trusted");
+	});
+
+	it("records a found sb server under a pid the record did not name (a pi session restarted it), with the executable check (T8A-F013)", async () => {
+		const { file, procs, times, tool, record, log } = setup({ eager: true });
+		// `up` answered `found` with pid 201; the record named 200, so the supervisor wrote 201 with no start time and adoption does not apply.
+		procs.add(201, { startTime: "S2", executable: tool("node") });
+		await file.update(() => record({ sb: { pid: 201, startTime: null, slotDir: "/slot" } }));
+		await times.sbReady(false);
+		assert.deepEqual(file.read()?.sb, { pid: 201, startTime: "S2", slotDir: "/slot" });
+		// A pid that another program holds is never recorded, found or not.
+		procs.add(202, { startTime: "X", executable: "/usr/bin/python3" });
+		await file.update(() => record({ sb: { pid: 202, startTime: null, slotDir: "/slot" } }));
+		await times.sbReady(false);
+		assert.equal(file.read()?.sb?.startTime, null);
+		assert.ok(log.some((l) => l.event === "start-time-refused" && l.pid === 202));
 	});
 });
 
@@ -158,7 +170,7 @@ describe("Recording (Windows: nothing before the GUI shows, then one call)", () 
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S1", executable: tool("node") });
 		await file.update(() => record());
 		await times.herdrReady("started", new FakeChild(100));
-		await times.sbReady(200, "started");
+		await times.sbReady(false);
 		assert.deepEqual(procs.inspectCalls, [], "nothing is read before the GUI shows");
 		assert.deepEqual(file.read()?.herdr, { pid: 100, startTime: null });
 		await times.flush();
@@ -174,7 +186,7 @@ describe("Recording (Windows: nothing before the GUI shows, then one call)", () 
 		procs.add(100, { startTime: "H1", executable: tool("herdr") }).add(200, { startTime: "S9", executable: tool("node") });
 		await file.update(() => record({ herdr: { pid: 100, startTime: "H1" }, sb: { pid: 200, startTime: "S1", slotDir: "/slot" } }));
 		await times.herdrReady("reused");
-		await times.sbReady(200, "found");
+		await times.sbReady(true);
 		assert.deepEqual(procs.inspectCalls, []);
 		await times.flush();
 		assert.equal(procs.inspectCalls.length, 1);

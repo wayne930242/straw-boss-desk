@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { StateStore } from "../bootstrap/state.ts";
+import { osPidAlive, StateStore } from "../bootstrap/state.ts";
 import { buildEnv, resolveOsProxy, type EnvLike, type EnvMap, type ProxyResolver } from "../env.ts";
 import type { PaneFindings } from "../pane-path.ts";
 import { WSL_SENTENCE } from "../pane-path.ts";
@@ -114,6 +114,7 @@ export class Supervisor {
 	readonly #clock: Clock;
 	readonly #timeouts: SupervisorTimeouts;
 	readonly #queue = new SerialQueue();
+	readonly #pidAlive: (pid: number) => boolean;
 	readonly #startFile: StartFile;
 	readonly #times: StartTimes;
 	readonly #listeners = new Set<(event: SupervisorEvent) => void>();
@@ -132,6 +133,7 @@ export class Supervisor {
 	constructor(deps: SupervisorDeps) {
 		this.#d = deps;
 		this.#clock = deps.clock ?? realClock;
+		this.#pidAlive = deps.pidAlive ?? osPidAlive;
 		this.#timeouts = { ...DEFAULT_TIMEOUTS, ...deps.timeouts };
 		this.#startFile = new StartFile(deps.layout);
 		this.#times = new StartTimes({ layout: deps.layout, processes: deps.platform.processes, startFile: this.#startFile, log: deps.log, ...(deps.eagerStartTimes !== undefined ? { eager: deps.eagerStartTimes } : {}) });
@@ -356,24 +358,30 @@ export class Supervisor {
 			return true;
 		};
 
-		if (await herdr.answers()) {
-			if (record !== null && sameFingerprint(record.fingerprint, fingerprint)) return reuse();
-			// An answering server that was started under another environment, or that no record names, is stopped through the CLI and started again.
-			log({ event: "herdr-foreign", why: record === null ? "no record" : "another fingerprint" });
+		// A server that answers under another environment, or that no record names, is stopped through the CLI before a new one starts.
+		const stopForeign = async (why: string): Promise<void> => {
+			log({ event: "herdr-foreign", why });
 			const stopped = await herdr.stopServer();
 			log({ event: "herdr-server-stop", exit: stopped.code, detail: stopped.text });
 			if (!(await herdr.waitUntilSilent(10_000))) {
 				throw new StartFailureError({ kind: "foreign-stack", reason: "a Herdr server that answers on the app's socket would not stop", offerRepair: false });
 			}
-		} else if (record?.herdr?.startTime) {
-			// A recorded server that is alive but silent may still be starting: give it the start time before a second one is started beside it.
+		};
+
+		if (await herdr.answers()) {
+			if (record !== null && sameFingerprint(record.fingerprint, fingerprint)) return reuse();
+			await stopForeign(record === null ? "no record" : "another fingerprint");
+		} else if (record?.herdr?.startTime && this.#pidAlive(record.herdr.pid)) {
+			// A recorded server that is alive but silent may still be starting: give it the start time before a second one is started beside it. A pid that is gone (the usual
+			// case after a restart of the computer) costs no read: on Windows each read is a PowerShell start before the GUI shows (T8A-F013).
 			const alive = (await platform.processes.inspect([record.herdr.pid]))[0];
 			if (alive?.startTime === record.herdr.startTime) {
-				if (await herdr.waitUntilAnswers(null, this.#timeouts.herdrStartMs)) {
-					if (sameFingerprint(record.fingerprint, fingerprint)) return reuse();
-				} else {
+				if (!(await herdr.waitUntilAnswers(null, this.#timeouts.herdrStartMs))) {
 					throw new StartFailureError({ kind: "herdr-silent", reason: "the recorded Herdr server is alive but does not answer" });
 				}
+				if (sameFingerprint(record.fingerprint, fingerprint)) return reuse();
+				// It started answering under another environment: it is stopped like any other foreign server, never answered for by the one started next (T8A-F011).
+				await stopForeign("another fingerprint");
 			}
 		}
 		await this.#startHerdr(herdr, { restart: false, previous: record });
@@ -520,13 +528,15 @@ export class Supervisor {
 	}
 
 	async #recordUp(up: UpSuccess, slotDir: string, base: string): Promise<void> {
+		let adopted = false;
 		await this.#startFile.update((record) => {
 			if (record === null) return null;
 			// A found server keeps the record it had when the pid is the same (adoption compares its start time later); any other pid starts with no start time.
-			const sb = up.server === "found" && record.sb?.pid === up.pid ? { ...record.sb, slotDir } : { pid: up.pid, startTime: null, slotDir };
+			adopted = up.server === "found" && record.sb?.pid === up.pid;
+			const sb = adopted && record.sb ? { ...record.sb, slotDir } : { pid: up.pid, startTime: null, slotDir };
 			return { ...record, sb, base: { dir: base, workspace: up.workspace, pane: up.pane, tower: up.tower, created: up.created, integration: up.integration } };
 		});
-		await this.#times.sbReady(up.pid, up.server);
+		await this.#times.sbReady(adopted);
 	}
 
 	// ---- after the GUI shows -----------------------------------------------------------------------------------------
