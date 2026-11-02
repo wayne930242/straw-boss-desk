@@ -101,10 +101,20 @@ function lookup(env: EnvLike, name: string, fold: boolean): [string, string] | u
  * Puts the resolved bypass list into `out`, joined with whatever list the PM's own environment set (T6-F003). The resolved list carries the loopback names and
  * the forge hosts the PAC file sends DIRECT; a lowercase `no_proxy` of the PM's would hide the upper-case one from clients that read the lowercase name first
  * (curl, so Git), and the PM's list alone would send the loopback calls and those hosts through the proxy. So both spellings hold the same union on macOS,
- * where names are case-sensitive; on Windows there is one variable, kept under the name the PM gave it.
+ * where names are case-sensitive; on Windows there is one variable, kept under the name the PM gave it. A PM's `*` (no proxy for any host) stays `*` alone:
+ * curl reads `*` as every host only when it is the whole list, so joining it to other names would send Git through the proxy (R6-F002).
  */
 function mergeNoProxy(out: EnvMap, resolved: string, win: boolean): void {
 	const spellings = Object.keys(out).filter((k) => k.toLowerCase() === "no_proxy");
+	const everyHost = spellings.some((k) => (out[k] as string).split(",").some((entry) => entry.trim() === "*"));
+	if (everyHost) {
+		if (win) out[spellings[0] ?? "NO_PROXY"] = "*";
+		else {
+			out.NO_PROXY = "*";
+			out.no_proxy = "*";
+		}
+		return;
+	}
 	const seen = new Set<string>();
 	const entries: string[] = [];
 	for (const entry of [resolved, ...spellings.map((k) => out[k] as string)].flatMap((list) => list.split(","))) {

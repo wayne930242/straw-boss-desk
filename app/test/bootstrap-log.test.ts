@@ -112,6 +112,22 @@ describe("URL userinfo (T6-F011)", () => {
 		assert.equal(r.redact("see <http://a:b@h:1> and http://c:d@k:2 now"), `see <http://${REDACTED}@h:1> and http://${REDACTED}@k:2 now`);
 	});
 
+	it("masks a user or a password that holds a single quote, which a valid URL may carry raw (R6-F003)", () => {
+		assert.equal(r.redact("HTTPS_PROXY=http://o'neil:pa'ss@proxy:8080"), `HTTPS_PROXY=http://${REDACTED}@proxy:8080`);
+		assert.equal(r.redact("{'proxy':'http://a:b@h:1','other':'http://c:d@k:2'}"), `{'proxy':'http://${REDACTED}@h:1','other':'http://${REDACTED}@k:2'}`);
+	});
+
+	// R6-F001: the scheme used to start after every dot of a run, so a long `a.a.a…` line took seconds; a stage-log line may reach 1 MB.
+	it("scans a 1 MB line of scheme characters in linear time, and still masks a URL at its end", () => {
+		for (const run of ["a.".repeat(512 * 1024), "a-".repeat(512 * 1024), "a+".repeat(512 * 1024)]) {
+			const start = performance.now();
+			const out = r.redact(`${run} http://u:p@h:1`);
+			const ms = performance.now() - start;
+			assert.ok(out.endsWith(`http://${REDACTED}@h:1`));
+			assert.ok(ms < 1_000, `took ${Math.round(ms)} ms`);
+		}
+	});
+
 	it("leaves a URL with no password, a port, and an @ after the path alone", () => {
 		for (const text of ["ssh://git@github.com/org/repo.git", "http://127.0.0.1:8080/a@b:c", "https://registry.npmjs.org/@earendil-works/pi-coding-agent", "mail to alice@example.com", "C:\\Users\\x\\a:b@c"]) {
 			assert.equal(r.redact(text), text);

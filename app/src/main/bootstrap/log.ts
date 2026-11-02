@@ -27,9 +27,11 @@ const GUI_URL = /((?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}\/)[A-Za-z0-9_~-]{16
 /**
  * `scheme://user:password@host`: the userinfo of a URL, as a company proxy variable carries it (`HTTPS_PROXY=http://user:pass@proxy:8080`, which reaches
  * every child the engine starts, T6-F011). The user and the password are masked; the scheme and the host stay. The user has no colon, the password may hold
- * anything up to the last `@` before the next slash, a space, or a quote. A URL with a user and no password (`ssh://git@host`) is left alone.
+ * anything up to the last `@` before the next slash, a space, a double quote, or `<>`: those four never appear raw in a valid URL, while a single quote may
+ * (R6-F003). A URL with a user and no password (`ssh://git@host`) is left alone. The scheme starts only where a run of scheme characters starts and is at
+ * most 32 characters long, so a long run such as `a.a.a…` is scanned once, not once per dot (R6-F001).
  */
-const URL_USERINFO = /(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@"'<>]+:[^/\s"'<>]*@/g;
+const URL_USERINFO = /((?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/)[^/\s:@"<>]+:[^/\s"<>]*@/g;
 
 /** A PEM block, `-----BEGIN <label>-----` to the matching `-----END <label>-----` (to the end of the text when there is none), whatever its label. */
 const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----[\s\S]*?(?:-----END \1-----|$)/g;

@@ -271,6 +271,27 @@ describe("the OS proxy setting", () => {
 		}
 	});
 
+	// R6-F002: curl reads `*` as every host only when it is the whole list, so a union `127.0.0.1,localhost,…,*` sent Git through the proxy.
+	it("keeps a PM's `*` alone in every spelling instead of joining it to the resolved list", async () => {
+		const resolve = async (url: string) => (url.includes("gitlab.corp.example") ? "DIRECT" : "PROXY p:8080");
+		for (const appEnv of [{ no_proxy: "*" }, { NO_PROXY: " * " }, { no_proxy: "a.example,*", NO_PROXY: "b.example" }]) {
+			const proxy = await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv });
+			const mac = buildEnv({ layout: fakeLayout("darwin"), current, appEnv, proxy });
+			assert.equal(mac.no_proxy, "*", JSON.stringify(appEnv));
+			assert.equal(mac.NO_PROXY, "*", JSON.stringify(appEnv));
+		}
+		for (const name of ["no_proxy", "NO_PROXY"]) {
+			const appEnv = { [name]: "*" };
+			const proxy = await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv });
+			const win = buildEnv({ layout: fakeLayout("win32"), current, appEnv, proxy });
+			assert.deepEqual(Object.entries(win).filter(([k]) => k.toLowerCase() === "no_proxy"), [[name, "*"]]);
+		}
+		// A `*` inside a host name is a pattern, not every host: the union stays.
+		const pattern = { no_proxy: "*.corp.example" };
+		const env = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: pattern, proxy: await resolveOsProxy({ resolve, forgeHosts: ["gitlab.corp.example"], appEnv: pattern }) });
+		assert.equal(env.no_proxy, `${LOOPBACK},gitlab.corp.example,*.corp.example`);
+	});
+
 	it("sets both spellings on macOS when the PM set neither, and leaves a PM's list alone when the OS proxy supplies none", async () => {
 		const resolve = async () => "PROXY p:8080";
 		const none = buildEnv({ layout: fakeLayout("darwin"), current, appEnv: {}, proxy: await resolveOsProxy({ resolve, forgeHosts: [], appEnv: {} }) });
