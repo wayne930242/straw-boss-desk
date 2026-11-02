@@ -116,8 +116,30 @@ export async function disposeWorld(world: World): Promise<void> {
 	try {
 		if (world.realUserPath) await world.userPath.remove(world.layout.tools.shims);
 	} finally {
+		await stopProcessesUnder(world.base);
 		removeTree(world.base);
 	}
+}
+
+/**
+ * Windows only: stops what the world's installed pi left running (an extension's language server, a daemon of a package), found by the scratch folder in its
+ * executable path or command line, so the folder can be deleted. Every such process was started by this test from this folder. Each one is named in the output.
+ */
+async function stopProcessesUnder(base: string): Promise<void> {
+	if (process.platform !== "win32") return;
+	const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+	const script = [
+		"$b = $env:SBD_SCAN_BASE",
+		"Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and (($_.CommandLine -and $_.CommandLine.Contains($b)) -or ($_.ExecutablePath -and $_.ExecutablePath.Contains($b))) } | ForEach-Object { \"$($_.ProcessId) $($_.Name) $($_.CommandLine)\" }",
+	].join("; ");
+	const found = await run(join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", SBD_SCAN_BASE: base }, timeoutMs: 60_000 });
+	const lines = found.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+	for (const line of lines) {
+		const pid = Number(line.split(" ")[0]);
+		console.log(`disposeWorld: stopping a process left under ${base}: ${line.slice(0, 300)}`);
+		if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) await run(join(system32, "taskkill.exe"), ["/T", "/F", "/PID", String(pid)], { env: {}, timeoutMs: 30_000 });
+	}
+	if (lines.length > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
 }
 
 // ---- downloads ---------------------------------------------------------------------------------------------------------
