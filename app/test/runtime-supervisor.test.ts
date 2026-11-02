@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -151,6 +151,9 @@ const failureOf = async (p: Promise<unknown>): Promise<StartFailure> => {
 	throw new Error("expected the start to fail");
 };
 
+const record = (status: string, extra: Record<string, unknown> = {}) => ({ status, version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, ...extra });
+const stack = { "pkg:pi-straw-boss": record("ok") };
+
 const until = async (condition: () => boolean, what: string): Promise<void> => {
 	for (let i = 0; i < 400; i++) {
 		if (condition()) return;
@@ -176,7 +179,7 @@ describe("a start that cannot begin", () => {
 	it("refuses to start while a stage record carries a startBlock (T7-F002), shows its sentence, and runs nothing", async () => {
 		const w = world();
 		const sentence = "The package @acme/skills could not be removed and may still load. Run Repair.";
-		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "team-pkg:@acme/skills": { status: "failed", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, startBlock: { kind: "package-may-load", package: "@acme/skills", sentence } } } }));
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:@acme/skills": { status: "failed", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, startBlock: { kind: "package-may-load", package: "@acme/skills", sentence } } } }));
 		const failure = await failureOf(w.supervisor.start());
 		assert.equal(failure.kind, "package-unsafe");
 		assert.equal(failure.reason, sentence);
@@ -184,8 +187,58 @@ describe("a start that cannot begin", () => {
 		assert.deepEqual(w.run.calls, []);
 		assert.deepEqual(w.children, []);
 		// The next successful run of the stage writes a record without it, and the start goes on.
-		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "team-pkg:@acme/skills": { status: "ok", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {} } } }));
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:@acme/skills": { status: "ok", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {} } } }));
 		assert.equal((await w.supervisor.start()).url, URL);
+	});
+
+	it("refuses to start for a package stage left `running` when no engine owns it (R7-F001), and not while an engine holds the lock", async () => {
+		for (const stage of ["profile", "pkg:pi-lens", "team-pkg:@acme/skills"]) {
+			const w = world();
+			writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, [stage]: record("running") } }));
+			const failure = await failureOf(w.supervisor.start());
+			assert.equal(failure.kind, "install-interrupted", stage);
+			assert.equal(failure.reason, stage);
+			assert.equal(failure.offerRepair, true);
+			assert.deepEqual(w.run.calls, []);
+			assert.deepEqual(w.children, []);
+		}
+		// A tool stage that is `running` is not an in-place package write, and the engine's own lock wins: the start says an engine is running.
+		const tool = world();
+		writeFileSync(join(tool.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, node: record("running") } }));
+		assert.equal((await tool.supervisor.start()).url, URL);
+		const held = world();
+		writeFileSync(join(held.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "pkg:pi-lens": record("running") } }));
+		writeFileSync(join(held.layout.state, "engine.lock"), `${JSON.stringify({ pid: 777, startTime: "T", token: "t" })}\n`);
+		held.procs.add(777, { startTime: "T", executable: "/usr/bin/sleep" });
+		assert.equal((await failureOf(held.supervisor.start())).kind, "engine-locked");
+	});
+
+	it("does not run the stack package's cli.mjs unless its stage is ok (R7-F002): failed, absent, running, or no record", async () => {
+		for (const stages of [{ "pkg:pi-straw-boss": record("failed") }, { "pkg:pi-straw-boss": record("absent") }, { "pkg:pi-straw-boss": record("pending") }, {}]) {
+			const w = world();
+			writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages }));
+			const failure = await failureOf(w.supervisor.start());
+			assert.equal(failure.kind, "package-unsafe", JSON.stringify(stages));
+			assert.match(failure.reason, /pi-straw-boss is not installed and verified/);
+			assert.equal(failure.offerRepair, true);
+			assert.deepEqual(w.run.calls, [], "cli.mjs was not run");
+			assert.deepEqual(w.children, []);
+		}
+	});
+
+	it("never starts blind on a bootstrap.json it cannot read or that the engine quarantined (R7-F007)", async () => {
+		for (const text of ["{ truncated", "[]", JSON.stringify({ schema: 1, stages: [] }), JSON.stringify({ schema: 1, stages: { "pkg:pi-straw-boss": "weird" } })]) {
+			const w = world();
+			writeFileSync(join(w.layout.state, "bootstrap.json"), text);
+			const failure = await failureOf(w.supervisor.start());
+			assert.equal(failure.kind, "state-unreadable", text);
+			assert.equal(failure.offerRepair, true);
+			assert.deepEqual(w.run.calls, []);
+		}
+		const quarantined = world();
+		rmSync(join(quarantined.layout.state, "bootstrap.json"));
+		writeFileSync(join(quarantined.layout.state, "bootstrap.json.corrupt-1"), "{ was damaged");
+		assert.equal((await failureOf(quarantined.supervisor.start())).kind, "state-unreadable");
 	});
 
 	it("reports an engine lock it cannot take in one plain sentence and offers Repair, which removes a lock whose owner is not an engine of this root", async () => {

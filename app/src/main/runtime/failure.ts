@@ -11,6 +11,8 @@ export type StartFailureKind =
 	| "herdr-silent" // kit 4
 	| "engine-locked" // an install is running, or a stale lock stays (R4-F002): the screen offers Repair
 	| "package-unsafe" // a recipe package whose rollback failed and may still load its extensions (T7-F002)
+	| "install-interrupted" // a package stage was left `running` by a crash or a kill and no engine runs (R7-F001)
+	| "state-unreadable" // `state/bootstrap.json` is missing or damaged, so what is safe to run is not known (R7-F007)
 	| "work-folder" // the work folder or the home base folder could not be made
 	// `up` exit 1 with a `wait` value
 	| "lock" // kit 10
@@ -44,6 +46,8 @@ export const KIT_EXIT_CODE: Readonly<Record<StartFailureKind, number | null>> = 
 	"herdr-silent": 4,
 	"engine-locked": null,
 	"package-unsafe": null,
+	"install-interrupted": null,
+	"state-unreadable": null,
 	"work-folder": null,
 	lock: 10,
 	start: 11,
