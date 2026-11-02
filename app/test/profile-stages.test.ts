@@ -118,7 +118,10 @@ interface RunOut {
 async function go(f: Fixture, stack: Stack, recipe: unknown, extraEnv: Record<string, string> = {}): Promise<RunOut> {
 	const options = { npm: { env: envOf(f, extraEnv) } };
 	// `pi-settings` (Windows) merges `shellPath` and needs a PortableGit's bash.exe; its own tests are in pi-settings.test.ts. Here the stages after it stand on `profile`.
-	const stages = (): Stage[] => standalone(profileStages(stack, engineRecipeOf(recipe, stack), platform, options).filter((s) => s.name !== "pi-settings"));
+	const stages = (): Stage[] => {
+		const all = profileStages(stack, engineRecipeOf(recipe, stack), platform, options);
+		return standalone(all.filter((s) => s.name !== "pi-settings").map((s) => ({ ...s, needs: s.needs.map((n) => (n === "pi-settings" ? "profile" : n)) })));
+	};
 	const engine = testEngine(f.root, stages, { appEnv: f.appEnv, layout: f.layout });
 	await engine.engine.handle({ type: "run", config: { root: f.root, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}) } });
 	const done = engine.events.find((e) => e.type === "done");
