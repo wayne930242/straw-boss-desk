@@ -29,6 +29,8 @@ export const en = {
 			"herdr-silent": "The Herdr server did not answer. Try again; if it keeps happening, collect diagnostics.",
 			"engine-locked": "Another setup step is running, or a previous one stopped without letting go. Run Repair to clear it.",
 			"package-unsafe": "A team package could not be taken out cleanly and may still be active. Run Repair to reinstall it before starting.",
+			"install-interrupted": "An install was interrupted and may have left a package half-installed. Run Repair to finish or undo it before starting.",
+			"state-unreadable": "The install record is missing or damaged, so the app cannot tell what is safe to run. Run Repair to rebuild it.",
 			"work-folder": "The work folder could not be created. Check that you can write to it.",
 			lock: "Another start was in progress for too long. Try again.",
 			start: "The Straw Boss service started but did not answer in time. Try again.",

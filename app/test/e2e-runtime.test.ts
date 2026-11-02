@@ -14,6 +14,7 @@ import { Supervisor, type SupervisorEvent } from "../src/main/runtime/supervisor
 import type { SpawnFn } from "../src/main/runtime/herdr.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, runWorld, type RunSummary, type World } from "./harness/e2e-light.ts";
 import { hostedCase } from "./harness/hosted.ts";
+import { prepareStateFolder } from "./harness/hosted-acl.ts";
 
 // The task 8a anchor, supervisor half (spec: Tasks 8a): from a root tasks 5 to 7 filled, a real Herdr, a real sb server and a real pi are started, restarted and stopped
 // by the supervisor. It starts programs and kills one of them, so it runs only on a GitHub-hosted runner (the six-signal check); under SBD_REQUIRE_HOSTED_FIXTURES=1 a
@@ -94,6 +95,7 @@ describe("the runtime supervisor against the real programs (e2e, task 8a)", { sk
 		installed = await runWorld(world, { profile: true, recipe: { forges: [{ kind: "github", host: "github.com" }], tools: [], id: "ci-runtime", name: "CI runtime", version: "1.0.0", instructions: "- the CI rule" } });
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
 		assert.ok(isInstalled(readInstalled(world.layout)));
+		await prepareStateFolder(world);
 		const runtimeLog = new RuntimeLog({ dir: world.layout.logs });
 		const runner = execRunner();
 		supervisor = new Supervisor({

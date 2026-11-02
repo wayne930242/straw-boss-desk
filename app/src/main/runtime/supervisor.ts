@@ -13,7 +13,7 @@ import { StartFailureError, firstLineOf, type StartFailure } from "./failure.ts"
 import { HerdrControl, type HerdrChild, type SpawnFn } from "./herdr.ts";
 import { SerialQueue, killOwned } from "./identity.ts";
 import type { RuntimeEvent } from "./log.ts";
-import { isInstalled, packageBlocks, readInstalled, type Installed } from "./readiness.ts";
+import { isInstalled, readInstalled, readStartGate, STACK_PACKAGE, type Installed, type StartGate } from "./readiness.ts";
 import { checkUpAnswer, runUp, upAnswerOf, type UpSuccess } from "./sbup.ts";
 import { resolveShortNames } from "./short-names.ts";
 import { fingerprintOf, sameFingerprint, StartFile, type StartRecord } from "./start-file.ts";
@@ -185,8 +185,10 @@ export class Supervisor {
 		try {
 			const config = this.#d.config();
 			const installed = this.#requireInstalled();
-			this.#refuseBlockedPackages();
+			this.#refuseUnsafeState(readStartGate(this.#d.layout), "before-engine");
 			await this.#requireIdleEngine();
+			// With no engine running, a package stage still `running` was left by a crash or a kill; read again, since an engine may have finished since the first read.
+			this.#refuseUnsafeState(readStartGate(this.#d.layout), "after-engine");
 			const base = homeBaseDir(config, join);
 			this.#makeFolders(config.workFolder, base);
 			const env = await this.#constructEnv(installed, config);
@@ -235,12 +237,26 @@ export class Supervisor {
 		return found;
 	}
 
-	#refuseBlockedPackages(): void {
-		const blocks = packageBlocks(this.#d.layout);
-		if (blocks.length === 0) return;
-		// The record's own sentence is what the screen shows (T7-F002); a record without one falls back to the package names and the catalog line.
-		const sentences = blocks.map((b) => b.sentence).filter((t) => t !== "");
-		throw new StartFailureError({ kind: "package-unsafe", reason: sentences.length > 0 ? firstLineOf(sentences.join(" ")) : blocks.map((b) => b.package).join(", "), offerRepair: true });
+	/**
+	 * What `state/bootstrap.json` forbids a start to do (T7-F002, R7-F001, R7-F002, R7-F007), all with Repair offered: a file that cannot be read or is gone, a stage record with a
+	 * start block, a package stage left `running` with no engine to own it, and a stack package (`pi-straw-boss`, whose `cli.mjs` runs without pi) whose stage is not `ok`.
+	 */
+	#refuseUnsafeState(gate: StartGate, when: "before-engine" | "after-engine"): void {
+		const fail = (kind: StartFailure["kind"], reason: string): never => {
+			throw new StartFailureError({ kind, reason, offerRepair: true });
+		};
+		if (when === "before-engine") {
+			if (gate.unreadable) fail("state-unreadable", "state/bootstrap.json cannot be read");
+			if (gate.blocks.length > 0) {
+				// The record's own sentence is what the screen shows (T7-F002); a record without one falls back to the package names and the catalog line.
+				const sentences = gate.blocks.map((b) => b.sentence).filter((t) => t !== "");
+				fail("package-unsafe", sentences.length > 0 ? firstLineOf(sentences.join(" ")) : gate.blocks.map((b) => b.package).join(", "));
+			}
+			return;
+		}
+		if (gate.interrupted.length > 0) fail("install-interrupted", gate.interrupted.join(", "));
+		if (gate.missing) fail("state-unreadable", "state/bootstrap.json is missing");
+		if (gate.stackStatus !== "ok") fail("package-unsafe", `${STACK_PACKAGE} is not installed and verified (${gate.stackStatus ?? "no record"})`);
 	}
 
 	async #requireIdleEngine(): Promise<void> {

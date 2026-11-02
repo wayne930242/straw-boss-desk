@@ -7,6 +7,7 @@ import { nodeBinaryPath } from "../../src/main/bootstrap/npm.ts";
 import { agentPackageDir } from "../../src/main/bootstrap/pi-cli.ts";
 import { herdrBinary } from "../../src/main/paths.ts";
 import type { Clock } from "../../src/main/runtime/clock.ts";
+import { STACK_STAGE } from "../../src/main/runtime/readiness.ts";
 import type { HerdrChild } from "../../src/main/runtime/herdr.ts";
 import type { CommandRunner, ProcessInfo, Processes, RunOptions, RunResult } from "../../src/main/platform/types.ts";
 
@@ -175,5 +176,7 @@ export function installFake(layout: Layout): { node: string; herdr: string; sbCl
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, "stub");
 	}
+	// The stack package's stage is `ok`: a start refuses to run its `cli.mjs` otherwise (R7-F002).
+	writeFileSync(join(layout.state, "bootstrap.json"), `${JSON.stringify({ schema: 1, stages: { [STACK_STAGE]: { status: "ok", version: "0.51.0", evidence: "", at: "t", hashes: {}, dependsOn: {} } } })}\n`);
 	return { node, herdr, sbCli, current: versions };
 }

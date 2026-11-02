@@ -23,26 +23,64 @@ export interface PackageBlock {
 	sentence: string;
 }
 
-/** The stage records that carry a start block. Empty when the file is missing, unreadable, or has none. */
-export function packageBlocks(layout: Layout): PackageBlock[] {
+/** The stack package whose `cli.mjs` the supervisor runs directly, without pi (R7-F002). Its stage is `pkg:<name>`. */
+export const STACK_PACKAGE = "pi-straw-boss";
+export const STACK_STAGE = `pkg:${STACK_PACKAGE}`;
+
+/** The package stages that write pi's package list in place; a `running` record on one of them, with the engine lock free, is an interrupted install (R7-F001). */
+export const isPackageStage = (stage: string): boolean => stage === "profile" || stage.startsWith("pkg:") || stage.startsWith("team-pkg:");
+
+export interface StartGate {
+	/** `bootstrap.json` is there but cannot be read, or has no `stages` object: nothing in it can be trusted (R7-F007). */
+	unreadable: boolean;
+	/** `bootstrap.json` is not there. After an install it means the engine quarantined it. */
+	missing: boolean;
+	/** Stage records that carry a `startBlock`. */
+	blocks: PackageBlock[];
+	/** Package stages whose record is `running`. */
+	interrupted: string[];
+	/** The status of the stack package's stage, or null when it has no record. */
+	stackStatus: string | null;
+}
+
+/**
+ * What `state/bootstrap.json` says about whether a start is safe, read from the raw file as `StateStore.startBlocks()` reads it on 7b's branch: a `startBlock` that does not
+ * parse is still a block, and a file that does not parse is not "no blocks" (a start must never go on blind).
+ */
+export function readStartGate(layout: Layout): StartGate {
+	const gate: StartGate = { unreadable: false, missing: false, blocks: [], interrupted: [], stackStatus: null };
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(join(layout.state, "bootstrap.json"), "utf8"));
-	} catch {
-		return [];
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") gate.missing = true;
+		else gate.unreadable = true;
+		return gate;
 	}
 	const stages = typeof parsed === "object" && parsed !== null ? (parsed as { stages?: unknown }).stages : undefined;
-	if (typeof stages !== "object" || stages === null) return [];
-	const out: PackageBlock[] = [];
+	if (typeof stages !== "object" || stages === null || Array.isArray(stages)) {
+		gate.unreadable = true;
+		return gate;
+	}
 	for (const [stage, record] of Object.entries(stages)) {
-		const raw = typeof record === "object" && record !== null ? (record as Record<string, unknown>)[START_BLOCK_FIELD] : undefined;
+		const fields = typeof record === "object" && record !== null ? (record as Record<string, unknown>) : null;
+		if (fields === null) {
+			gate.unreadable = true;
+			continue;
+		}
+		if (stage === STACK_STAGE) gate.stackStatus = typeof fields.status === "string" ? fields.status : "unknown";
+		if (isPackageStage(stage) && fields.status === "running") gate.interrupted.push(stage);
+		const raw = fields[START_BLOCK_FIELD];
 		if (raw === undefined || raw === null) continue;
 		const block = typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 		const name = typeof block.package === "string" && block.package !== "" ? block.package : stage.startsWith("team-pkg:") ? stage.slice("team-pkg:".length) : stage;
-		out.push({ stage, package: name, sentence: typeof block.sentence === "string" ? block.sentence : "" });
+		gate.blocks.push({ stage, package: name, sentence: typeof block.sentence === "string" ? block.sentence : "" });
 	}
-	return out;
+	return gate;
 }
+
+/** The stage records that carry a start block. Empty when the file is missing, unreadable, or has none. */
+export const packageBlocks = (layout: Layout): PackageBlock[] => readStartGate(layout).blocks;
 
 export interface Installed {
 	current: CurrentTools;
