@@ -134,7 +134,8 @@ jobs:
           path: app/test-results/screenshots
           if-no-files-found: warn
 
-  # The task 8a anchor: a real Herdr, sb server and pi started, restarted and stopped from an installed root, and the packaged app's lifecycle against the real stack.
+  # The task 8a anchor: a real Herdr, sb server and pi started, restarted and stopped from an installed root, and the packaged app's lifecycle against the real stack; the task 8b
+  # anchor (following, crashes, power and the page) joins them.
   # Each file installs a whole root, so they are their own job (T8A-F016) and run in parallel with `ci`. They use the development build only (the release build skips the
   # lifecycle by design) and the same download cache as `ci`.
   runtime:
@@ -188,3 +189,14 @@ jobs:
           SBD_E2E_KIND: dev
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: node --test --test-concurrency=1 test/e2e/runtime.e2e.ts
+
+      # The task 8b anchor: the packaged app follows the GUI (restart, kill, /boss gui stop and Start, the failure screen at the fourth restart, suspend and resume), keeps the page
+      # safe (the folder hook, navigation, preview links), and a pi in a pane of a base and its subagent resolve the app's tools, against the scripted stub model. It installs a
+      # whole root like the two files above; the job stays well inside its limit (each Windows file took about 7 minutes before it).
+      - name: Playwright, follow on the development build
+        working-directory: app
+        env:
+          SBD_E2E: "1"
+          SBD_E2E_KIND: dev
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-concurrency=1 --test-timeout=1800000 test/e2e/follow.e2e.ts
