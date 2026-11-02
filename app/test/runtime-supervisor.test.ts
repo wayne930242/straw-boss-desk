@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -14,7 +15,12 @@ import { FakeChild, FakeProcesses, fakeClock, installFake, scriptedRun, type Cal
 // started and the real process table is never read.
 
 const scratch: string[] = [];
+const listeners: Server[] = [];
 after(() => {
+	for (const l of listeners) {
+		l.closeAllConnections?.();
+		l.close();
+	}
 	for (const d of scratch) removeTree(d);
 });
 
@@ -29,6 +35,8 @@ interface WorldOptions {
 	herdrUp?: boolean;
 	timeouts?: SupervisorDeps["timeouts"];
 	stopTimeouts?: SupervisorDeps["stopTimeouts"];
+	/** Turns the follower on, with this timing (the supervisor's follower cases). */
+	follow?: SupervisorDeps["follow"];
 	forges?: Array<{ kind: "github" | "gitlab"; host: string }>;
 	/** Runs when Herdr is spawned / when `up` runs (before it answers): a test changes the world in the middle of a start. */
 	onSpawn?: () => void;
@@ -129,7 +137,7 @@ function world(options: WorldOptions = {}) {
 		log: (f) => log.push(f),
 		clock,
 		eagerStartTimes: options.eager ?? true,
-		timeouts: { pollMs: 0, ...options.timeouts },
+		timeouts: { ...options.timeouts },
 		pidAlive: (pid) => procs.has(pid),
 		isOurEngine: () => false,
 		runSync: (file, args, o) => {
@@ -137,6 +145,7 @@ function world(options: WorldOptions = {}) {
 			return { code: 0 };
 		},
 		...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
+		...(options.follow ? { follow: options.follow } : {}),
 		...(options.checkPane ? { checkPane: options.checkPane } : {}),
 		...(options.resolveProxy ? { resolveProxy: options.resolveProxy } : {}),
 	};
@@ -728,33 +737,176 @@ describe("a Herdr server that ends on its own", () => {
 });
 
 describe("the sb server's pid", () => {
-	it("a new pid in server.json is re-recorded; one that belongs to another program is not recorded; a stopped one is ignored", async () => {
+	it("a new pid is re-recorded; one that belongs to another program is not recorded", async () => {
 		const w = world();
 		await w.supervisor.start();
 		const slot = join(w.layout.agent, "straw-boss");
-		mkdirSync(slot, { recursive: true });
-		const write = (rec: Record<string, unknown>) => writeFileSync(join(slot, "server.json"), JSON.stringify(rec));
-
-		write({ pid: 200 });
-		const before = w.procs.inspectCalls.length;
-		await w.supervisor.pollServerRecord();
-		assert.equal(w.procs.inspectCalls.length, before, "the pid the server had at the start reads nothing");
 
 		w.procs.add(201, { startTime: "S201", executable: w.exe("node") });
-		write({ pid: 201 });
-		await w.supervisor.pollServerRecord();
+		await w.supervisor.noteSbServer(201);
 		assert.deepEqual(w.startRecord()?.sb, { pid: 201, startTime: "S201", slotDir: slot });
 		assert.ok(!JSON.stringify(w.startRecord()).includes("S200"), "the old record is gone");
 
 		w.procs.add(900, { startTime: "X", executable: "/usr/bin/python3" });
-		write({ pid: 900 });
-		await w.supervisor.pollServerRecord();
+		await w.supervisor.noteSbServer(900);
 		assert.deepEqual(w.startRecord()?.sb, { pid: 900, startTime: null, slotDir: slot }, "a server.json pid that is another program's is never recorded");
+	});
+});
 
-		w.procs.add(901, { startTime: "Y", executable: w.exe("node") });
-		write({ pid: 901, stopped: true });
-		await w.supervisor.pollServerRecord();
-		assert.equal(w.startRecord()?.sb?.pid, 900);
+/** A fake GUI listener: 200 on its own token's path, 403 elsewhere. */
+function guiListener(token: string, port = 0): Promise<{ port: number; url: string; close(): Promise<void> }> {
+	return new Promise((resolve, reject) => {
+		const srv = createServer((req, res) => void res.writeHead(req.url === `/${token}/` ? 200 : 403).end("x"));
+		listeners.push(srv);
+		srv.once("error", reject);
+		srv.listen(port, "127.0.0.1", () => {
+			const bound = (srv.address() as { port: number }).port;
+			resolve({
+				port: bound,
+				url: `http://127.0.0.1:${bound}/${token}/`,
+				close: () =>
+					new Promise<void>((done) => {
+						srv.close(() => done());
+						srv.closeAllConnections?.();
+					}),
+			});
+		});
+	});
+}
+
+describe("the follower inside the supervisor (task 8b)", () => {
+	const FOLLOW = { timing: { tickMs: 25, goneMs: 300, freshMs: 500, moveWaitMs: 800, movePollMs: 20, resumeGraceMs: 400 } };
+	const slotOf = (w: { layout: { agent: string } }) => join(w.layout.agent, "straw-boss");
+	const writeServer = (w: { layout: { agent: string } }, rec: Record<string, unknown>) => {
+		const slot = slotOf(w);
+		mkdirSync(slot, { recursive: true });
+		writeFileSync(join(slot, "server.json.tmp"), JSON.stringify(rec));
+		renameSync(join(slot, "server.json.tmp"), join(slot, "server.json"));
+	};
+	const restarts = (n: number) => `restart ${n}`;
+
+	it("records the new pid of a restart the follower sees, and the fourth within 10 minutes shows the failure screen and stops following; Retry starts again with a fresh budget", async () => {
+		const w = world({ follow: FOLLOW });
+		const gui = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: gui.url }));
+		writeServer(w, { pid: 200, gui: { port: gui.port, token: TOKEN } });
+		await w.supervisor.start();
+		for (const pid of [201, 202, 203]) {
+			w.procs.add(pid, { startTime: `S${pid}`, executable: w.exe("node") });
+			writeServer(w, { pid, gui: { port: gui.port, token: TOKEN } });
+			await until(() => w.startRecord()?.sb?.pid === pid && w.startRecord()?.sb?.startTime === `S${pid}`, restarts(pid));
+		}
+		assert.equal(w.supervisor.state, "running", "three restarts are inside the budget");
+		assert.ok(!w.events.some((e) => e.type === "failure"));
+		w.procs.add(204, { startTime: "S204", executable: w.exe("node") });
+		writeServer(w, { pid: 204, gui: { port: gui.port, token: TOKEN } });
+		await until(() => w.events.some((e) => e.type === "failure"), "the budget failure");
+		const failure = w.events.find((e): e is Extract<SupervisorEvent, { type: "failure" }> => e.type === "failure")?.failure;
+		assert.equal(failure?.kind, "restart-budget");
+		assert.match(failure?.reason ?? "", /more than 3 times in 10 minutes/);
+		assert.equal(w.supervisor.state, "failed");
+		// The follower gave up: a fifth pid is not looked at.
+		w.procs.add(205, { startTime: "S205", executable: w.exe("node") });
+		writeServer(w, { pid: 205, gui: { port: gui.port, token: TOKEN } });
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(w.startRecord()?.sb?.pid, 204);
+		// Retry is a whole start with a fresh budget; `up` finds the server that runs now.
+		w.sb.pid = 205;
+		w.upQueue.push(w.upOk({ url: gui.url, server: "found" }));
+		await w.supervisor.retry();
+		assert.equal(w.supervisor.state, "running");
+		for (const pid of [206, 207, 208]) {
+			w.procs.add(pid, { startTime: `S${pid}`, executable: w.exe("node") });
+			writeServer(w, { pid, gui: { port: gui.port, token: TOKEN } });
+			await until(() => w.startRecord()?.sb?.pid === pid, restarts(pid));
+		}
+		assert.equal(w.supervisor.state, "running", "the budget began again");
+		await w.supervisor.stop();
+	});
+
+	it("runs `up` once when the GUI is gone and announces the new address as `moved`; an `up` that started another server counts as a restart", async () => {
+		const w = world({ follow: FOLLOW });
+		const a = await guiListener(TOKEN);
+		const tokenB = "fedcba9876543210fedcba9876543210";
+		const b = await guiListener(tokenB);
+		w.upQueue.push(w.upOk({ url: a.url }), w.upOk({ url: b.url, server: "restarted" }));
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		await w.supervisor.start();
+		assert.equal(w.order.filter((o) => o === "up").length, 1);
+		await a.close();
+		await until(() => urlEvents(w.events).some((e) => e.reason === "moved"), "the moved address");
+		assert.equal(w.order.filter((o) => o === "up").length, 2);
+		assert.equal(urlEvents(w.events).at(-1)?.url, b.url);
+		assert.equal(w.supervisor.state, "running");
+		await w.supervisor.stop();
+	});
+
+	it("shows the typed failure when the gone rule's `up` fails, and Retry (the Start button) runs it again", async () => {
+		const w = world({ follow: FOLLOW });
+		const a = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: a.url }), { code: 1, stderr: `${JSON.stringify({ step: "gui", reason: "the page did not start" })}\n` });
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		await w.supervisor.start();
+		await a.close();
+		await until(() => w.events.some((e) => e.type === "screen"), "the failed screen");
+		const screen = w.events.find((e): e is Extract<SupervisorEvent, { type: "screen" }> => e.type === "screen")?.screen;
+		assert.equal(screen?.kind, "failed");
+		assert.equal(screen?.kind === "failed" ? screen.failure.kind : "", "gui");
+		const b = await guiListener("0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f");
+		w.upQueue.push(w.upOk({ url: b.url }));
+		await w.supervisor.retry();
+		assert.equal(urlEvents(w.events).at(-1)?.url, b.url);
+		await w.supervisor.stop();
+	});
+
+	it("tells the window the server's default view before the first address, and again when it changes", async () => {
+		const w = world({ follow: FOLLOW });
+		const a = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: a.url }));
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		writeFileSync(join(slotOf(w), "gui.json"), JSON.stringify({ port: a.port, token: TOKEN, view: "zen" }));
+		await w.supervisor.start();
+		const kinds = w.events.map((e) => e.type);
+		assert.ok(kinds.indexOf("view") >= 0 && kinds.indexOf("view") < kinds.indexOf("gui-url"), kinds.join(","));
+		assert.deepEqual(w.events.filter((e) => e.type === "view").map((e) => (e as { view?: string }).view), ["zen"]);
+		writeFileSync(join(slotOf(w), "gui.json"), JSON.stringify({ port: a.port, token: TOKEN, view: "geek" }));
+		await until(() => w.events.filter((e) => e.type === "view").length === 2, "the changed view");
+		assert.equal((w.events.filter((e) => e.type === "view").at(-1) as { view?: string }).view, "geek");
+		await w.supervisor.stop();
+	});
+
+	it("pauses the follower at suspend and resumes it with a grace period, so a URL that was down across the sleep runs no `up`", async () => {
+		const w = world({ follow: FOLLOW });
+		const a = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: a.url }));
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		await w.supervisor.start();
+		const ups = w.order.filter((o) => o === "up").length;
+		w.supervisor.suspend();
+		await a.close();
+		await new Promise((r) => setTimeout(r, 700));
+		w.supervisor.resume();
+		const back = await guiListener(TOKEN, a.port);
+		await new Promise((r) => setTimeout(r, 900));
+		assert.equal(w.order.filter((o) => o === "up").length, ups, "no `up` for a gap the sleep made");
+		assert.ok(w.log.some((l) => l.event === "follow-pause") && w.log.some((l) => l.event === "follow-resume"));
+		await back.close();
+		await w.supervisor.stop();
+	});
+
+	it("stops following when the stack stops: a pid that changes afterwards is not looked at", async () => {
+		const w = world({ follow: FOLLOW });
+		const a = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: a.url }));
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		await w.supervisor.start();
+		await w.supervisor.stop();
+		const before = w.procs.inspectCalls.length;
+		w.procs.add(300, { startTime: "S300", executable: w.exe("node") });
+		writeServer(w, { pid: 300, gui: { port: a.port, token: TOKEN } });
+		await new Promise((r) => setTimeout(r, 250));
+		assert.equal(w.procs.inspectCalls.length, before);
+		assert.ok(!w.log.some((l) => l.event === "sb-server-restarted" && l.pid === 300));
 	});
 });
 

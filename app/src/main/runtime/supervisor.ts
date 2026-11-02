@@ -10,21 +10,25 @@ import type { CommandRunner, Platform } from "../platform/types.ts";
 import { realClock, type Clock } from "./clock.ts";
 import { assertEngineIdle, ENGINE_LOCKED_SENTENCE, EngineLockedError, repairEngineLock, type RepairResult } from "./engine-lock.ts";
 import { StartFailureError, firstLineOf, type StartFailure } from "./failure.ts";
+import { Follower, readGuiView, type BannerKind, type FollowHost, type FollowTiming, type GuiView, type Screen, type ServerIdentity, type UpResult } from "./follow.ts";
+import { SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS, SlidingBudget } from "./budget.ts";
 import { HerdrControl, type HerdrChild, type SpawnFn } from "./herdr.ts";
 import { SerialQueue, killOwned } from "./identity.ts";
 import type { RuntimeEvent } from "./log.ts";
+import type { LogValue } from "../bootstrap/log.ts";
 import { isInstalled, readInstalled, readStartGate, STACK_PACKAGE, type Installed, type StartGate } from "./readiness.ts";
 import { checkUpAnswer, runUp, upAnswerOf, type UpSuccess } from "./sbup.ts";
 import { resolveShortNames } from "./short-names.ts";
 import { fingerprintOf, sameFingerprint, StartFile, type StartRecord } from "./start-file.ts";
 import { StartTimes } from "./start-times.ts";
 import { homeBaseDir, type StartConfig } from "./config.ts";
-import { readServerRecordFile, runStop, stopTimeoutsFor, type StopReport, type StopTimeouts } from "./stop.ts";
+import { runStop, stopTimeoutsFor, type StopReport, type StopTimeouts } from "./stop.ts";
 
 // The runtime supervisor (spec: Runtime supervisor; tasks 8a and 8b). This file owns the order of a start (Herdr, then `up`, then the GUI), the stop sequence, the start
 // times in `state/start.json`, and the restart of a Herdr server that ended. It starts only the programs the spec names, from the constructed environment, and it
-// kills nothing but by the rule of `identity.ts`. Following the GUI, the crash budgets, power, and the page are task 8b's; the one thing a restart needs from them, the
-// re-recording of a new `server.json` pid, is here as `noteSbServer` and a small poll that 8b's follower replaces with its own calls.
+// kills nothing but by the rule of `identity.ts`. Task 8b adds the follower (`follow.ts`), which it owns: it follows the slot folder once the stack runs, hands a new
+// `server.json` pid to `noteSbServer`, runs `up` again when the GUI is gone, and keeps the crash budgets (more than 3 restarts of either server in 10 minutes stop the retrying).
+// Power (`suspend`, `resume`) pauses it. The window, the screens and the page are the app's (`index.ts`); this class only says what happened through its events.
 
 export type SupervisorState = "idle" | "starting" | "running" | "stopping" | "failed";
 
@@ -39,7 +43,14 @@ export interface StartResult {
 }
 
 export type SupervisorEvent =
-	| { type: "gui-url"; url: string; reason: "start" | "restart" }
+	/** `moved` is the follower's: the address changed under a running stack, or `up` ran again after the GUI was gone. */
+	| { type: "gui-url"; url: string; reason: "start" | "restart" | "moved" }
+	/** The follower replaces the page with a shell screen (the GUI was stopped, the server was stopped, a start failed). */
+	| { type: "screen"; screen: Screen }
+	/** A small notice over the page; undefined removes it. */
+	| { type: "banner"; kind: BannerKind | undefined }
+	/** The server's default view, before the page loads and whenever it changes: the window's background follows it. */
+	| { type: "view"; view: GuiView | undefined }
 	| { type: "notice"; kind: string; sentence: string; path?: string }
 	| { type: "failure"; failure: StartFailure }
 	| { type: "stopped"; report: StopReport }
@@ -56,13 +67,11 @@ export interface SupervisorTimeouts {
 	upTimeoutSec: number;
 	/** The process limit of `up` (150 s). */
 	upProcessMs: number;
-	/** The poll of `server.json` for a new pid; 0 turns it off (a test calls `pollServerRecord`). */
-	pollMs: number;
 	/** The session-end stop: `cli.mjs stop` with this limit (10 s). */
 	sessionEndStopMs: number;
 }
 
-export const DEFAULT_TIMEOUTS: SupervisorTimeouts = { herdrStartMs: 45_000, upTimeoutSec: 120, upProcessMs: 150_000, pollMs: 2_000, sessionEndStopMs: 10_000 };
+export const DEFAULT_TIMEOUTS: SupervisorTimeouts = { herdrStartMs: 45_000, upTimeoutSec: 120, upProcessMs: 150_000, sessionEndStopMs: 10_000 };
 
 export interface SupervisorDeps {
 	layout: Layout;
@@ -91,13 +100,11 @@ export interface SupervisorDeps {
 	runSync?: (file: string, args: readonly string[], options: { env: EnvMap; timeoutMs: number }) => SyncRunResult;
 	timeouts?: Partial<SupervisorTimeouts>;
 	stopTimeouts?: Partial<StopTimeouts>;
+	/** Follow the slot folder once the stack runs (the app and the e2e tests set it; a unit test that does not test the follower leaves it out). */
+	follow?: { timing?: Partial<FollowTiming> };
 	/** Read start times at once (macOS) or after the GUI shows (Windows). Default: by platform; a test sets it. */
 	eagerStartTimes?: boolean;
 }
-
-/** More than this many Herdr restarts by the supervisor within the window shows the failure screen instead of another restart. Task 8b owns the budgets of both servers. */
-const HERDR_RESTARTS = 3;
-const RESTART_WINDOW_MS = 10 * 60 * 1000;
 
 /** The stack could not be stopped, so the npm stages must not run in its prefix (T6-F006). */
 export class StackBusyError extends Error {
@@ -126,8 +133,14 @@ export class Supervisor {
 	#herdrChild: HerdrChild | null = null;
 	#slotDir: string | null = null;
 	#lastSbPid: number | null = null;
-	#watch: NodeJS.Timeout | null = null;
-	#restarts: number[] = [];
+	/** More than 3 restarts of either server in 10 minutes stop the retrying and show the failure screen (spec: Crash and sleep). */
+	readonly #herdrBudget = new SlidingBudget(SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS);
+	readonly #sbBudget = new SlidingBudget(SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS);
+	#follower: Follower | null = null;
+	/** The GUI's address with its page token: in memory only, for the follower to start from. */
+	#guiUrl: string | null = null;
+	#view: GuiView | undefined;
+	#viewKnown = false;
 	#after: Promise<void> = Promise.resolve();
 
 	constructor(deps: SupervisorDeps) {
@@ -202,7 +215,9 @@ export class Supervisor {
 			const { slotDir } = checkUpAnswer(up, join(layout.agent, "straw-boss"));
 			await this.#recordUp(up, slotDir, base);
 			this.#slotDir = slotDir;
-			this.#lastSbPid = up.pid;
+			// A fresh start by the PM (the first, Retry, Start) begins fresh budgets.
+			this.#herdrBudget.reset();
+			this.#sbBudget.reset();
 			// A warning code that is not a notice is logged, never shown; the URL is checked for its shape and never logged.
 			log({ event: "sb-server-up", pid: up.pid, server: up.server, desk: up.desk, version: up.version, workspace: up.workspace, pane: up.pane, tower: up.tower, created: up.created, integration: up.integration, started: up.started, warnings: up.warnings, ms: this.#clock.now() - began });
 			for (const notice of up.notices) this.#emit({ type: "notice", kind: "sb-server", sentence: notice });
@@ -210,7 +225,7 @@ export class Supervisor {
 			if (up.warnings.includes("desk_on")) log({ event: "env-bug", detail: "warning desk_on: the shell always sets STRAW_BOSS_DESK=1" });
 			this.#setState("running");
 			await this.#startFile.update((record) => (record ? { ...record, guiMs: this.#clock.now() - began } : record));
-			this.#emit({ type: "gui-url", url: up.url, reason: "start" });
+			this.#announce(up.url, up.pid, "start");
 			return { url: up.url, slotDir, server: up.server, herdrReused: reused, notices: up.notices };
 		} catch (error) {
 			this.#fail(error);
@@ -447,15 +462,11 @@ export class Supervisor {
 	async #restartAfterExit(): Promise<void> {
 		if (this.#state !== "running" || this.#env === null || this.#installed === null || this.#config === null) return;
 		const now = this.#clock.now();
-		this.#restarts = [...this.#restarts.filter((t) => now - t < RESTART_WINDOW_MS), now];
-		if (this.#restarts.length > HERDR_RESTARTS) {
-			const failure: StartFailure = { kind: "herdr", reason: `the Herdr server stopped more than ${HERDR_RESTARTS} times in 10 minutes` };
-			this.#setState("failed");
-			this.#d.log({ event: "restart-budget", restarts: this.#restarts.length });
-			this.#emit({ type: "failure", failure });
+		if (this.#herdrBudget.hit(now)) {
+			this.#giveUpRestarting("herdr", `the Herdr server stopped more than ${SERVER_RESTART_MAX} times in 10 minutes`);
 			return;
 		}
-		this.#d.log({ event: "herdr-restart", count: this.#restarts.length });
+		this.#d.log({ event: "herdr-restart", count: this.#herdrBudget.count(now) });
 		const herdr = this.#herdr as HerdrControl;
 		try {
 			await this.#startHerdr(herdr, { restart: true });
@@ -464,11 +475,18 @@ export class Supervisor {
 			const { slotDir } = checkUpAnswer(up, join(this.#d.layout.agent, "straw-boss"));
 			await this.#recordUp(up, slotDir, base);
 			this.#slotDir = slotDir;
-			this.#lastSbPid = up.pid;
-			this.#emit({ type: "gui-url", url: up.url, reason: "restart" });
+			this.#announce(up.url, up.pid, "restart");
 		} catch (error) {
 			this.#fail(error);
 		}
+	}
+
+	/** The retrying stops (a server restarted more than 3 times in 10 minutes): the follower stops, the state is `failed`, and the failure screen offers Retry. */
+	#giveUpRestarting(which: "herdr" | "sb", reason: string): void {
+		this.#stopFollower();
+		this.#setState("failed");
+		this.#d.log({ event: "restart-budget", which });
+		this.#emit({ type: "failure", failure: { kind: "restart-budget", reason } });
 	}
 
 	// ---- up ----------------------------------------------------------------------------------------------------------
@@ -496,8 +514,11 @@ export class Supervisor {
 		});
 	}
 
-	/** One `up` after the stack is running (the follower's gone rule, a Start button): the GUI's address, with `gui-url` emitted. Queued with every other lifecycle step. */
-	upOnce(): Promise<UpSuccess> {
+	/**
+	 * One `up` after the stack is running (the follower's gone rule, a Start button): the GUI's address, with `gui-url` emitted unless `emit` is false (the follower loads the
+	 * address itself). Queued with every other lifecycle step. An `up` that started another sb server counts as a restart of it.
+	 */
+	upOnce(options: { emit?: boolean } = {}): Promise<UpSuccess> {
 		return this.#queue.run(async () => {
 			if (this.#env === null || this.#installed === null || this.#config === null || this.#herdr === null) throw new StartFailureError({ kind: "other", reason: "the stack was not started by this run" });
 			const base = homeBaseDir(this.#config, join);
@@ -505,7 +526,9 @@ export class Supervisor {
 			const { slotDir } = checkUpAnswer(up, join(this.#d.layout.agent, "straw-boss"));
 			await this.#recordUp(up, slotDir, base);
 			this.#slotDir = slotDir;
-			this.#emit({ type: "gui-url", url: up.url, reason: "restart" });
+			const overBudget = up.server !== "found" && this.#sbBudget.hit(this.#clock.now());
+			this.#announce(up.url, up.pid, "restart", options.emit !== false);
+			if (overBudget) this.#giveUpRestarting("sb", `the sb server restarted more than ${SERVER_RESTART_MAX} times in 10 minutes`);
 			return up;
 		});
 	}
@@ -559,7 +582,6 @@ export class Supervisor {
 
 	async #afterGui(): Promise<void> {
 		await this.#times.flush();
-		this.#startWatch();
 		// A job of the queue: the prune holds `engine.lock` with this process's pid, and a Herdr restart, `upOnce` or `withStackStopped` that came meanwhile must wait for it
 		// rather than meet the lock as an engine run (R8A-F002).
 		await this.#queue.run(() => this.#prune());
@@ -578,26 +600,82 @@ export class Supervisor {
 		}
 	}
 
-	// ---- the sb server's pid -----------------------------------------------------------------------------------------
+	// ---- following the GUI -------------------------------------------------------------------------------------------
 
-	#startWatch(): void {
-		this.#stopWatch();
-		if (this.#timeouts.pollMs <= 0 || this.#slotDir === null) return;
-		this.#watch = setInterval(() => void this.pollServerRecord().catch((error: Error) => this.#d.log({ event: "poll-failed", detail: error.message })), this.#timeouts.pollMs);
-		this.#watch.unref();
+	/**
+	 * The GUI's address is known: remember it, tell the window the server's default view (before the page loads) and the address, and make sure the follower follows from
+	 * here. Every address the supervisor announces comes through this one place, so the follower's idea of the loaded page and of the sb server never lags behind.
+	 */
+	#announce(url: string, sbPid: number, reason: "start" | "restart" | "moved", emit = true): void {
+		this.#guiUrl = url;
+		this.#lastSbPid = sbPid;
+		if (this.#slotDir !== null) this.#setView(readGuiView(this.#slotDir));
+		if (this.#follower !== null) this.#follower.adopt(url, { pid: sbPid });
+		else this.#startFollower(url, sbPid);
+		if (emit) this.#emit({ type: "gui-url", url, reason });
 	}
 
-	#stopWatch(): void {
-		if (this.#watch !== null) clearInterval(this.#watch);
-		this.#watch = null;
+	#setView(view: GuiView | undefined): void {
+		if (this.#viewKnown && view === this.#view) return;
+		this.#viewKnown = true;
+		this.#view = view;
+		this.#emit({ type: "view", view });
 	}
 
-	/** One look at `server.json`: a new `pid` is a restart (`cli.mjs restart`, a pi session's own restart), and is re-recorded. */
-	async pollServerRecord(): Promise<void> {
-		if (this.#slotDir === null || this.#state !== "running") return;
-		const current = readServerRecordFile(this.#slotDir);
-		if (current === null || current.stopped || current.pid === this.#lastSbPid) return;
-		await this.noteSbServer(current.pid);
+	#startFollower(url: string, sbPid: number): void {
+		if (this.#d.follow === undefined || this.#slotDir === null) return;
+		const follower = new Follower(this.#slotDir, this.#followHost(), url, this.#d.follow.timing, { pid: sbPid }, this.#view);
+		this.#follower = follower;
+		follower.start();
+	}
+
+	#stopFollower(): void {
+		this.#follower?.stop();
+		this.#follower = null;
+	}
+
+	#followHost(): FollowHost {
+		return {
+			log: (event, data) => this.#d.log({ event, ...((data ?? {}) as Record<string, LogValue>) }),
+			load: (url) => {
+				this.#guiUrl = url;
+				this.#emit({ type: "gui-url", url, reason: "moved" });
+			},
+			screen: (screen) => this.#emit({ type: "screen", screen }),
+			banner: (kind) => this.#emit({ type: "banner", kind }),
+			runUp: (): Promise<UpResult> =>
+				this.upOnce({ emit: false }).then(
+					(up) => ({ ok: true, url: up.url }),
+					(error: unknown) => ({ ok: false, failure: error instanceof StartFailureError ? error.failure : { kind: "other", reason: firstLineOf((error as Error).message) } }),
+				),
+			restarted: (server) => this.#onSbRestarted(server),
+			view: (view) => this.#setView(view),
+		};
+	}
+
+	/** The follower saw `server.json` name another sb server: it is recorded, and counted against the budget (more than 3 in 10 minutes stops the retrying). */
+	#onSbRestarted(server: ServerIdentity): void {
+		void this.noteSbServer(server.pid).catch((error: Error) => this.#d.log({ event: "rerecord-failed", detail: error.message }));
+		if (this.#sbBudget.hit(this.#clock.now())) this.#giveUpRestarting("sb", `the sb server restarted more than ${SERVER_RESTART_MAX} times in 10 minutes`);
+	}
+
+	/** The Start button or Retry of a shell screen: the follower's `up` while the stack runs, else a whole start. */
+	async retry(): Promise<void> {
+		if (this.#state === "running" && this.#follower !== null) {
+			await this.#follower.startFromScreen();
+			return;
+		}
+		await this.start();
+	}
+
+	/** `powerMonitor` `suspend`: the follower reads and probes nothing until `resume`. */
+	suspend(): void {
+		this.#follower?.pause();
+	}
+
+	/** `powerMonitor` `resume`: the follower reads the slot folder again and gives the URL 20 s before the gone rule applies. */
+	resume(): void {
+		this.#follower?.resume();
 	}
 
 	/** The sb server restarted under a new pid (the follower sees it in `server.json`): the old record goes and the new pid is recorded, if its executable is the app's. */
@@ -617,7 +695,7 @@ export class Supervisor {
 	async #stop(): Promise<StopReport> {
 		const { layout, platform, run, log } = this.#d;
 		this.#setState("stopping");
-		this.#stopWatch();
+		this.#stopFollower();
 		const prepared = this.#prepareForStop();
 		if (prepared === null) {
 			const report: StopReport = { ok: true, cliStop: { ran: false, exit: null, outcome: "", timedOut: false, detail: "" }, unverifiedSb: null, killed: [], refused: [], leftovers: [], herdrAnswers: false, notes: ["nothing is installed, so nothing was started"] };
@@ -689,7 +767,7 @@ export class Supervisor {
 	stopForSessionEnd(): void {
 		const prepared = this.#prepareForStop();
 		if (prepared === null) return;
-		this.#stopWatch();
+		this.#stopFollower();
 		// The same rule as the stop's: an unverified pi-straw-boss runs no `cli.mjs` at all, whatever sb server runs (R8A-F001, T8C-F001). Nothing is killed here: Windows ends the rest.
 		if (!this.#sbPackageVerified()) {
 			this.#d.log({ event: "session-end-stop-skipped", reason: "package-not-ok" });
