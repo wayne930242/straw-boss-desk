@@ -4,7 +4,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { buildEnv, systemEnv, type EnvMap } from "../../src/main/env.ts";
 import { loadLayout, type AppPlatform, type CurrentTools, type Layout } from "../../src/main/paths.ts";
 import { createEngine, type EngineEvent } from "../../src/main/bootstrap/engine.ts";
@@ -13,7 +13,7 @@ import { removeTree } from "../../src/main/bootstrap/fsutil.ts";
 import { toolStages, type StageOptions } from "../../src/main/bootstrap/stages/index.ts";
 import { profileStages } from "../../src/main/bootstrap/stages/profile.ts";
 import type { StageOutcome } from "../../src/main/bootstrap/stage.ts";
-import type { RunResult, UserPath, UserPathValue } from "../../src/main/platform/types.ts";
+import type { Processes, RunResult, UserPath, UserPathValue } from "../../src/main/platform/types.ts";
 import { planEnsureFirst, planRemove } from "../../src/main/platform/win.ts";
 import { hostedCase } from "./hosted.ts";
 import { platformKey } from "../../src/main/bootstrap/stack.ts";
@@ -116,30 +116,46 @@ export async function disposeWorld(world: World): Promise<void> {
 	try {
 		if (world.realUserPath) await world.userPath.remove(world.layout.tools.shims);
 	} finally {
-		await stopProcessesUnder(world.base);
+		try {
+			await stopProcessesUnder(world.base);
+		} catch (error) {
+			// The listing is best effort: a folder that cannot be deleted afterwards says so itself.
+			console.log(`disposeWorld: could not list the processes under ${world.base}: ${(error as Error).message.slice(0, 200)}`);
+		}
 		removeTree(world.base);
 	}
 }
 
+/** One process `stopProcessesUnder` stopped: its pid and the file name of its executable, which is all that is ever printed of it. */
+export interface StoppedProcess {
+	pid: number;
+	executable: string;
+}
+
 /**
- * Windows only: stops what the world's installed pi left running (an extension's language server, a daemon of a package), found by the scratch folder in its
- * executable path or command line, so the folder can be deleted. Every such process was started by this test from this folder. Each one is named in the output.
+ * Stops what the world's installed pi left running (an extension's tsx loader, `esbuild --service`, a daemon of a package), so the scratch folder can be
+ * deleted (Windows refuses to delete a program that runs). A process is selected by one rule only: the full path of its executable lies under `base`
+ * (`lsof -d txt` on macOS, `Win32_Process.ExecutablePath` on Windows; the platform layer's leftover listing). Its command line is never read: other programs
+ * put passwords in theirs, and a command line that merely names `base` (an editor, a shell) says nothing about who started the process. Each stop is
+ * printed as the pid and the executable's file name, nothing else; this runs on macOS as well (T7-F001). Never stops this process.
  */
-async function stopProcessesUnder(base: string): Promise<void> {
-	if (process.platform !== "win32") return;
-	const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
-	const script = [
-		"$b = $env:SBD_SCAN_BASE",
-		"Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and (($_.CommandLine -and $_.CommandLine.Contains($b)) -or ($_.ExecutablePath -and $_.ExecutablePath.Contains($b))) } | ForEach-Object { \"$($_.ProcessId) $($_.Name) $($_.CommandLine)\" }",
-	].join("; ");
-	const found = await run(join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", SBD_SCAN_BASE: base }, timeoutMs: 60_000 });
-	const lines = found.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
-	for (const line of lines) {
-		const pid = Number(line.split(" ")[0]);
-		console.log(`disposeWorld: stopping a process left under ${base}: ${line.slice(0, 300)}`);
-		if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) await run(join(system32, "taskkill.exe"), ["/T", "/F", "/PID", String(pid)], { env: {}, timeoutMs: 30_000 });
+export async function stopProcessesUnder(base: string, options: { processes?: Processes; log?: (line: string) => void } = {}): Promise<StoppedProcess[]> {
+	const processes = options.processes ?? createPlatform().processes;
+	const log = options.log ?? ((line: string) => console.log(line));
+	const stopped: StoppedProcess[] = [];
+	// A stopped parent can leave a child that started late: look again until nothing is listed, up to three times.
+	for (let round = 0; round < 3; round++) {
+		const left = (await processes.listUnder(base)).filter((p) => p.pid !== process.pid);
+		if (left.length === 0) break;
+		for (const p of left) {
+			const executable = basename(p.executable ?? "");
+			log(`disposeWorld: stopping pid ${p.pid} (${executable}), left running from under ${base}`);
+			processes.kill(p.pid);
+			stopped.push({ pid: p.pid, executable });
+		}
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 	}
-	if (lines.length > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+	return stopped;
 }
 
 // ---- downloads ---------------------------------------------------------------------------------------------------------
