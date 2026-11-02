@@ -1,5 +1,5 @@
 import type { TeamRecipe } from "../profile/team-profile.ts";
-import { StackError, optionalToolNames, type NpmPin, type Stack } from "./stack.ts";
+import { StackError, isPackageName, optionalToolNames, type NpmPin, type Stack } from "./stack.ts";
 
 // What the engine takes from the active recipe (spec: Stages, `gh`, `glab`, `opt:<tool>`; FE2 asks): the forges, which decide the code-host CLIs,
 // and the names of the optional tools it turns on. Main validates the recipe file with `validateRecipe(text, recipeValidationOptions(stack))`
@@ -93,6 +93,8 @@ function teamOf(recipe: Record<string, unknown>): EngineTeam | undefined {
 		team.profile = { version: p.version, integrity: p.integrity };
 	}
 	for (const [i, pkg] of (Array.isArray(recipe.packages) ? recipe.packages : []).entries()) {
+		// The name reaches the arguments of npm and pi: the recipe schema checks it, but only main knows the recipe was validated (T7-F009).
+		if (isObject(pkg) && !isPackageName(pkg.name)) throw new StackError(`the recipe's packages[${i}] needs an npm package name (lowercase, no leading dash)`);
 		if (!isObject(pkg) || !str(pkg.name) || !str(pkg.version) || !EXACT.test(pkg.version) || !str(pkg.integrity) || !SRI.test(pkg.integrity)) {
 			throw new StackError(`the recipe's packages[${i}] needs a name, an exact version, and a sha512 integrity`);
 		}

@@ -4,7 +4,7 @@ import type { Layout } from "../paths.ts";
 import type { RunResult } from "../platform/index.ts";
 import { StageError } from "./errors.ts";
 import { nodeBinaryPath, npmFailure, packageDir, type NpmRun } from "./npm.ts";
-import { StackError, type NpmPin } from "./stack.ts";
+import { assertPackageName, type NpmPin } from "./stack.ts";
 import type { StageContext } from "./stage.ts";
 import { binEntry, npmGlobalPin, readManifest } from "./stages/pi.ts";
 
@@ -12,20 +12,17 @@ import { binEntry, npmGlobalPin, readManifest } from "./stages/pi.ts";
 // which keep `settings.json`'s `packages` list and install under `<agent>/npm/node_modules`. pi runs by `node <its bin script>` under the private Node,
 // with the constructed environment, so no `.cmd` wrapper and no shell are involved (the kit's `Invoke-Native -File $t.PiCmd` had both).
 
-/** An npm package name as the registry allows it, which is also all a folder under `node_modules` may be called here. */
-const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
-
 /** `<agent>/npm/node_modules/<name>`: where `pi install` puts a package. A name that is not a plain npm name is refused, so it can never name a path outside the folder. */
 export function agentPackageDir(layout: Layout, name: string): string {
-	if (!PACKAGE_NAME.test(name) || name.length > 214) throw new StackError(`${JSON.stringify(name.slice(0, 80))} is not an npm package name`);
+	assertPackageName(name);
 	return join(layout.agent, "npm", "node_modules", ...name.split("/"));
 }
 
 /** The version of the package `pi install` put under the agent folder, or null when it is not there. */
 export const installedVersion = (layout: Layout, name: string): string | null => readManifest(join(agentPackageDir(layout, name), "package.json"))?.version ?? null;
 
-/** `npm:<name>@<version>`, the source string pi takes and writes into `settings.json`. */
-export const piSource = (pin: Pick<NpmPin, "name" | "version">): string => `npm:${pin.name}@${pin.version}`;
+/** `npm:<name>@<version>`, the source string pi takes and writes into `settings.json`. A name that is not an npm name never gets as far as pi's arguments. */
+export const piSource = (pin: Pick<NpmPin, "name" | "version">): string => `npm:${assertPackageName(pin.name)}@${pin.version}`;
 
 /** The private Node and the pinned pi's bin script: what runs `pi <subcommand>`. */
 export function piInvocation(ctx: StageContext): { file: string; script: string } {
@@ -59,11 +56,19 @@ export const piRemove = (ctx: StageContext, pin: Pick<NpmPin, "name" | "version"
 
 export type LockCheck = { kind: "match" } | { kind: "mismatch"; recorded: string } | { kind: "absent" };
 
+/** Whether a lock key names the top-level `node_modules/<name>` (`tail`), possibly behind a path prefix; a nested copy (`node_modules/<dep>/node_modules/<name>`) is not it (T7-F008). */
+function isTopLevelKey(key: string, tail: string): boolean {
+	if (key === tail) return true;
+	if (!key.endsWith(`/${tail}`)) return false;
+	return !key.slice(0, key.length - tail.length).split("/").includes("node_modules");
+}
+
 /**
  * What npm recorded for `pin` in `<agent>/npm/package-lock.json` when pi installed it: the integrity of the tarball it fetched. The registry's answer was
- * compared with the pin before the install (`assertRegistryIntegrity`); this closes the window between that question and the download, since a tarball
- * that changed in between would be recorded here with another integrity. The lock's key for the package can carry a path prefix (a linked data root), so
- * entries are matched by the `node_modules/<name>` they end with.
+ * compared with the pin before the install (`assertRegistryIntegrity`); this detects a tarball that changed between that question and the download, since
+ * it would be recorded here with another integrity (the package's install scripts have run by then, so this is detection, not prevention). Only the
+ * top-level entry counts: a copy nested under a dependency must not answer for it. The key can carry a path prefix (a linked data root), so the entry
+ * is matched by the `node_modules/<name>` it ends with, provided no other `node_modules/` comes before it.
  */
 export function checkLockedIntegrity(layout: Layout, pin: NpmPin): LockCheck {
 	let lock: unknown;
@@ -76,7 +81,7 @@ export function checkLockedIntegrity(layout: Layout, pin: NpmPin): LockCheck {
 	if (typeof packages !== "object" || packages === null) return { kind: "absent" };
 	const tail = `node_modules/${pin.name}`;
 	for (const [key, entry] of Object.entries(packages as Record<string, unknown>)) {
-		if (key !== tail && !key.endsWith(`/${tail}`)) continue;
+		if (!isTopLevelKey(key, tail)) continue;
 		if (typeof entry !== "object" || entry === null) continue;
 		const { version, integrity } = entry as { version?: unknown; integrity?: unknown };
 		if (version !== pin.version) continue;

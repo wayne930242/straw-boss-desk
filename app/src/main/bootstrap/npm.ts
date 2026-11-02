@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { toolDir, toolExecutable, type Layout } from "../paths.ts";
 import { StageError } from "./errors.ts";
 import type { StageContext } from "./stage.ts";
-import type { NpmPin } from "./stack.ts";
+import { assertPackageName, type NpmPin } from "./stack.ts";
 import type { RunResult } from "../platform/index.ts";
 
 // The npm steps of the pi stages (spec: Stages `pi`; Rollback: "npm and pi stages roll back by installing the previous pin again"). npm runs under the
@@ -81,6 +81,8 @@ export async function runNpm(ctx: StageContext, args: readonly string[], options
 
 /** Asks the registry for the pin's integrity and refuses a different one (`integrity`, never retried) or an unreadable answer (`registry`). */
 export async function assertRegistryIntegrity(ctx: StageContext, pin: NpmPin, options: NpmRun = {}): Promise<void> {
+	// The name becomes an argument of npm: one that is not an npm name (`--registry=...`) never gets that far (T7-F009).
+	assertPackageName(pin.name);
 	const what = `${pin.name}@${pin.version}`;
 	const result = await runNpm(ctx, ["view", what, "dist.integrity", "--prefer-online"], { ...options, timeoutMs: options.timeoutMs ?? 120_000 });
 	if (result.timedOut || result.code !== 0) throw npmFailure(ctx.stage, what, result, `registry lookup for ${what}`);

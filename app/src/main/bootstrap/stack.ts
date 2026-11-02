@@ -41,6 +41,17 @@ export class StackError extends Error {
 	}
 }
 
+/** An npm package name as the registry allows it, which is also all a folder under `node_modules` may be called here (no leading `-`, so it can never pass for an npm option). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+
+export const isPackageName = (name: unknown): name is string => typeof name === "string" && name.length <= 214 && PACKAGE_NAME.test(name);
+
+/** Throws `StackError` unless `name` is an npm package name: the check before a name becomes a path or an argument of npm or pi (T7-F009). */
+export function assertPackageName(name: unknown): string {
+	if (!isPackageName(name)) throw new StackError(`${JSON.stringify(typeof name === "string" ? name.slice(0, 80) : name)} is not an npm package name`);
+	return name;
+}
+
 /** The asset key for this machine. Windows is x64 everywhere, also on ARM, where it runs under emulation (spec: Decisions). */
 export function platformKey(platform: NodeJS.Platform, arch: string): PlatformKey {
 	if (platform === "win32") return "win32-x64";

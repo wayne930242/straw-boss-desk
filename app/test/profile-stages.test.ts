@@ -5,6 +5,7 @@ import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { agentPackageDir, checkLockedIntegrity, installedVersion, piInvocation, piSource } from "../src/main/bootstrap/pi-cli.ts";
 import { engineRecipeOf } from "../src/main/bootstrap/recipe-config.ts";
+import { assertRegistryIntegrity } from "../src/main/bootstrap/npm.ts";
 import { StackError, type NpmPin, type Stack } from "../src/main/bootstrap/stack.ts";
 import type { Stage, StageContext, StageOutcome } from "../src/main/bootstrap/stage.ts";
 import { allStages } from "../src/main/bootstrap/stages/index.ts";
@@ -504,6 +505,23 @@ describe("the recipe's team part", () => {
 		assert.equal(engineRecipeOf({ forges: [], tools: [] }, stack).team, undefined);
 	});
 
+	it("T7-F009: refuses a package name that is not an npm name, so it never reaches npm's or pi's arguments", () => {
+		const named = (name: string): unknown => ({ ...RECIPE, packages: [{ name, version: "1.0.0", integrity: published.one.integrity }] });
+		for (const name of ["--registry=https://x/", "-x", "--ignore-scripts", "@scope/--x", "UPPER", "a b", "@scope", "a/b", "../x", ".hidden", "_x", "x".repeat(215)]) {
+			assert.throws(() => engineRecipeOf(named(name), stack), /npm package name/, JSON.stringify(name));
+		}
+		assert.equal(engineRecipeOf(named("@scope/ok-name.1"), stack).team?.packages[0]?.name, "@scope/ok-name.1");
+	});
+
+	it("T7-F009: the stage's own steps refuse such a name too, before any program is started", async () => {
+		const started: string[] = [];
+		const ctx = { stage: "team-pkg:x", exec: async (file: string) => (started.push(file), { code: 0, stdout: "", stderr: "" }), versionsOf: () => ({ node: "24.0.0" }) } as unknown as StageContext;
+		const bad: NpmPin = { name: "--registry=https://x/", version: "1.0.0", integrity: published.one.integrity };
+		await assert.rejects(() => assertRegistryIntegrity(ctx, bad), StackError);
+		assert.throws(() => piSource(bad), StackError);
+		assert.deepEqual(started, []);
+	});
+
 	it("refuses a package or a profile pin of the wrong shape, and a package listed twice", () => {
 		const bad = (extra: Record<string, unknown>): unknown => ({ ...RECIPE, ...extra });
 		assert.throws(() => engineRecipeOf(bad({ packages: [{ name: "x", version: "1", integrity: "sha512-x" }] }), stack), StackError);
@@ -544,6 +562,27 @@ describe("running pi and reading what it left", () => {
 		write({ "node_modules/other": { version: "1.0.0", integrity: "sha512-AAA" }, "node_modules/x/node_modules/@scope/name-ish": { version: "1.0.0", integrity: "sha512-AAA" } });
 		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "absent" }, "another package whose name only starts the same");
 		writeFileSync(lockFile, "not json");
+		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "absent" });
+	});
+
+	it("T7-F008: only the top-level entry answers; a copy nested under a dependency does not, even one that sorts first", () => {
+		const made = scratchRoot("sbd-prof-t-");
+		scratch.push(made.base);
+		const layout = testLayout(made.root);
+		mkdirSync(join(layout.agent, "npm"), { recursive: true });
+		const lockFile = join(layout.agent, "npm", "package-lock.json");
+		const p: NpmPin = { name: "@scope/name", version: "1.0.0", integrity: "sha512-AAA" };
+		const write = (packages: Record<string, unknown>): void => writeFileSync(lockFile, JSON.stringify({ packages }));
+		const genuine = { version: "1.0.0", integrity: "sha512-AAA" };
+		const tampered = { version: "1.0.0", integrity: "sha512-BBB" };
+		// npm sorts its keys, so a nested key can come before the top-level one: the genuine nested copy must not answer for the tampered top-level one.
+		write({ "node_modules/dep/node_modules/@scope/name": genuine, "node_modules/@scope/name": tampered });
+		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "mismatch", recorded: "sha512-BBB" });
+		write({ "node_modules/dep/node_modules/@scope/name": genuine });
+		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "absent" }, "a nested copy alone is not the installed package");
+		write({ "../../x/agent/npm/node_modules/dep/node_modules/@scope/name": genuine, "../../x/agent/npm/node_modules/@scope/name": tampered });
+		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "mismatch", recorded: "sha512-BBB" }, "the same behind a path prefix");
+		write({ "../../x/agent/npm/node_modules/dep/node_modules/@scope/name": genuine });
 		assert.deepEqual(checkLockedIntegrity(layout, p), { kind: "absent" });
 	});
 
