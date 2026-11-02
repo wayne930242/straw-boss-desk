@@ -14,7 +14,7 @@ const readJson = (...parts) => JSON.parse(readText(...parts));
 const patterns = readJson("secret-patterns.json").patterns;
 const fixtures = readJson("test", "secret-fixtures.json");
 const join0 = (parts) => parts.join("");
-// A URL with a user name and a password is put together here, so no line of the repository is a literal `scheme://user:password@host` (GitGuardian incident 39413346).
+// A URL with a user name and a password is put together here, so no line of the repository is a literal URL with a user name and a password (GitGuardian incident 39413346).
 const withUserinfo = (head, tail) => head + tail;
 
 const base = () => ({ recipe: 1, id: "team-a", name: "Team A", version: "1.0.0", forges: [{ kind: "github", host: "github.com" }] });
