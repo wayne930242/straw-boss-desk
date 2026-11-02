@@ -856,16 +856,37 @@ describe("stop with a pi-straw-boss that is not verified (R8A-F001)", () => {
 		assert.equal(w.supervisor.state, "failed");
 	});
 
-	it("still stops an sb server the record names and that runs, whatever the stage says: its code is loaded already", async () => {
+	// T8C-F001. A new `cli.mjs` process loads the package's files from disk now, so a stage that went bad while a recorded server runs still keeps the CLI from starting.
+	it("runs no cli.mjs for a recorded sb server that runs once the stage is no longer ok, and ends it by its start time (T8C-F001)", async () => {
 		const w = world();
 		await w.supervisor.start();
 		unverify(w);
 		const report = await w.supervisor.stop();
-		assert.deepEqual(w.order.slice(-2), ["cli stop", "herdr server stop"]);
+		assert.deepEqual(w.callsOf("stop").filter((c) => c.args[0] === w.installed?.sbCli), [], "the unverified CLI did not run");
+		assert.equal(w.order.includes("cli stop"), false);
+		assert.equal(w.order.at(-1), "herdr server stop");
+		assert.equal(w.procs.killed.includes(200), true, "the recorded sb server was ended by the kill rule");
+		assert.equal(report.unverifiedSb, null);
 		assert.equal(report.ok, true, report.notes.join("; "));
 	});
 
-	it("session-end runs no cli.mjs for an unverified package with no server of the record running, and runs it for one that is", async () => {
+	it("reports a recorded sb server of an unverified package that the rule does not allow to kill, as sb-unverified with its pid (T8C-F002)", async () => {
+		const w = world();
+		await w.supervisor.start();
+		// The record's start time no longer matches the process: it is not proved ours.
+		await w.supervisor.startFile.update((r) => (r && r.sb ? { ...r, sb: { ...r.sb, startTime: "someone else's" } } : r));
+		unverify(w);
+		const report = await w.supervisor.stop();
+		assert.equal(report.unverifiedSb, 200);
+		assert.equal(report.ok, false);
+		assert.deepEqual(w.procs.killed.filter((pid) => pid === 200), []);
+		const failure = w.events.filter((e): e is Extract<SupervisorEvent, { type: "failure" }> => e.type === "failure").at(-1)?.failure;
+		assert.equal(failure?.kind, "sb-unverified");
+		assert.equal(failure?.unverifiedSb, 200);
+		assert.equal(failure?.offerRepair, true);
+	});
+
+	it("session-end runs no cli.mjs for an unverified package, with or without a server of the record running (T8C-F001)", async () => {
 		const none = world();
 		unverify(none);
 		await failureOf(none.supervisor.start());
@@ -877,7 +898,13 @@ describe("stop with a pi-straw-boss that is not verified (R8A-F001)", () => {
 		await live.supervisor.start();
 		unverify(live);
 		live.supervisor.stopForSessionEnd();
-		assert.equal(live.syncExits.length, 1);
+		assert.deepEqual(live.syncExits, [], "a recorded server running does not make the package's files trusted");
+		assert.ok(live.log.some((l) => l.event === "session-end-stop-skipped"));
+
+		const ok = world();
+		await ok.supervisor.start();
+		ok.supervisor.stopForSessionEnd();
+		assert.equal(ok.syncExits.length, 1, "a verified package still runs it");
 	});
 });
 

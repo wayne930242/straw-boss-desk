@@ -650,7 +650,11 @@ export class Supervisor {
 			await this.#times.idle();
 			this.#setState(report.ok ? "idle" : "failed");
 			if (!report.ok) {
-				this.#emit({ type: "failure", failure: { kind: "other", reason: report.notes.join("; "), leftovers: report.leftovers } });
+				// An sb server of an unverified package that the stop could not end has its own kind with the pid, so the screen can name it and Repair in the PM's language (T8C-F002).
+				const failure: StartFailure = report.unverifiedSb !== null
+					? { kind: "sb-unverified", reason: report.notes.join("; "), unverifiedSb: report.unverifiedSb, leftovers: report.leftovers, offerRepair: true }
+					: { kind: "other", reason: report.notes.join("; "), leftovers: report.leftovers };
+				this.#emit({ type: "failure", failure });
 			}
 			this.#emit({ type: "stopped", report });
 			return report;
@@ -663,12 +667,6 @@ export class Supervisor {
 	/** True when the `pkg:pi-straw-boss` stage is `ok` in `state/bootstrap.json`: the only package whose `cli.mjs` a stop runs (R8A-F001). */
 	#sbPackageVerified(): boolean {
 		return readStartGate(this.#d.layout).direct.find((d) => d.package === STACK_PACKAGE)?.status === "ok";
-	}
-
-	/** True when `start.json` names an sb server whose pid is alive. */
-	#recordedSbRuns(): boolean {
-		const pid = this.#startFile.read()?.sb?.pid;
-		return pid !== undefined && this.#pidAlive(pid);
 	}
 
 	/** The environment and the install a stop needs: those of this run, else rebuilt from the state files (a stop after a restart of the app, or `--stop-stack`). */
@@ -692,8 +690,8 @@ export class Supervisor {
 		const prepared = this.#prepareForStop();
 		if (prepared === null) return;
 		this.#stopWatch();
-		// The same rule as the stop's: an unverified pi-straw-boss runs no `cli.mjs`, unless the record names an sb server that runs already (R8A-F001).
-		if (!this.#sbPackageVerified() && !this.#recordedSbRuns()) {
+		// The same rule as the stop's: an unverified pi-straw-boss runs no `cli.mjs` at all, whatever sb server runs (R8A-F001, T8C-F001). Nothing is killed here: Windows ends the rest.
+		if (!this.#sbPackageVerified()) {
 			this.#d.log({ event: "session-end-stop-skipped", reason: "package-not-ok" });
 			return;
 		}

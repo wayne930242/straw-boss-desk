@@ -14,9 +14,11 @@ import type { ProcessRecord, StartFile } from "./start-file.ts";
 
 // The stop sequence (spec: Runtime supervisor, Stop; desk B7 plan, **Stop order**), as `stop.ps1` and `99-stop.sh` run it:
 //   1. `cli.mjs stop` (120 s on Windows, 45 s on macOS). It marks the sb server stopped on purpose, so a pi session's look cannot start a new one while Herdr shuts down.
-//      It runs the code of pi-straw-boss, so it runs only when that package's stage is `ok`, or when a recorded sb server is already running (its code is loaded already);
-//      otherwise it is skipped, and a running sb server that no record names is reported and left alone (R8A-F001).
-//   2. wait 10 s for the sb server to go; one that stays is killed only while the kill rule allows it.
+//      It starts a new process that loads the package's files from disk now, so it runs only when the `pkg:pi-straw-boss` stage is `ok`, whatever runs already (T8C-F001).
+//      Otherwise it is skipped: a running sb server that start.json names is stopped by the kill rule alone (step 2), and one that no record names is reported and left alone
+//      (R8A-F001).
+//   2. wait 10 s for the sb server to go; one that stays is killed only while the kill rule allows it. With the package unverified there was no CLI to wait for, so a recorded
+//      sb server is killed at once, and one the rule does not allow (its start time is missing or differs) is reported like an unrecorded one.
 //   3. `herdr server stop` on the app's socket, then wait for the server's pid. Workspaces stay open: Herdr restores them at the next start.
 //   4. kill what is left of the recorded processes, and the pi-intercom broker, only by the kill rule (`identity.ts`).
 //   5. one listing for whatever still runs from `<root>/tools`, and a look at whether the app's Herdr socket still answers.
@@ -45,7 +47,7 @@ export interface StopDeps {
 	nodePath: string;
 	/** `<agent>/npm/node_modules/pi-straw-boss/dist/server/cli.mjs`. */
 	sbCli: string;
-	/** True when the `pkg:pi-straw-boss` stage is `ok`: only then may `cli.mjs` run with no sb server of the record running (R8A-F001). */
+	/** True when the `pkg:pi-straw-boss` stage is `ok`: the only case in which `cli.mjs` runs, whatever sb server runs already (R8A-F001, T8C-F001). */
 	sbPackageVerified: boolean;
 	/** The handle of the Herdr server this app started in this run, when it did. */
 	herdrHandle: ProcHandle | null;
@@ -69,7 +71,10 @@ export interface StopReport {
 	/** Nothing of the app runs from `<root>/tools` and its Herdr socket does not answer. */
 	ok: boolean;
 	cliStop: { ran: boolean; exit: number | null; outcome: string; timedOut: boolean; detail: string };
-	/** The pid of a running sb server that no record names and whose package is not verified: reported, never stopped (R8A-F001). */
+	/**
+	 * The pid of a running sb server of a package that is not verified, which the stop could not end: no record names it, or the record's start time did not allow the kill.
+	 * Reported with its own failure kind (`sb-unverified`), never stopped without the rule (R8A-F001, T8C-F001, T8C-F002).
+	 */
 	unverifiedSb: number | null;
 	killed: KillOutcome[];
 	/** A kill the rule refused: the process is not known to be ours, so it was left alone and (if it still runs) is in `leftovers`. */
@@ -151,12 +156,12 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 	// 1. the sb server stops itself.
 	let killSb = true;
 	const sbRunning = sbPid !== null && alive(sbPid);
-	// The package's code is loaded already when a recorded sb server runs; with no such server, an unverified package's `cli.mjs` must not start (R8A-F001).
-	const mayRunCli = deps.sbPackageVerified || (sbRecord !== null && sbRunning);
-	if (!mayRunCli) {
+	// `cli.mjs stop` is a new process: it loads the package's files from disk now, not the memory of a server that runs already. An unverified package's files must not run at all
+	// (R8A-F001, T8C-F001), so a recorded server is left to the kill rule below, and one no record names is reported.
+	if (!deps.sbPackageVerified) {
 		note("pi-straw-boss is not installed and verified, so its CLI was not run");
 		log({ event: "sb-cli-stop-skipped", reason: "package-not-ok", pid: sbPid });
-		if (sbRunning) {
+		if (sbRunning && sbRecord === null) {
 			report.unverifiedSb = sbPid;
 			killSb = false;
 			note(`an sb server (pid ${sbPid}) runs from a package that is not verified and no record names it; it was not stopped`);
@@ -178,18 +183,36 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 		else if (r.code !== 0) note(`cli.mjs stop ${r.timedOut ? "timed out" : `exited ${r.code}`}: ${why}`);
 	}
 	if (deps.onlyCliStopMs !== undefined) {
-		// A fast stop (the session is ending): nothing more is waited for; Windows ends the rest, and Herdr restores the workspaces at the next start.
+		// A fast stop (the session is ending): nothing more is waited for or killed; Windows ends the rest, and Herdr restores the workspaces at the next start.
+		if (!deps.sbPackageVerified && sbRunning && report.unverifiedSb === null) {
+			report.unverifiedSb = sbPid;
+			log({ event: "sb-server-unverified", pid: sbPid });
+		}
 		report.ok = report.cliStop.exit === 0 || (!report.cliStop.ran && report.unverifiedSb === null);
 		return report;
 	}
 
 	// 2. the sb server leaves; one that stays is killed only by the rule.
 	if (sbPid !== null && report.unverifiedSb === null) {
-		const gone = await waitGone(sbPid, timeouts.sbWaitMs);
-		if (!gone && killSb) {
-			const outcome = await killOwned(processes, { pid: sbPid, record: sbRecord, handle: null });
-			settle(report, "sb-server", outcome, log);
-			await deps.clock.sleep(500);
+		if (!deps.sbPackageVerified) {
+			// Nothing asked the server to stop, so there is nothing to wait for: the record's start time decides, and a server it does not prove ours is reported.
+			if (sbRunning) {
+				const outcome = await killOwned(processes, { pid: sbPid, record: sbRecord, handle: null });
+				settle(report, "sb-server", outcome, log);
+				if (outcome.killed) await deps.clock.sleep(500);
+				else {
+					report.unverifiedSb = sbPid;
+					note(`an sb server (pid ${sbPid}) runs from a package that is not verified and could not be shown to be this app's; it was not stopped`);
+					log({ event: "sb-server-unverified", pid: sbPid });
+				}
+			}
+		} else {
+			const gone = await waitGone(sbPid, timeouts.sbWaitMs);
+			if (!gone && killSb) {
+				const outcome = await killOwned(processes, { pid: sbPid, record: sbRecord, handle: null });
+				settle(report, "sb-server", outcome, log);
+				await deps.clock.sleep(500);
+			}
 		}
 	}
 

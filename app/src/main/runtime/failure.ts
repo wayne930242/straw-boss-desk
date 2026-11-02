@@ -14,6 +14,9 @@ export type StartFailureKind =
 	| "install-interrupted" // a package stage was left `running` by a crash or a kill and no engine runs (R7-F001)
 	| "state-unreadable" // `state/bootstrap.json` is missing or damaged, so what is safe to run is not known (R7-F007)
 	| "work-folder" // the work folder or the home base folder could not be made
+	| "sb-unverified" // a stop that left an sb server of a package that is not verified running, which no record proves ours: its pid is in `unverifiedSb` (T8C-F002)
+	| "restart-budget" // more than 3 restarts of the Herdr server or of the sb server in 10 minutes: the app stopped retrying (spec: Crash and sleep)
+	| "renderer" // the GUI view's renderer went away twice in a minute (spec: Crash and sleep)
 	// `up` exit 1 with a `wait` value
 	| "lock" // kit 10
 	| "start" // kit 11
@@ -50,6 +53,9 @@ export const KIT_EXIT_CODE: Readonly<Record<StartFailureKind, number | null>> = 
 	"install-interrupted": null,
 	"state-unreadable": null,
 	"work-folder": null,
+	"sb-unverified": null,
+	"restart-budget": null,
+	renderer: null,
 	lock: 10,
 	start: 11,
 	hello: 12,
@@ -88,6 +94,8 @@ export interface StartFailure {
 	startError?: { code: string; text: string };
 	/** Processes still running under `<root>/tools` after a stop that failed, by pid and executable name. */
 	leftovers?: Leftover[];
+	/** The pid of a running sb server of a package that is not verified, which the stop did not end (kind `sb-unverified`). The screen names it with Repair (T8C-F002). */
+	unverifiedSb?: number;
 	/** The screen offers Repair (an engine lock that stays, a package that must be reinstalled). */
 	offerRepair?: boolean;
 }

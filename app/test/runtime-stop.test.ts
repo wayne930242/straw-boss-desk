@@ -282,13 +282,33 @@ describe("a pi-straw-boss that is not verified (R8A-F001)", () => {
 		assert.ok(w.log.some((l) => l.event === "sb-server-unverified" && l.pid === 200));
 	});
 
-	it("runs cli.mjs stop for a recorded sb server that runs", async () => {
+	// T8C-F001. `cli.mjs stop` is a new process: it loads the package's files from disk now. A recorded server running does not make those files trusted, so no CLI runs, and
+	// the server is ended by the kill rule alone, before Herdr stops.
+	it("runs no cli.mjs stop for a recorded sb server that runs, and ends it by its recorded start time (T8C-F001)", async () => {
 		const w = world();
 		await w.startFile.update(() => w.record);
 		w.deps.sbPackageVerified = false;
 		const report = await runStop(w.deps);
-		assert.equal(w.order[0], "cli.mjs stop");
+		assert.equal(report.cliStop.ran, false);
+		assert.equal(w.run.calls.some((c) => c.args[0] === w.sbCli), false, "the unverified package's cli.mjs did not start");
+		assert.deepEqual(w.order, ["kill 200", "herdr server stop"]);
+		assert.deepEqual(w.procs.killed, [200]);
+		assert.equal(report.unverifiedSb, null);
 		assert.equal(report.ok, true, report.notes.join("; "));
+	});
+
+	it("reports a recorded sb server of an unverified package whose start time differs or is missing, and kills nothing (T8C-F001)", async () => {
+		for (const sbStart of ["Mon Nov  2 11:11:11 2026", null]) {
+			const w = world({ records: { herdr: true, sb: true, sbStart } });
+			await w.startFile.update(() => w.record);
+			w.deps.sbPackageVerified = false;
+			const report = await runStop(w.deps);
+			assert.equal(w.run.calls.some((c) => c.args[0] === w.sbCli), false);
+			assert.deepEqual(w.procs.killed, [], String(sbStart));
+			assert.equal(report.unverifiedSb, 200, String(sbStart));
+			assert.equal(report.ok, false);
+			assert.ok(w.log.some((l) => l.event === "sb-server-unverified" && l.pid === 200));
+		}
 	});
 });
 

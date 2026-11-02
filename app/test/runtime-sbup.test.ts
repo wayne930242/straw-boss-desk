@@ -88,6 +88,17 @@ describe("the kit's exit codes are typed failures with a sentence in both catalo
 			assert.deepEqual(Object.keys(sentences).sort(), [...START_FAILURE_KINDS].sort(), `${locale} names a kind that does not exist`);
 		}
 	});
+
+	// T8C-F002: an sb server of an unverified package that the stop could not end has its own kind, and its sentence names the pid and Repair in both languages.
+	it("names the pid and Repair in the sentence of sb-unverified, in both languages (T8C-F002)", () => {
+		assert.ok(START_FAILURE_KINDS.includes("sb-unverified"));
+		const repair = { en: /Repair/, "zh-TW": /修復/ };
+		for (const locale of ["en", "zh-TW"] as const) {
+			const sentence = (catalogs[locale].start.failure as Record<string, string>)["sb-unverified"] as string;
+			assert.match(sentence, /\{pid\}/, locale);
+			assert.match(sentence, repair[locale], locale);
+		}
+	});
 });
 
 describe("classifyUp", () => {
