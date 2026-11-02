@@ -107,11 +107,21 @@ jobs:
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: node --test --test-timeout=1500000 test/e2e-light-profile.test.ts
 
+      # The task 8a anchor, supervisor half: a real Herdr, sb server and pi started, restarted and stopped from an installed root (same download cache). The Electron
+      # half (the app killed, a second launch, --stop-stack, quit) is test/e2e/runtime.e2e.ts, which the development-build step below runs.
+      - name: Runtime supervisor, e2e
+        working-directory: app
+        env:
+          SBD_E2E_RUNTIME: "1"
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+        run: node --test --test-timeout=1500000 test/e2e-runtime.test.ts
+
       - name: Playwright, development build
         working-directory: app
         env:
           SBD_E2E: "1"
           SBD_E2E_KIND: dev
+          SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: npm run test:e2e
 
       - name: Playwright, release build
