@@ -27,6 +27,18 @@ export interface PackageBlock {
 export const STACK_PACKAGE = "pi-straw-boss";
 export const STACK_STAGE = `pkg:${STACK_PACKAGE}`;
 
+/**
+ * Every stack package whose code runs from `<agent>/npm/node_modules` without pi (R7-F002, T8A-F003). Pi's package list and a start block cannot stop these, so a start
+ * runs nothing until each one's stage (`pkg:<name>`) is `ok`:
+ *   - `pi-straw-boss`: the app runs its `dist/server/cli.mjs`.
+ *   - `pi-intercom`: the sb server loads `broker/client.ts`, `broker/spawn.ts` and `config.ts` from `<agent>/npm/node_modules/pi-intercom` through tsx, whatever `settings.json`
+ *     lists (pi-straw-boss 0.51.0 `findIntercom` in `chunk-*.mjs` and `loadIntercom` in `main.mjs`).
+ * `cli.mjs` imports nothing else from `node_modules` by name: its `chunk-*.mjs` and `main.mjs` import only `node:` modules and each other, and `tsx` (found from the
+ * package's own folder, `findTsx`) is a dependency of `pi-straw-boss`, covered by that package's stage and the supply-chain limit of seam U7. A later stack package that the
+ * server or the supervisor executes the same way is added here.
+ */
+export const DIRECT_PACKAGES: readonly string[] = [STACK_PACKAGE, "pi-intercom"];
+
 /** The package stages that write pi's package list in place; a `running` record on one of them, with the engine lock free, is an interrupted install (R7-F001). */
 export const isPackageStage = (stage: string): boolean => stage === "profile" || stage.startsWith("pkg:") || stage.startsWith("team-pkg:");
 
@@ -39,8 +51,8 @@ export interface StartGate {
 	blocks: PackageBlock[];
 	/** Package stages whose record is `running`. */
 	interrupted: string[];
-	/** The status of the stack package's stage, or null when it has no record. */
-	stackStatus: string | null;
+	/** The status of each `DIRECT_PACKAGES` stage (`pkg:<name>`), null when it has no record. */
+	direct: Array<{ package: string; status: string | null }>;
 }
 
 /**
@@ -48,7 +60,7 @@ export interface StartGate {
  * parse is still a block, and a file that does not parse is not "no blocks" (a start must never go on blind).
  */
 export function readStartGate(layout: Layout): StartGate {
-	const gate: StartGate = { unreadable: false, missing: false, blocks: [], interrupted: [], stackStatus: null };
+	const gate: StartGate = { unreadable: false, missing: false, blocks: [], interrupted: [], direct: DIRECT_PACKAGES.map((name) => ({ package: name, status: null })) };
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(join(layout.state, "bootstrap.json"), "utf8"));
@@ -68,7 +80,8 @@ export function readStartGate(layout: Layout): StartGate {
 			gate.unreadable = true;
 			continue;
 		}
-		if (stage === STACK_STAGE) gate.stackStatus = typeof fields.status === "string" ? fields.status : "unknown";
+		const direct = gate.direct.find((d) => stage === `pkg:${d.package}`);
+		if (direct) direct.status = typeof fields.status === "string" ? fields.status : "unknown";
 		if (isPackageStage(stage) && fields.status === "running") gate.interrupted.push(stage);
 		const raw = fields[START_BLOCK_FIELD];
 		if (raw === undefined || raw === null) continue;

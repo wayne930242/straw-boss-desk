@@ -13,7 +13,7 @@ import { StartFailureError, firstLineOf, type StartFailure } from "./failure.ts"
 import { HerdrControl, type HerdrChild, type SpawnFn } from "./herdr.ts";
 import { SerialQueue, killOwned } from "./identity.ts";
 import type { RuntimeEvent } from "./log.ts";
-import { isInstalled, readInstalled, readStartGate, STACK_PACKAGE, type Installed, type StartGate } from "./readiness.ts";
+import { isInstalled, readInstalled, readStartGate, type Installed, type StartGate } from "./readiness.ts";
 import { checkUpAnswer, runUp, upAnswerOf, type UpSuccess } from "./sbup.ts";
 import { resolveShortNames } from "./short-names.ts";
 import { fingerprintOf, sameFingerprint, StartFile, type StartRecord } from "./start-file.ts";
@@ -185,10 +185,7 @@ export class Supervisor {
 		try {
 			const config = this.#d.config();
 			const installed = this.#requireInstalled();
-			this.#refuseUnsafeState(readStartGate(this.#d.layout), "before-engine");
-			await this.#requireIdleEngine();
-			// With no engine running, a package stage still `running` was left by a crash or a kill; read again, since an engine may have finished since the first read.
-			this.#refuseUnsafeState(readStartGate(this.#d.layout), "after-engine");
+			await this.#requireSafeToRun();
 			const base = homeBaseDir(config, join);
 			this.#makeFolders(config.workFolder, base);
 			const env = await this.#constructEnv(installed, config);
@@ -238,25 +235,34 @@ export class Supervisor {
 	}
 
 	/**
-	 * What `state/bootstrap.json` forbids a start to do (T7-F002, R7-F001, R7-F002, R7-F007), all with Repair offered: a file that cannot be read or is gone, a stage record with a
-	 * start block, a package stage left `running` with no engine to own it, and a stack package (`pi-straw-boss`, whose `cli.mjs` runs without pi) whose stage is not `ok`.
+	 * Everything that must hold before the app runs a program that loads the stack's packages (Herdr restoring panes, `cli.mjs`): no engine runs, and one full read of
+	 * `state/bootstrap.json`, taken after that check, shows nothing forbids it. The engine check comes first because a package stage is `running` while an engine holds
+	 * the lock, and the read comes after it because an engine that finishes while its lock is checked writes a block or a failed stage (T8A-F002). Every path that reaches
+	 * Herdr or `cli.mjs up` goes through here: the start, the Herdr restart, and `upOnce`.
 	 */
-	#refuseUnsafeState(gate: StartGate, when: "before-engine" | "after-engine"): void {
+	async #requireSafeToRun(): Promise<void> {
+		await this.#requireIdleEngine();
+		this.#refuseUnsafeState(readStartGate(this.#d.layout));
+	}
+
+	/**
+	 * What `state/bootstrap.json` forbids a start to do (T7-F002, R7-F001, R7-F002, R7-F007, T8A-F003), all with Repair offered: a file that cannot be read or is gone, a stage
+	 * record with a start block, a package stage left `running` with no engine to own it, and a stack package that runs without pi (`DIRECT_PACKAGES`) whose stage is not `ok`.
+	 */
+	#refuseUnsafeState(gate: StartGate): void {
 		const fail = (kind: StartFailure["kind"], reason: string): never => {
 			throw new StartFailureError({ kind, reason, offerRepair: true });
 		};
-		if (when === "before-engine") {
-			if (gate.unreadable) fail("state-unreadable", "state/bootstrap.json cannot be read");
-			if (gate.blocks.length > 0) {
-				// The record's own sentence is what the screen shows (T7-F002); a record without one falls back to the package names and the catalog line.
-				const sentences = gate.blocks.map((b) => b.sentence).filter((t) => t !== "");
-				fail("package-unsafe", sentences.length > 0 ? firstLineOf(sentences.join(" ")) : gate.blocks.map((b) => b.package).join(", "));
-			}
-			return;
+		if (gate.unreadable) fail("state-unreadable", "state/bootstrap.json cannot be read");
+		if (gate.blocks.length > 0) {
+			// The record's own sentence is what the screen shows (T7-F002); a record without one falls back to the package names and the catalog line.
+			const sentences = gate.blocks.map((b) => b.sentence).filter((t) => t !== "");
+			fail("package-unsafe", sentences.length > 0 ? firstLineOf(sentences.join(" ")) : gate.blocks.map((b) => b.package).join(", "));
 		}
 		if (gate.interrupted.length > 0) fail("install-interrupted", gate.interrupted.join(", "));
 		if (gate.missing) fail("state-unreadable", "state/bootstrap.json is missing");
-		if (gate.stackStatus !== "ok") fail("package-unsafe", `${STACK_PACKAGE} is not installed and verified (${gate.stackStatus ?? "no record"})`);
+		const unverified = gate.direct.filter((d) => d.status !== "ok");
+		if (unverified.length > 0) fail("package-unsafe", unverified.map((d) => `${d.package} is not installed and verified (${d.status ?? "no record"})`).join("; "));
 	}
 
 	async #requireIdleEngine(): Promise<void> {
@@ -377,6 +383,8 @@ export class Supervisor {
 	/** Starts `herdr server`, records it at once, and waits for it to answer. A server that does not answer is killed through its handle. */
 	async #startHerdr(herdr: HerdrControl, options: { restart: boolean; previous?: StartRecord | null }): Promise<void> {
 		const { layout, log } = this.#d;
+		// Herdr restores the workspaces, and their panes start pi: the gate holds again right before it starts, since a block can land while a start sets up (T8A-F002).
+		await this.#requireSafeToRun();
 		const child = herdr.start();
 		this.#herdrChild = child;
 		child.once("exit", (code, signal) => {
@@ -462,7 +470,11 @@ export class Supervisor {
 		const { run, log } = this.#d;
 		const node = installed.node;
 		const cli = installed.sbCli;
-		const call = (args: string[], timeoutMs: number): Promise<Awaited<ReturnType<CommandRunner>>> => run(node, [cli, ...args], { env, replaceEnv: true, timeoutMs });
+		// Every `cli.mjs` call here loads pi-straw-boss and pi-intercom from node_modules, so each one passes the gate first (the start, the Herdr restart and `upOnce` all come through here).
+		const call = async (args: string[], timeoutMs: number): Promise<Awaited<ReturnType<CommandRunner>>> => {
+			await this.#requireSafeToRun();
+			return run(node, [cli, ...args], { env, replaceEnv: true, timeoutMs });
+		};
 		return runUp({
 			runUp: async () => upAnswerOf(await call(["up", "--dir", base, "--label", label, "--timeout", String(this.#timeouts.upTimeoutSec), "--exact"], this.#timeouts.upProcessMs)),
 			herdrAnswers: () => herdr.answers(),
@@ -494,6 +506,8 @@ export class Supervisor {
 	async #restartOwnHerdr(herdr: HerdrControl): Promise<boolean> {
 		const child = this.#herdrChild;
 		if (child === null) return false;
+		// A refusal reaches the caller as it is: swallowing it here would show "herdr" instead of the reason.
+		await this.#requireSafeToRun();
 		this.#herdrChild = null;
 		const outcome = await killOwned(this.#d.platform.processes, { pid: child.pid as number, record: null, handle: child });
 		if (!outcome.killed) return false;

@@ -30,6 +30,9 @@ interface WorldOptions {
 	timeouts?: SupervisorDeps["timeouts"];
 	stopTimeouts?: SupervisorDeps["stopTimeouts"];
 	forges?: Array<{ kind: "github" | "gitlab"; host: string }>;
+	/** Runs when Herdr is spawned / when `up` runs (before it answers): a test changes the world in the middle of a start. */
+	onSpawn?: () => void;
+	onUp?: () => void;
 }
 
 function world(options: WorldOptions = {}) {
@@ -77,6 +80,7 @@ function world(options: WorldOptions = {}) {
 			match: (c) => c.args[1] === "up",
 			answer: () => {
 				order.push("up");
+				options.onUp?.();
 				const next = upQueue.shift() ?? upOk();
 				if (next.code === 0 || next.code === undefined) {
 					if (!procs.has(sbPid)) procs.add(sbPid, { startTime: `S${sbPid}`, executable: exe("node") });
@@ -101,6 +105,7 @@ function world(options: WorldOptions = {}) {
 		procs.add(child.pid as number, { startTime: `H${child.pid}`, executable: herdrBin });
 		order.push(`spawn herdr ${child.pid}`);
 		herdrUp = true;
+		options.onSpawn?.();
 		child.onKill = () => {
 			procs.table.delete(child.pid as number);
 			herdrUp = false;
@@ -152,7 +157,7 @@ const failureOf = async (p: Promise<unknown>): Promise<StartFailure> => {
 };
 
 const record = (status: string, extra: Record<string, unknown> = {}) => ({ status, version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {}, ...extra });
-const stack = { "pkg:pi-straw-boss": record("ok") };
+const stack = { "pkg:pi-straw-boss": record("ok"), "pkg:pi-intercom": record("ok") };
 
 const until = async (condition: () => boolean, what: string): Promise<void> => {
 	for (let i = 0; i < 400; i++) {
@@ -214,7 +219,7 @@ describe("a start that cannot begin", () => {
 	});
 
 	it("does not run the stack package's cli.mjs unless its stage is ok (R7-F002): failed, absent, running, or no record", async () => {
-		for (const stages of [{ "pkg:pi-straw-boss": record("failed") }, { "pkg:pi-straw-boss": record("absent") }, { "pkg:pi-straw-boss": record("pending") }, {}]) {
+		for (const stages of [{ ...stack, "pkg:pi-straw-boss": record("failed") }, { ...stack, "pkg:pi-straw-boss": record("absent") }, { ...stack, "pkg:pi-straw-boss": record("pending") }, { "pkg:pi-intercom": record("ok") }]) {
 			const w = world();
 			writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages }));
 			const failure = await failureOf(w.supervisor.start());
@@ -226,8 +231,117 @@ describe("a start that cannot begin", () => {
 		}
 	});
 
+	it("does not run pi-intercom's code unless its stage is ok either (T8A-F003): the sb server loads it from node_modules without pi", async () => {
+		for (const intercom of [record("failed", { lastFailure: { category: "integrity" } }), record("absent"), record("running"), record("pending"), undefined]) {
+			const w = world();
+			// The unaccepted tarball's files are in place, as after a failed lock check with a failed `pi remove`.
+			mkdirSync(join(w.layout.agent, "npm", "node_modules", "pi-intercom", "broker"), { recursive: true });
+			writeFileSync(join(w.layout.agent, "npm", "node_modules", "pi-intercom", "broker", "client.ts"), "// unaccepted tarball");
+			writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "pkg:pi-straw-boss": record("ok"), ...(intercom ? { "pkg:pi-intercom": intercom } : {}) } }));
+			const failure = await failureOf(w.supervisor.start());
+			// a `running` record is also an interrupted package install, which the gate names first
+			assert.match(failure.kind, /^(package-unsafe|install-interrupted)$/, JSON.stringify(intercom));
+			if (failure.kind === "package-unsafe") assert.match(failure.reason, /pi-intercom is not installed and verified/);
+			assert.equal(failure.offerRepair, true);
+			assert.deepEqual(w.run.calls, [], "cli.mjs was not run");
+			assert.deepEqual(w.children, [], "no Herdr, so no pane starts pi");
+		}
+		// Both direct packages are named when both are unverified.
+		const both = world();
+		writeFileSync(join(both.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { "pkg:pi-straw-boss": record("failed"), "pkg:pi-intercom": record("failed") } }));
+		const failure = await failureOf(both.supervisor.start());
+		assert.match(failure.reason, /pi-straw-boss is not installed and verified.*pi-intercom is not installed and verified/);
+	});
+
+	it("sees a start block or an unreadable file that an engine writes while the engine lock is checked (T8A-F002)", async () => {
+		const block = { kind: "package-may-load", package: "foo", sentence: "foo may still load" };
+		const writes: Array<[string, (w: ReturnType<typeof world>) => void, RegExp]> = [
+			["a start block", (w) => writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:foo": record("failed", { startBlock: block }) } })), /^package-unsafe$/],
+			["a file that cannot be read", (w) => writeFileSync(join(w.layout.state, "bootstrap.json"), "{ truncated"), /^state-unreadable$/],
+		];
+		for (const [what, write, kind] of writes) {
+			const w = world();
+			// At the first look an engine is still running (team-pkg:foo `running`, its lock held by pid 4242). While the lock's owner is looked up the engine finishes: it writes
+			// `what`, releases the lock, and exits.
+			writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:foo": record("running") } }));
+			writeFileSync(join(w.layout.state, "engine.lock"), `${JSON.stringify({ pid: 4242, startTime: "E1", token: "t" })}\n`);
+			const inspect = w.procs.inspect.bind(w.procs);
+			w.procs.inspect = async (pids) => {
+				if (pids.includes(4242)) {
+					write(w);
+					rmSync(join(w.layout.state, "engine.lock"));
+				}
+				return inspect(pids);
+			};
+			const failure = await failureOf(w.supervisor.start());
+			assert.match(failure.kind, kind, what);
+			assert.equal(failure.offerRepair, true, what);
+			assert.deepEqual(w.children, [], `${what}: Herdr was not started`);
+			assert.deepEqual(w.run.calls, [], `${what}: nothing ran`);
+		}
+	});
+
+	it("checks again right before Herdr starts and right before `up`: a block written while a start sets up stops it (T8A-F002)", async () => {
+		const block = { kind: "package-may-load", package: "foo", sentence: "foo may still load" };
+		const withBlock = (w: { layout: { state: string } }) => writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:foo": record("failed", { startBlock: block }) } }));
+		// While Herdr is spawned (after the gate before it): `up` must not run.
+		let during: ReturnType<typeof world> | undefined;
+		const spawned = world({ onSpawn: () => during && withBlock(during) });
+		during = spawned;
+		const failure = await failureOf(spawned.supervisor.start());
+		assert.equal(failure.kind, "package-unsafe");
+		assert.equal(failure.reason, "foo may still load");
+		assert.equal(spawned.callsOf("up").length, 0, "cli.mjs up did not run");
+		assert.deepEqual(spawned.order, ["spawn herdr 100"]);
+		// Before Herdr is started: the block lands while the OS proxy is resolved.
+		let early: ReturnType<typeof world> | undefined;
+		const proxied = world({ resolveProxy: async () => { if (early) withBlock(early); return "DIRECT"; } });
+		early = proxied;
+		assert.equal((await failureOf(proxied.supervisor.start())).kind, "package-unsafe");
+		assert.deepEqual(proxied.children, [], "no Herdr, so no pane starts pi");
+		assert.deepEqual(proxied.order, []);
+	});
+
+	it("refuses `upOnce` and the Herdr restart while a block stands, and `up` and a new Herdr do not run (T8A-F002)", async () => {
+		const block = { kind: "package-may-load", package: "foo", sentence: "foo may still load" };
+		const withBlock = (w: { layout: { state: string } }) => writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:foo": record("failed", { startBlock: block }) } }));
+		const once = world();
+		await once.supervisor.start();
+		withBlock(once);
+		const before = once.order.length;
+		assert.equal((await failureOf(once.supervisor.upOnce())).kind, "package-unsafe");
+		assert.equal(once.order.length, before, "upOnce ran no `up`");
+
+		const restart = world();
+		await restart.supervisor.start();
+		withBlock(restart);
+		restart.children[0]?.end(137);
+		await until(() => restart.supervisor.state === "failed", "the restart to be refused");
+		assert.equal(restart.children.length, 1, "no second Herdr");
+		assert.ok(restart.events.some((e) => e.type === "failure" && e.failure.kind === "package-unsafe"));
+		assert.deepEqual(restart.order, ["spawn herdr 100", "up"]);
+	});
+
+	it("checks before it stops and starts its own Herdr again for a silent one, and says why (T8A-F002)", async () => {
+		const block = { kind: "package-may-load", package: "foo", sentence: "foo may still load" };
+		let w: ReturnType<typeof world> | undefined;
+		w = world({
+			onUp: () => {
+				if (!w) return;
+				// `up` finds Herdr silent: the socket stops answering, and a block has landed.
+				w.setHerdrUp(false);
+				writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "team-pkg:foo": record("failed", { startBlock: block }) } }));
+			},
+		});
+		w.upQueue.push({ code: 1, stderr: `${JSON.stringify({ step: "herdr", reason: "no answer on the socket" })}\n` });
+		const failure = await failureOf(w.supervisor.start());
+		assert.equal(failure.kind, "package-unsafe", "the block is the reason, not 'herdr'");
+		assert.equal(w.children.length, 1, "no second Herdr");
+		assert.deepEqual(w.children[0]?.signals, [], "the running one was not killed for a restart that is refused");
+	});
+
 	it("never starts blind on a bootstrap.json it cannot read or that the engine quarantined (R7-F007)", async () => {
-		for (const text of ["{ truncated", "[]", JSON.stringify({ schema: 1, stages: [] }), JSON.stringify({ schema: 1, stages: { "pkg:pi-straw-boss": "weird" } })]) {
+		for (const text of ["{ truncated", "[]", JSON.stringify({ schema: 1, stages: [] }), JSON.stringify({ schema: 1, stages: { ...stack, "pkg:pi-straw-boss": "weird" } })]) {
 			const w = world();
 			writeFileSync(join(w.layout.state, "bootstrap.json"), text);
 			const failure = await failureOf(w.supervisor.start());

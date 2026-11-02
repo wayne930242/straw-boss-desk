@@ -7,7 +7,7 @@ import { nodeBinaryPath } from "../../src/main/bootstrap/npm.ts";
 import { agentPackageDir } from "../../src/main/bootstrap/pi-cli.ts";
 import { herdrBinary } from "../../src/main/paths.ts";
 import type { Clock } from "../../src/main/runtime/clock.ts";
-import { STACK_STAGE } from "../../src/main/runtime/readiness.ts";
+import { DIRECT_PACKAGES } from "../../src/main/runtime/readiness.ts";
 import type { HerdrChild } from "../../src/main/runtime/herdr.ts";
 import type { CommandRunner, ProcessInfo, Processes, RunOptions, RunResult } from "../../src/main/platform/types.ts";
 
@@ -176,7 +176,8 @@ export function installFake(layout: Layout): { node: string; herdr: string; sbCl
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, "stub");
 	}
-	// The stack package's stage is `ok`: a start refuses to run its `cli.mjs` otherwise (R7-F002).
-	writeFileSync(join(layout.state, "bootstrap.json"), `${JSON.stringify({ schema: 1, stages: { [STACK_STAGE]: { status: "ok", version: "0.51.0", evidence: "", at: "t", hashes: {}, dependsOn: {} } } })}\n`);
+	// Every stack package that runs without pi has its stage `ok`: a start refuses to run their code otherwise (R7-F002, T8A-F003).
+	const stages = Object.fromEntries(DIRECT_PACKAGES.map((name) => [`pkg:${name}`, { status: "ok", version: "1.0.0", evidence: "", at: "t", hashes: {}, dependsOn: {} }]));
+	writeFileSync(join(layout.state, "bootstrap.json"), `${JSON.stringify({ schema: 1, stages })}\n`);
 	return { node, herdr, sbCli, current: versions };
 }
