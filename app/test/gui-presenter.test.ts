@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { GuiPresenter, type GuiSurface } from "../src/main/gui-presenter.ts";
+import { closeWindowViews, GuiPresenter, type GuiSurface } from "../src/main/gui-presenter.ts";
 import type { SupervisorState } from "../src/main/runtime/supervisor.ts";
 
 // The window shows the running GUI whenever it opens, not only when the supervisor announces the address (T8A-F004: on macOS the window can be closed while the stack runs).
@@ -81,5 +81,20 @@ describe("the window and the GUI's address", () => {
 		w.presenter.detach();
 		w.presenter.onGuiUrl(URL_A);
 		assert.deepEqual(window.loads, []);
+	});
+});
+
+describe("the views of a closed window (R8A-F003)", () => {
+	const view = (destroyed = false) => {
+		const v = { closed: 0, webContents: { isDestroyed: () => destroyed, close: () => void v.closed++ } };
+		return v;
+	};
+
+	it("closes the page of each view, and skips a view that is gone already or was never made", () => {
+		const gui = view();
+		const shell = view();
+		const gone = view(true);
+		closeWindowViews([gui, shell, gone, undefined]);
+		assert.deepEqual([gui.closed, shell.closed, gone.closed], [1, 1, 0]);
 	});
 });

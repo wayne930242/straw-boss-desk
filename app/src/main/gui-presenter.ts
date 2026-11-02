@@ -44,3 +44,16 @@ export class GuiPresenter {
 		this.#surface = null;
 	}
 }
+
+/** What `closeWindowViews` needs of a `WebContentsView`. */
+export interface ClosableView {
+	webContents: { isDestroyed(): boolean; close(): void };
+}
+
+/**
+ * A closed `BaseWindow` does not destroy the `webContents` of its views, unlike a `BrowserWindow` (Electron, Resource management). Left alone, the GUI page of a closed window keeps
+ * running with its connection, timers and sound, and every reopen adds another one (R8A-F003). Called when the window has closed.
+ */
+export function closeWindowViews(views: readonly (ClosableView | undefined)[]): void {
+	for (const view of views) if (view && !view.webContents.isDestroyed()) view.webContents.close();
+}

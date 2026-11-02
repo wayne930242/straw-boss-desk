@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pickLocale } from "../shared/locale.ts";
 import { identityFromProductName } from "./build.ts";
 import { dataRoot, electronDir, computeLayout } from "./paths.ts";
-import { GuiPresenter } from "./gui-presenter.ts";
+import { closeWindowViews, GuiPresenter } from "./gui-presenter.ts";
 import { createPlatform } from "./platform/index.ts";
 import { execRunner } from "./platform/exec.ts";
 import { checkPaneLookups } from "./pane-path.ts";
@@ -90,8 +90,11 @@ function createWindow(): void {
 	window.on("resize", layoutViews);
 	// Windows log off or shutdown: `cli.mjs stop` for 10 s, run to the end here, and Windows ends the rest.
 	window.on("session-end", () => supervisor.stopForSessionEnd());
+	const closing = [guiView, shellView];
 	window.on("closed", () => {
 		presenter.detach();
+		// The views outlive their window on macOS, where the app keeps running: close their pages so a reopen does not pile up hidden GUI pages (R8A-F003).
+		closeWindowViews(closing);
 		window = undefined;
 		guiView = undefined;
 		shellView = undefined;

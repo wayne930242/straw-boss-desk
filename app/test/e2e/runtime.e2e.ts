@@ -197,6 +197,9 @@ describe("the packaged app's lifecycle against the real stack (e2e, task 8a)", {
 			});
 			await until("the window to close", 30_000, async () => (await windowCount()) === 0 || undefined);
 			assert.equal(await herdrAnswers(), true, "closing the window leaves the stack running");
+			// R8A-F003: a closed BaseWindow leaves its views' pages alive unless the app closes them, and each reopen would add one more GUI page.
+			const livePages = () => app.evaluate(({ webContents }) => webContents.getAllWebContents().map((c) => c.getURL()).filter((u) => /^http:\/\/127\.0\.0\.1:\d+\//.test(u)));
+			assert.deepEqual(await until("the closed window's GUI page to be closed", 30_000, async () => ((await livePages()).length === 0 ? [] : undefined)), []);
 			await app.evaluate(({ app: electronApp }) => void electronApp.emit("activate"));
 			// The GUI is looked for in the new window's own views, so a view of the closed window that is still alive proves nothing.
 			const reopened = await until("the reopened window to show the GUI", 30_000, () =>
