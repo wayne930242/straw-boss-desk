@@ -68,7 +68,15 @@ describe("the packaged app's lifecycle against the real stack (e2e, task 8a)", {
 		app.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => w.getURL()).find((u) => /^http:\/\/127\.0\.0\.1:\d+\//.test(u)));
 	const startRecord = () => JSON.parse(readFileSync(join(world.layout.state, "start.json"), "utf8")) as { herdr: { pid: number; startTime: string | null } | null; sb: { pid: number; startTime: string | null } | null };
 	const underTools = () => platform.processes.listUnder(world.layout.tools.root);
-	const herdrCount = async () => (await underTools()).filter((p) => /^herdr(\.exe)?$/i.test(basename(p.executable ?? ""))).length;
+	// A `herdr` CLI call of the stack (the follower's, `up`'s) lives for a moment next to the server: the settled count is the lowest of three looks.
+	const herdrCount = async () => {
+		let lowest = Number.POSITIVE_INFINITY;
+		for (let i = 0; i < 3; i++) {
+			lowest = Math.min(lowest, (await underTools()).filter((p) => /^herdr(\.exe)?$/i.test(basename(p.executable ?? ""))).length);
+			if (i < 2) await sleep(700);
+		}
+		return lowest;
+	};
 	const herdrAnswers = async () => (await run(childEnvOf(world).HERDR_BIN_PATH as string, ["workspace", "list"], { env: childEnvOf(world), timeoutMs: 15_000 })).code === 0;
 	const logLines = (): Array<Record<string, unknown>> => {
 		const file = join(world.layout.logs, "start.jsonl");
