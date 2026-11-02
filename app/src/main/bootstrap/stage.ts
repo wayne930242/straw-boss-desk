@@ -6,7 +6,7 @@ import type { CommandRunner, Platform, RunOptions, RunResult } from "../platform
 import { classifyError, RETRIED_ONCE, StageError, type FailureCategory, type FailureParams } from "./errors.ts";
 import { downloadVerified, type Downloaded, type Fetch } from "./download.ts";
 import { extractArchive, extractSelfExtractor, type Extracted } from "./extract.ts";
-import { asideName, freeAside, REAL_FS, removeTree, sha256File, type FsOps } from "./fsutil.ts";
+import { asideName, dropAside, freeAside, REAL_FS, removeTree, sha256File, type FsOps } from "./fsutil.ts";
 import type { StageLog } from "./log.ts";
 import type { EngineRecipe } from "./recipe-config.ts";
 import type { Asset, PlatformKey, Stack } from "./stack.ts";
@@ -285,7 +285,7 @@ export async function activateDir(ctx: StageContext, spec: { tool: string; versi
 	await ctx.state.setVersion(spec.tool, spec.version);
 	if (hadOld) {
 		try {
-			ops.removeTree(aside);
+			dropAside(ops, aside);
 		} catch (error) {
 			ctx.fsErrors.push(`${aside}: ${(error as Error).message}`);
 		}
@@ -336,7 +336,7 @@ export function activateFiles(ctx: StageContext, pairs: ReadonlyArray<{ from: st
 	for (const aside of [...done.map((d) => d.aside), ...gone.map((g) => g.aside)]) {
 		if (aside === null) continue;
 		try {
-			ops.removeTree(aside);
+			dropAside(ops, aside);
 		} catch (error) {
 			held(aside, error as Error);
 		}

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 // File helpers shared by the engine's modules. Every write that another run might read half-done goes through `writeFileAtomic`.
 
@@ -71,13 +71,26 @@ export function removeTree(path: string): void {
 	rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 
-/** The two file operations that can fail on Windows while a process still runs the file. A test passes stubs; the engine passes the real ones. */
+/**
+ * The file operations that can fail on Windows while a process still runs the file. A test passes stubs; the engine passes the real ones.
+ * `removeAside` deletes a leftover `.replaced` copy with one attempt: a copy a running program holds will not go however long the retries wait (R5-F002), so the
+ * retrying `removeTree` is kept for staging folders. A stub that leaves it out has `removeTree` used for both.
+ */
 export interface FsOps {
 	removeTree(path: string): void;
+	removeAside?(path: string): void;
 	renameRetry(from: string, to: string): void;
 }
 
-export const REAL_FS: FsOps = { removeTree, renameRetry };
+/** Removes a leftover copy with a single attempt, no retries. Missing is fine. Throws when a running program holds it. */
+export function removeAside(path: string): void {
+	rmSync(path, { recursive: true, force: true });
+}
+
+export const REAL_FS: FsOps = { removeTree, removeAside, renameRetry };
+
+/** The deletion of a leftover aside: `ops.removeAside`, else `ops.removeTree`. */
+export const dropAside = (ops: FsOps, path: string): void => (ops.removeAside ?? ops.removeTree)(path);
 
 /** How many `.replaced` names `freeAside` tries before it gives up. */
 const ASIDE_TRIES = 50;
@@ -85,21 +98,45 @@ const ASIDE_TRIES = 50;
 /** `<target>.replaced`, or `<target>.replaced-<n>` for the n-th name. `sweepLeftovers` reads both forms. */
 export const asideName = (target: string, n: number): string => (n <= 1 ? `${target}.replaced` : `${target}.replaced-${n}`);
 
+/** The number `n` of an aside name of `target` (`.replaced` is 1, `.replaced-<n>` is n), or null when `name` is not one. `name` is a file name beside `target`. */
+export function asideNumber(target: string, name: string): number | null {
+	const base = basename(target);
+	if (name === `${base}.replaced`) return 1;
+	if (!name.startsWith(`${base}.replaced-`)) return null;
+	const rest = name.slice(`${base}.replaced-`.length);
+	return /^[2-9]\d*$|^1\d+$/.test(rest) ? Number(rest) : null;
+}
+
 /**
- * A free name to move `target` aside to. A `<target>.replaced` that is still there is deleted; when it cannot be (on Windows the old copy of a
- * running `bun.exe` can be renamed but not deleted, T5-F004), it stays and the next name is used, so a held leftover never blocks a later replace.
- * `held` receives each leftover that stayed, for the stage's `fsErrors`.
+ * A free name to move `target` aside to. Every leftover aside of `target` is deleted with one attempt; one that cannot be (on Windows the old copy of a
+ * running `bun.exe` can be renamed but not deleted, T5-F004) stays, and the name used is one number above the highest that stayed, so a held leftover
+ * never blocks a later replace and the newest copy always has the highest number: `sweepLeftovers` puts back the highest one (R5-F001, which was
+ * wrong when `.replaced` was free again while `.replaced-2` was still held). `held` receives each leftover that stayed, for the stage's `fsErrors`.
  */
 export function freeAside(target: string, ops: FsOps = REAL_FS, held?: (path: string, error: Error) => void): string {
-	for (let n = 1; n <= ASIDE_TRIES; n++) {
+	const dir = dirname(target);
+	let names: string[] = [];
+	try {
+		names = readdirSync(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	let highest = 0;
+	for (const name of names) {
+		const n = asideNumber(target, name);
+		if (n === null) continue;
+		const path = join(dir, name);
+		try {
+			dropAside(ops, path);
+		} catch (error) {
+			held?.(path, error as Error);
+			highest = Math.max(highest, n);
+		}
+	}
+	// The first free number above the highest that stayed.
+	for (let n = highest + 1; n <= ASIDE_TRIES; n++) {
 		const candidate = asideName(target, n);
 		if (!existsSync(candidate)) return candidate;
-		try {
-			ops.removeTree(candidate);
-			return candidate;
-		} catch (error) {
-			held?.(candidate, error as Error);
-		}
 	}
 	throw new Error(`${target} has ${ASIDE_TRIES} leftover copies that cannot be deleted; stop the programs that run them`);
 }
