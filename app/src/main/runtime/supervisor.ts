@@ -679,16 +679,34 @@ export class Supervisor {
 	 * Runs `work` with the stack stopped, and starts the stack again when it was running (T6-F006, T7-F007). Repair, a stack update, and a recipe update run npm in the
 	 * live prefixes (`tools/npm` and `<agent>/npm`) while the sb server and every pi extension run from them; the stages that install or remove a package must not
 	 * run beside them. When the stack cannot be stopped (a program still runs from `<root>/tools`), `work` does not run and `StackBusyError` says what is left.
+	 *
+	 * The stop, the work, and the start are one job of the supervisor's queue (T8A-F008): a `start()`, an `upOnce()` or a Herdr restart asked meanwhile waits until the work is
+	 * done, so none of them runs `up` between the stop and the work, and a start already under way has finished when the job begins, so it counts as running. For the same
+	 * reason `work` must not call `start`, `stop`, or `upOnce` of this supervisor: they would queue behind the job that is waiting for them.
+	 * The work's own error is the one the caller gets: a restart that fails after it is shown (the `failure` event) and logged, and only a good run reports it.
 	 */
-	async withStackStopped<T>(work: () => Promise<T>): Promise<T> {
-		const wasRunning = this.#state === "running";
-		const report = await this.stop();
-		if (!report.ok) throw new StackBusyError(report);
-		try {
-			return await work();
-		} finally {
-			if (wasRunning) await this.start();
-		}
+	withStackStopped<T>(work: () => Promise<T>): Promise<T> {
+		return this.#queue.run(async () => {
+			const wasRunning = this.#state === "running";
+			const report = await this.#stop();
+			if (!report.ok) throw new StackBusyError(report);
+			let outcome: { value: T } | { error: unknown };
+			try {
+				outcome = { value: await work() };
+			} catch (error) {
+				outcome = { error };
+			}
+			if (wasRunning) {
+				try {
+					await this.#start();
+				} catch (error) {
+					this.#d.log({ event: "restart-after-work-failed", detail: firstLineOf((error as Error).message) });
+					if ("value" in outcome) throw error;
+				}
+			}
+			if ("error" in outcome) throw outcome.error;
+			return outcome.value;
+		});
 	}
 
 	/** Repair for the engine lock: removes a lock whose owner pid is not an engine of this app. */

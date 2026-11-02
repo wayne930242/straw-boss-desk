@@ -785,6 +785,64 @@ describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T
 		assert.equal(idle.children.length, 0);
 	});
 
+	it("reports the work's own error when the restart after it fails too, and shows the restart's failure (T8A-F008)", async () => {
+		const w = world();
+		await w.supervisor.start();
+		// The restart's `up` fails: a GUI that does not start.
+		w.upQueue.push({ code: 1, stderr: `${JSON.stringify({ step: "gui", reason: "the GUI did not start" })}\n` });
+		await assert.rejects(w.supervisor.withStackStopped(async () => Promise.reject(new Error("npm failed"))), /npm failed/);
+		assert.ok(w.events.some((e) => e.type === "failure" && e.failure.kind === "gui"), "the restart's failure is shown");
+		assert.ok(w.log.some((l) => l.event === "restart-after-work-failed"));
+		assert.equal(w.supervisor.state, "failed");
+		// After a good run the restart's failure is the caller's.
+		const good = world();
+		await good.supervisor.start();
+		good.upQueue.push({ code: 1, stderr: `${JSON.stringify({ step: "gui", reason: "the GUI did not start" })}\n` });
+		const failure = await failureOf(good.supervisor.withStackStopped(async () => "worked"));
+		assert.equal(failure.kind, "gui");
+	});
+
+	it("keeps a start, an upOnce and a Herdr restart out of the gap between the stop and the work (T8A-F008)", async () => {
+		const w = world();
+		await w.supervisor.start();
+		const during: string[] = [];
+		let queued: Promise<unknown>[] = [];
+		const maintenance = w.supervisor.withStackStopped(async () => {
+			// Asked while the work runs: none of them may run before the work is done.
+			queued = [w.supervisor.start().catch(() => undefined), w.supervisor.upOnce().catch(() => undefined)];
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			during.push(...w.order);
+			return "worked";
+		}).catch(() => undefined);
+		// The work above asks for a start and an upOnce of the same queue, which would wait for the job they are inside of: the job must not wait for them.
+		await Promise.race([maintenance, new Promise((resolve) => setTimeout(resolve, 2000))]);
+		assert.deepEqual(during, ["spawn herdr 100", "up", "cli stop", "herdr server stop"], "no Herdr and no `up` between the stop and the end of the work");
+		await maintenance;
+		await Promise.all(queued);
+	});
+
+	it("counts a start that is still under way as running, and restarts the stack after the work (T8A-F008)", async () => {
+		let stateAtCall: string | null = null;
+		let result: Promise<string> | null = null;
+		let w: ReturnType<typeof world> | undefined;
+		w = world({
+			// Asked while the first start spawns Herdr, so the supervisor is `starting`.
+			onSpawn: () => {
+				if (result !== null || !w) return;
+				stateAtCall = w.supervisor.state;
+				result = w.supervisor.withStackStopped(async () => {
+					assert.equal(w?.supervisor.state, "idle", "the started stack was stopped for the work");
+					return "worked";
+				});
+			},
+		});
+		await w.supervisor.start();
+		assert.equal(stateAtCall, "starting");
+		assert.equal(await result, "worked");
+		assert.equal(w.supervisor.state, "running", "the stack runs again");
+		assert.deepEqual(w.order, ["spawn herdr 100", "up", "cli stop", "herdr server stop", "spawn herdr 101", "up"]);
+	});
+
 	it("does not run the work when a program still runs from the tools folder", async () => {
 		const w = world();
 		await w.supervisor.start();
