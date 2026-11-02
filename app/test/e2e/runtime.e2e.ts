@@ -189,6 +189,21 @@ describe("the packaged app's lifecycle against the real stack (e2e, task 8a)", {
 		const app = await launch();
 		await until("the GUI view to load the server's address", 240_000, () => guiUrl(app));
 		assert.equal(await herdrAnswers(), true);
+		if (process.platform === "darwin") {
+			// T8A-F004: the window closes while the app and the stack keep running, and the Dock icon (`activate`) opens a window that shows the GUI again.
+			const windowCount = () => app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length);
+			await app.evaluate(({ BaseWindow }) => {
+				for (const w of BaseWindow.getAllWindows()) w.close();
+			});
+			await until("the window to close", 30_000, async () => (await windowCount()) === 0 || undefined);
+			assert.equal(await herdrAnswers(), true, "closing the window leaves the stack running");
+			await app.evaluate(({ app: electronApp }) => void electronApp.emit("activate"));
+			// The GUI is looked for in the new window's own views, so a view of the closed window that is still alive proves nothing.
+			const reopened = await until("the reopened window to show the GUI", 30_000, () =>
+				app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().flatMap((w) => w.contentView.children.map((v) => (v as unknown as { webContents: { getURL(): string } }).webContents.getURL())).find((u) => /^http:\/\/127\.0\.0\.1:\d+\//.test(u))),
+			);
+			assert.match(reopened, /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{16,}\/?/);
+		}
 		await app.close();
 		assert.equal(await exited(app, 180_000), true);
 		assert.deepEqual((await underTools()).map((p) => `${p.pid} ${p.executable}`), []);
