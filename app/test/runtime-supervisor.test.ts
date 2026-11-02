@@ -131,6 +131,7 @@ function world(options: WorldOptions = {}) {
 		eagerStartTimes: options.eager ?? true,
 		timeouts: { pollMs: 0, ...options.timeouts },
 		pidAlive: (pid) => procs.has(pid),
+		isOurEngine: () => false,
 		runSync: (file, args, o) => {
 			syncExits.push({ file, args, timeoutMs: o.timeoutMs });
 			return { code: 0 };

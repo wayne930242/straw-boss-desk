@@ -44,6 +44,8 @@ const supervisor = new Supervisor({
 	config: () => loadStartConfig(layout, home),
 	log: (fields) => runtimeLog.event(fields),
 	resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+	// No engine runs in the main process yet: the wizard (task 9) starts it as a `utilityProcess` and answers for its pid here, so Repair leaves a running install's lock alone.
+	isOurEngine: () => false,
 	// Windows: what a pane's `bash` would resolve to, at every start (the WSL notice).
 	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
 });

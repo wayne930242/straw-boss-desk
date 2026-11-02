@@ -108,6 +108,7 @@ describe("the runtime supervisor against the real programs (e2e, task 8a)", { sk
 			appEnv: world.appEnv,
 			config: () => loadStartConfig(world.layout, world.home),
 			log: (fields) => runtimeLog.event(fields),
+			isOurEngine: () => false,
 			timeouts: { pollMs: 1000 },
 			...(isWindows ? { checkPane: () => checkPaneLookups({ run: runner, locate: platform.locate, exists: existsSync, env: world.appEnv }) } : {}),
 		});

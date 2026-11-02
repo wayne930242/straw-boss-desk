@@ -84,8 +84,8 @@ export interface SupervisorDeps {
 	linearKey?: () => Promise<string | undefined>;
 	/** Windows only (the caller passes it there): what a pane's `bash` resolves to, for the WSL check at every start. */
 	checkPane?: () => Promise<PaneFindings>;
-	/** True when `pid` is an engine this app holds (a `utilityProcess` handle); Repair leaves its lock alone. */
-	isOurEngine?: (pid: number) => boolean;
+	/** True when `pid` is an engine this app holds (a `utilityProcess` handle); Repair leaves its lock alone. Required, so wiring Repair cannot leave an engine out; the app's own pid is always ours. */
+	isOurEngine: (pid: number) => boolean;
 	pidAlive?: (pid: number) => boolean;
 	/** Runs a program to the end and waits, for `session-end`, where the app cannot wait for a promise. Default: `spawnSync`. */
 	runSync?: (file: string, args: readonly string[], options: { env: EnvMap; timeoutMs: number }) => SyncRunResult;
@@ -711,7 +711,7 @@ export class Supervisor {
 
 	/** Repair for the engine lock: removes a lock whose owner pid is not an engine of this app. */
 	repairLock(): RepairResult {
-		const result = repairEngineLock(this.#d.layout, { ...(this.#d.isOurEngine ? { isOurEngine: this.#d.isOurEngine } : {}) });
+		const result = repairEngineLock(this.#d.layout, { isOurEngine: this.#d.isOurEngine });
 		this.#d.log({ event: "repair-engine-lock", result: result.result });
 		return result;
 	}

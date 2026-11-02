@@ -49,17 +49,17 @@ export type RepairResult =
 	| { result: "removed"; owner: number | null };
 
 export interface RepairOptions {
-	/** True when `pid` is an engine this app started and still holds (the `utilityProcess` handle's pid). Default: none is. */
-	isOurEngine?: (pid: number) => boolean;
+	/** True when `pid` is an engine this app started and still holds (the `utilityProcess` handle's pid). The app's own pid is always ours, with or without this. */
+	isOurEngine: (pid: number) => boolean;
 }
 
 /**
- * Removes a lock whose owner pid is not an engine of this root. An engine of this root is a `utilityProcess` this app started and still holds; every
- * other pid in the file is a leftover (a crashed app's engine ends with its parent, and a pid the lock names may have been reused by any program),
+ * Removes a lock whose owner pid is not an engine of this root. An engine of this root is a `utilityProcess` this app started and still holds, or the app's own
+ * process (its prune lock); every other pid in the file is a leftover (a crashed app's engine ends with its parent, and a pid the lock names may have been reused by any program),
  * whether the pid is alive or not. The file is renamed away first and removed only when what moved is the file that was judged, so a contender's new lock
  * is never deleted.
  */
-export function repairEngineLock(layout: Layout, options: RepairOptions = {}): RepairResult {
+export function repairEngineLock(layout: Layout, options: RepairOptions): RepairResult {
 	const file = join(layout.state, "engine.lock");
 	let text: string;
 	try {
@@ -69,7 +69,8 @@ export function repairEngineLock(layout: Layout, options: RepairOptions = {}): R
 		throw error;
 	}
 	const owner = parseLockOwner(text);
-	if (owner !== null && options.isOurEngine?.(owner.pid) === true) return { result: "engine-running", pid: owner.pid };
+	// The main process takes this lock itself with its own pid (`StateStore` prunes the previous versions under it), so a lock it holds is never a leftover (T8A-F009).
+	if (owner !== null && (owner.pid === process.pid || options.isOurEngine(owner.pid))) return { result: "engine-running", pid: owner.pid };
 	const away = `${file}.repair-${process.pid}-${randomBytes(4).toString("hex")}`;
 	try {
 		renameSync(file, away);

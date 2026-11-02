@@ -117,15 +117,23 @@ describe("the engine lock at a start and at Repair (R4-F002)", () => {
 	it("Repair removes a lock whose owner is not an engine of this app, a lock that does not parse, and keeps the lock of an engine it holds", () => {
 		const { layout } = fresh();
 		const file = join(layout.state, "engine.lock");
-		assert.deepEqual(repairEngineLock(layout), { result: "none" });
+		assert.deepEqual(repairEngineLock(layout, { isOurEngine: () => false }), { result: "none" });
 		lock(layout, { pid: 50, startTime: null, token: "x" });
 		assert.deepEqual(repairEngineLock(layout, { isOurEngine: (pid) => pid === 50 }), { result: "engine-running", pid: 50 });
 		assert.equal(existsSync(file), true);
 		assert.deepEqual(repairEngineLock(layout, { isOurEngine: () => false }), { result: "removed", owner: 50 });
 		assert.equal(existsSync(file), false);
 		lock(layout, "garbage");
-		assert.deepEqual(repairEngineLock(layout), { result: "removed", owner: null });
+		assert.deepEqual(repairEngineLock(layout, { isOurEngine: () => false }), { result: "removed", owner: null });
 		assert.equal(existsSync(file), false);
+	});
+
+	it("Repair never removes a lock the main process holds itself, whatever isOurEngine answers (the prune lock; T8A-F009)", () => {
+		const { layout } = fresh();
+		const file = join(layout.state, "engine.lock");
+		lock(layout, { pid: process.pid, startTime: "mine", token: "prune" });
+		assert.deepEqual(repairEngineLock(layout, { isOurEngine: () => false }), { result: "engine-running", pid: process.pid });
+		assert.equal(existsSync(file), true);
 	});
 });
 
