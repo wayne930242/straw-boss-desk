@@ -158,7 +158,7 @@ export function createEngine(deps: EngineDeps): Engine {
 						key,
 						state,
 						platform,
-						run: deps.run ?? execRunner(),
+						run: deps.run ?? execRunner(process.env, signal),
 						fetch: deps.fetch ?? netFetch(),
 						signal,
 						logFor: (name) => logger.stage(name),

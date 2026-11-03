@@ -18,3 +18,16 @@ export function pickLocale(languages: readonly string[]): Locale {
 	}
 	return "en";
 }
+
+/**
+ * The language main holds now. A page's preload argument is the language when the window opened, so a page loaded later (the runtime page after the PM changed the language in the
+ * wizard) asks main instead; an answer that does not come leaves the argument (T9-F003).
+ */
+export async function currentLocale(shell: { readonly locale: Locale; getLocale(): Promise<Locale> }): Promise<Locale> {
+	try {
+		const asked = await shell.getLocale();
+		return (LOCALES as readonly string[]).includes(asked) ? asked : shell.locale;
+	} catch {
+		return shell.locale;
+	}
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { pickLocale } from "../src/shared/locale.ts";
+import { currentLocale, pickLocale } from "../src/shared/locale.ts";
 
 describe("pickLocale", () => {
 	it("takes English for English tags and for nothing", () => {
@@ -24,5 +24,17 @@ describe("pickLocale", () => {
 	it("follows the order of the list", () => {
 		assert.equal(pickLocale(["en-US", "zh-TW"]), "en");
 		assert.equal(pickLocale(["fr", "zh-TW", "en"]), "zh-TW");
+	});
+});
+
+describe("currentLocale (T9-F003)", () => {
+	it("asks main instead of trusting the language the window opened with", async () => {
+		assert.equal(await currentLocale({ locale: "zh-TW", getLocale: async () => "en" }), "en");
+		assert.equal(await currentLocale({ locale: "en", getLocale: async () => "zh-TW" }), "zh-TW");
+	});
+
+	it("falls back to the argument when main does not answer or answers something else", async () => {
+		assert.equal(await currentLocale({ locale: "zh-TW", getLocale: () => Promise.reject(new Error("gone")) }), "zh-TW");
+		assert.equal(await currentLocale({ locale: "en", getLocale: async () => "fr" as never }), "en");
 	});
 });

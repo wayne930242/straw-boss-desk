@@ -6,7 +6,10 @@ const section = (title: string, ...body: Child[]): HTMLElement => h("section", {
 /** Step 3: **Trust: show before applying**, line by line. Nothing is written before Apply. */
 export function trust(ctx: Ctx): HTMLElement {
 	const t = ctx.view.trust;
-	if (t === null) return h("div", { class: "step", "data-step": "trust" }, h("h1", {}, ctx.tr("trust.title")));
+	// A trust page with nothing to show still leaves a way out (T9-F001).
+	if (t === null) {
+		return h("div", { class: "step", "data-step": "trust" }, h("h1", {}, ctx.tr("trust.title")), h("div", { class: "actions" }, h("button", { type: "button", id: "trust-cancel", onclick: () => ctx.act({ type: "trust-cancel" }) }, ctx.tr("trust.cancel"))));
+	}
 	const list = (items: Child[]): HTMLElement => h("ul", {}, ...items.map((i) => h("li", {}, i)));
 	return h(
 		"div",

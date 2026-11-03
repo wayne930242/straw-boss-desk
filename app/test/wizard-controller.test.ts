@@ -109,7 +109,35 @@ describe("the steps", () => {
 		assert.deepEqual(recipeFiles(w.layout), ["waydo-pm.json"]);
 		assert.equal(readFileSync(join(w.layout.recipe, "waydo-pm.json"), "utf8"), example("team.strawboss.json"), "the accepted file is saved as it came");
 		assert.equal(readWizardFile(w.layout)?.step, "folder");
-		assert.deepEqual(c.view().steps, ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"]);
+	});
+
+	it("a relaunch at the trust step opens on the recipe step, and the trust page always has a way out (T9-F001)", async () => {
+		const w = make();
+		await w.controller.act({ type: "welcome-next" });
+		await w.controller.act({ type: "recipe-text", name: "waydo.strawboss.json", text: example("team.strawboss.json") });
+		assert.equal(w.controller.view().step, "trust");
+		assert.equal(readWizardFile(w.layout)?.step, "recipe", "the record never holds a step that memory alone can resume");
+		const again = new WizardController(w.deps);
+		assert.equal(again.view().step, "recipe");
+		assert.equal(again.view().trust, null);
+		await again.act({ type: "recipe-text", name: "waydo.strawboss.json", text: example("team.strawboss.json") });
+		assert.equal(again.view().step, "trust");
+		assert.ok(again.view().trust !== null);
+	});
+
+	it("the step total is the same at every step and in every kind of run (SA-01)", async () => {
+		const full = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"];
+		const recipe = make();
+		const seen: string[][] = [recipe.controller.view().steps];
+		await recipe.controller.act({ type: "welcome-next" });
+		seen.push(recipe.controller.view().steps);
+		await recipe.controller.act({ type: "recipe-text", name: "waydo.strawboss.json", text: example("team.strawboss.json") });
+		seen.push(recipe.controller.view().steps);
+		await recipe.controller.act({ type: "trust-apply" });
+		seen.push(recipe.controller.view().steps);
+		const none = await atFolder();
+		seen.push(none.controller.view().steps);
+		for (const steps of seen) assert.deepEqual(steps, full);
 	});
 
 	it("refuses an invalid recipe with its field and rule, keeps the step, and writes nothing", async () => {
@@ -157,7 +185,6 @@ describe("the steps", () => {
 		await w.controller.act({ type: "no-recipe", github: true, gitlabHost: "GitLab.Example.COM" });
 		const v = w.controller.view();
 		assert.equal(v.step, "folder");
-		assert.ok(!v.steps.includes("trust"));
 		assert.deepEqual(v.hosts.forges, [{ kind: "github", host: "github.com" }, { kind: "gitlab", host: "gitlab.example.com" }]);
 		assert.equal(v.linearOffered, true);
 	});
@@ -242,6 +269,19 @@ describe("the install", () => {
 		assert.equal(twice.controller.step, "install");
 		assert.equal(twice.controller.view().install.crashed, "node");
 		assert.equal(twice.engine.configs.length, 2);
+	});
+
+	it("a run that ends `disposed` (the app is quitting) is not resumed and not counted as a crash (T9-F002)", async () => {
+		const w = await atFolder();
+		w.engine.scripts.push((_c, emit) => {
+			emit({ type: "stage-start", stage: "preflight" });
+			return { kind: "disposed" };
+		});
+		await w.controller.act({ type: "folder-next" });
+		assert.equal(w.engine.configs.length, 1, "no second engine");
+		assert.equal(w.log.some((l) => l.event === "engine-crashed"), false);
+		assert.equal(w.controller.view().install.crashed, null);
+		assert.equal(readWizardFile(w.layout)?.step, "install", "the next launch resumes the install");
 	});
 
 	it("an engine that refuses (a held lock) is a failure with the message, not a crash", async () => {

@@ -1,5 +1,5 @@
 import type { ShellState } from "../shared/shell-state.ts";
-import type { Locale } from "../shared/locale.ts";
+import { currentLocale, type Locale } from "../shared/locale.ts";
 import type { ShellNotice } from "../shared/wizard.ts";
 import { h } from "./dom.ts";
 import { catalogs, format, t } from "./i18n/index.ts";
@@ -135,7 +135,11 @@ if (shell) {
 		render(last);
 	});
 	shell.onState(render);
-	void shell.state().then(render);
+	// The window's first language is in the preload argument; the PM may have changed it since (in the wizard or in settings), so the first draw asks main (T9-F003).
+	void Promise.all([currentLocale(shell), shell.state()]).then(([now, state]) => {
+		locale = now;
+		render(state);
+	});
 } else {
 	render({ mode: "none" });
 }

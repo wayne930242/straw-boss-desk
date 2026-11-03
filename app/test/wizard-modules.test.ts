@@ -42,6 +42,9 @@ describe("state/wizard.json", () => {
 		assert.deepEqual(back?.later, [{ item: "claude" }, { item: "gitlab", host: "g.example" }]);
 		const messy = parseWizardFile(JSON.stringify({ schema: 1, step: "nonsense", locale: "fr", later: [{ item: "github" }, { item: "linear" }, 4], hostsIndex: -3, workFolder: 5 }));
 		assert.deepEqual(messy, { schema: 1, step: "welcome", done: false, later: [{ item: "linear" }], hostsIndex: 0 });
+		// The trust step holds a recipe that only memory has, so a record at `trust` opens on the recipe step (T9-F001).
+		assert.equal(parseWizardFile(JSON.stringify({ schema: 1, step: "trust", later: [] }))?.step, "recipe");
+		assert.equal(parseWizardFile(JSON.stringify({ schema: 1, step: "folder", later: [] }))?.step, "folder");
 		assert.equal(parseWizardFile("not json"), null);
 		assert.equal(parseWizardFile(JSON.stringify({ schema: 2 })), null);
 	});
@@ -248,13 +251,54 @@ describe("the engine host", () => {
 
 	it("refuses a second run while one is active, asks the engine to cancel, and disposes the child", async () => {
 		const child = new FakeChild();
-		const host = new UtilityEngineHost({ fork: () => child, exitWaitMs: 50 });
+		const host = new UtilityEngineHost({ fork: () => child, cancelWaitMs: 20, exitWaitMs: 50 });
 		const run = host.run(config, () => undefined);
 		await assert.rejects(host.run(config, () => undefined), /already active/);
 		host.cancel();
 		assert.deepEqual(child.posted.at(-1), { type: "cancel" });
 		await host.dispose();
 		assert.ok(child.killed >= 1);
-		assert.equal((await run).kind, "crashed");
+		assert.equal((await run).kind, "disposed");
+	});
+
+	it("dispose asks the run to cancel first, waits for it to end by itself, and does not kill a process that left (T9-F002)", async () => {
+		const child = new FakeChild();
+		child.kill = () => {
+			child.killed++;
+			return true;
+		};
+		const host = new UtilityEngineHost({ fork: () => child, cancelWaitMs: 500, exitWaitMs: 50 });
+		const run = host.run(config, () => undefined);
+		child.say({ type: "ready" });
+		const disposing = host.dispose();
+		assert.deepEqual(child.posted.at(-1), { type: "cancel" });
+		assert.equal(child.killed, 0, "nothing is killed while the cancelled run can still end");
+		// The engine answers the cancel and leaves.
+		child.say({ type: "done", ok: false, outcomes: [] });
+		child.end(0);
+		await disposing;
+		assert.equal((await run).kind, "done");
+		assert.equal(child.killed, 1, "only the host's own end-of-run kill, which is a no-op for a process that left");
+	});
+
+	it("dispose kills a run that ignores the cancel, and that end is `disposed`, not `crashed` (T9-F002)", async () => {
+		const child = new FakeChild();
+		const host = new UtilityEngineHost({ fork: () => child, cancelWaitMs: 20, exitWaitMs: 50 });
+		const run = host.run(config, () => undefined);
+		child.say({ type: "ready" });
+		await host.dispose();
+		assert.ok(child.killed >= 1);
+		assert.deepEqual(await run, { kind: "disposed" });
+	});
+
+	it("refuses a run after dispose, and does not post the run of an engine that became ready after it (T9-F002)", async () => {
+		const early = new FakeChild();
+		const a = new UtilityEngineHost({ fork: () => early, cancelWaitMs: 10, exitWaitMs: 20 });
+		const runA = a.run(config, () => undefined);
+		await a.dispose();
+		early.say({ type: "ready" });
+		assert.equal(early.posted.some((m) => m.type === "run"), false, "the run the quit cancelled is never started");
+		assert.deepEqual(await runA, { kind: "disposed" });
+		await assert.rejects(a.run(config, () => undefined), /disposed/);
 	});
 });

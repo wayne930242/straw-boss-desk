@@ -38,6 +38,12 @@ describe("the runtime page", () => {
 		for (const kind of ["restarting", "address-changed", "starting"]) assert.match(script, new RegExp(`"?${kind}"?: "banner\\.`), kind);
 	});
 
+	it("draws its first state in the language main holds now, not the one the window opened with (T9-F003)", () => {
+		assert.match(script, /import \{ currentLocale/);
+		assert.match(script, /Promise\.all\(\[currentLocale\(shell\), shell\.state\(\)\]\)/);
+		assert.doesNotMatch(script, /void shell\.state\(\)\.then\(render\)/);
+	});
+
 	it("has a sentence for the failure kinds the budgets and the window add", () => {
 		for (const kind of ["restart-budget", "renderer", "sb-unverified"]) {
 			assert.ok(START_FAILURE_KINDS.includes(kind as never), kind);

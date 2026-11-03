@@ -50,7 +50,9 @@ export function parseWizardFile(text: string): WizardFile | null {
 		return null;
 	}
 	if (!isObject(parsed) || parsed.schema !== 1) return null;
-	const step = (WIZARD_STEPS as readonly unknown[]).includes(parsed.step) ? (parsed.step as WizardStep) : "welcome";
+	const known = (WIZARD_STEPS as readonly unknown[]).includes(parsed.step) ? (parsed.step as WizardStep) : "welcome";
+	// The trust step cannot be resumed: the accepted recipe is held in memory until Apply and nothing is written before it, so a record at `trust` is read as the recipe step (T9-F001).
+	const step: WizardStep = known === "trust" ? "recipe" : known;
 	const file: WizardFile = {
 		schema: 1,
 		step,

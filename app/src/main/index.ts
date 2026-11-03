@@ -211,6 +211,8 @@ function stopThenExit(code: (ok: boolean) => number): void {
 	if (stopping) return;
 	stopping = true;
 	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
+	// A Repair job in the queue does not start the stack again once the engine is gone (T9-F002).
+	supervisor.beginQuit();
 	engineHost
 		.dispose()
 		.catch(() => undefined)

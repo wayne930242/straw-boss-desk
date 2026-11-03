@@ -16,7 +16,7 @@ import { shellFailureOf } from "../shell-state.ts";
 import type { StartResult } from "../runtime/supervisor.ts";
 import type { Locale } from "../../shared/locale.ts";
 import type { ShellFailure } from "../../shared/shell-state.ts";
-import type { FolderProblem, Forge, LaterItem, RecipeChoice, RecipeRefusal, WizardAction, WizardStep, WizardView } from "../../shared/wizard.ts";
+import { WIZARD_STEPS, type FolderProblem, type Forge, type LaterItem, type RecipeChoice, type RecipeRefusal, type WizardAction, type WizardStep, type WizardView } from "../../shared/wizard.ts";
 import type { EngineEnd, EngineHost } from "./engine-host.ts";
 import { defaultWorkFolder, workFolderProblem } from "./folder.ts";
 import { InstallProgress } from "./install-progress.ts";
@@ -65,7 +65,7 @@ export interface WizardDeps {
 
 export type RepairOutcome = { ok: true } | { ok: false; failure: ShellFailure };
 
-const STEP_ORDER: readonly WizardStep[] = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"];
+const STEP_ORDER: readonly WizardStep[] = WIZARD_STEPS;
 /** An engine process that ends is resumed this many times at most in one run; the same stage ending it twice fails the stage earlier. */
 const MAX_RESUMES = 5;
 const HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
@@ -170,11 +170,6 @@ export class WizardController {
 		return this.#stack;
 	}
 
-	#steps(): WizardStep[] {
-		const hasRecipe = this.recipe !== null || this.#pending !== null;
-		return STEP_ORDER.filter((s) => (s === "trust" ? hasRecipe : s === "hosts" ? this.forges.length > 0 : s === "linear" ? this.linearOffered : true));
-	}
-
 	view(): WizardView {
 		const file = this.#file;
 		const recipe = this.recipe;
@@ -195,7 +190,7 @@ export class WizardController {
 		const launching = file.done || (this.#launching && file.step === "done");
 		return {
 			step: launching ? "launching" : file.step,
-			steps: this.#steps(),
+			steps: [...WIZARD_STEPS],
 			locale: this.locale,
 			root: this.#d.layout.root,
 			dev: this.#d.dev,
@@ -527,6 +522,7 @@ export class WizardController {
 				this.#progress.finish(false, [...end.details, ...d.logTail(40)].slice(-40));
 				return { ok: false };
 			}
+			if (end.kind === "disposed") return { ok: false };
 			// crashed
 			const stage = this.#progress.working ?? "";
 			d.log({ event: "engine-crashed", stage, code: end.code, attempt });

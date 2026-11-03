@@ -126,6 +126,7 @@ export class Supervisor {
 	readonly #times: StartTimes;
 	readonly #listeners = new Set<(event: SupervisorEvent) => void>();
 	#state: SupervisorState = "idle";
+	#quitting = false;
 	#env: EnvMap | null = null;
 	#installed: Installed | null = null;
 	#config: StartConfig | null = null;
@@ -775,6 +776,11 @@ export class Supervisor {
 
 	// ---- maintenance -------------------------------------------------------------------------------------------------
 
+	/** The app is quitting: a job that stopped the stack for its work does not start it again (T9-F002). */
+	beginQuit(): void {
+		this.#quitting = true;
+	}
+
 	/**
 	 * Runs `work` with the stack stopped, and starts the stack again when it was running (T6-F006, T7-F007). Repair, a stack update, and a recipe update run npm in the
 	 * live prefixes (`tools/npm` and `<agent>/npm`) while the sb server and every pi extension run from them; the stages that install or remove a package must not
@@ -796,7 +802,8 @@ export class Supervisor {
 			} catch (error) {
 				outcome = { error };
 			}
-			if (wasRunning) {
+			// A quit that came during the job stops the stack next: starting it only to stop it would hold the quit for a whole start.
+			if (wasRunning && !this.#quitting) {
 				try {
 					await this.#start();
 				} catch (error) {

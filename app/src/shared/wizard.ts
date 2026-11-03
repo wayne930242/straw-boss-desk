@@ -97,7 +97,7 @@ export interface InstallView {
 export interface WizardView {
 	/** The step to show. `launching` is the short wait of a later launch, between the window opening and the GUI loading. */
 	step: WizardStep | "launching";
-	/** Steps that apply to this run, for the progress line (no Linear step without Linear; one hosts step when there are forges). */
+	/** The full step list, the same from step 1 to the last, so the progress line's total never changes (SA-01). A step a run skips (trust without a recipe, hosts, Linear) leaves a gap in the count. */
 	steps: WizardStep[];
 	locale: Locale;
 	/** The data root, named on the welcome screen. */
