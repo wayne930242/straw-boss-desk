@@ -11,12 +11,13 @@ import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication } from "playwright-core";
 import { createPlatform } from "../../src/main/platform/index.ts";
-import { homeBaseDir, loadStartConfig } from "../../src/main/runtime/config.ts";
+import { loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, WorldHerdr, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
+import { assertElevatedRunner } from "../harness/elevation.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
 const enabled = process.env.SBD_E2E === "1";
@@ -367,6 +368,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	};
 
 	before(async () => {
+		// S53-F004: the claim that pi-straw-boss starts under a full administrator token holds only while this runner's token is one.
+		assertElevatedRunner();
 		world = createWorld("fol");
 		await noteUserPath(world);
 		const installed = await runWorld(world, { profile: true, recipe: { forges: [{ kind: "github", host: "github.com" }], tools: [], id: "ci-follow", name: "CI follow", version: "1.0.0", instructions: "- the CI rule" } });
@@ -447,6 +450,47 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		await until("the GUI to answer 200", 120_000, async () => (await statusOf(url)) === 200);
 		await until("the new sb start time", 120_000, () => startRecord()?.sb?.startTime);
 		console.log(`the killed sb server was back after ${((Date.now() - began) / 1000).toFixed(1)} s`);
+	});
+
+	// S53-F001. This check runs before the folder-hook check opens a base: a pi of a base that finds the sb server gone starts another one within seconds (seen in run 41599338092,
+	// where the URL answered again 2 ms after the resume), and then "no `up` in the grace" is true whatever the grace does. Here nothing but the follower can bring the server back,
+	// and the check asserts that: the old address is still down just after the resume and at the sample point, and no restart or move was seen before it.
+	check("runs no `up` when the URL is down across an emitted suspend and resume, and follows the server back", async () => {
+		// T8B-F001: a leftover failure screen is cleared first, since a stopped follower would make "no `up`" true without testing anything.
+		if (await onFailureScreen()) await pressRetry();
+		assert.equal(base, undefined, "no base is open: a pi of a base would restart the server by itself");
+		const old = startRecord()?.sb?.pid as number;
+		const oldUrl = (await until("the GUI view's address", 30_000, guiUrl)) as string;
+		assert.equal(await statusOf(oldUrl), 200, "the address answers before the suspend");
+		const began = Date.now();
+		await emitPower("suspend");
+		await killSb();
+		await sleep(2000);
+		const resumedAt = Date.now();
+		await emitPower("resume");
+		await sleep(1000);
+		assert.notEqual(await statusOf(oldUrl), 200, "the old address is down just after the resume: the check tests the grace");
+		// 16.5 s after the resume: past the ~10 to 12 s at which the gone rule would fire without the grace, and inside the 20 s of the grace.
+		await sleep(Math.max(0, resumedAt + 16_500 - Date.now()));
+		assert.notEqual(await statusOf(oldUrl), 200, "nothing brought the server back during the grace: the follower was the only one that could");
+		assert.deepEqual(
+			eventsSince("follow-up", resumedAt).map((l) => l.detail),
+			[],
+			"the 20 s after a resume are the sleep's gap, not an unanswered GUI",
+		);
+		assert.deepEqual([...eventsSince("follow-restart", began), ...eventsSince("follow-moved", began)].map((l) => l.event), [], "no restart or move was seen before the sample");
+		assert.ok(eventsSince("follow-resume", resumedAt).length === 1 && eventsSince("power-resume", resumedAt).length === 1);
+		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "the budget did not stop the follower, so the follower was running when it judged");
+		assert.equal(await onFailureScreen(), false, "no failure screen: the follower is running");
+		assert.deepEqual([...eventsSince("follow-screen", began), ...eventsSince("start-failed", began)].map((l) => l.detail ?? l.kind), [], "no shell screen was shown and no start failed since the suspend");
+		// The grace ends and the gone rule runs its one `up`.
+		await until("the follower's `up` after the grace", 120_000, () => eventsSince("follow-up", resumedAt).length >= 1 || eventsSince("follow-restart", resumedAt).length >= 1);
+		assert.ok(Date.now() - resumedAt >= 16_500);
+		await until("the new sb server recorded", 180_000, newSb(old));
+		const url = (await until("the GUI view's address", 30_000, guiUrl)) as string;
+		await until("the GUI to answer 200", 120_000, async () => (await statusOf(url)) === 200);
+		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "no restart-budget event during the suspend check");
+		assert.equal(await onFailureScreen(), false);
 	});
 
 	check("opens a base under the work folder from the folder hook, with the dialog stubbed", async () => {
@@ -558,34 +602,6 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		assert.equal(await shellVisible(), true);
 		assert.deepEqual(eventsSince("restart-budget", fresh).map((l) => l.which), ["sb"], "logs/start.jsonl records that the fourth restart stopped the retrying, once");
 		assert.match(await pressRetry(), GUI_URL);
-	});
-
-	check("runs no `up` when the URL is down across an emitted suspend and resume, and follows the server back", async () => {
-		// T8B-F001: the budget check before this one ended with Retry, so the budget is fresh; a leftover failure screen is cleared the same way, since a stopped follower would make
-		// "no `up`" true without testing anything.
-		if (await onFailureScreen()) await pressRetry();
-		const old = startRecord()?.sb?.pid as number;
-		const began = Date.now();
-		await emitPower("suspend");
-		await killSb();
-		await sleep(2000);
-		const resumedAt = Date.now();
-		await emitPower("resume");
-		await sleep(12_000);
-		assert.deepEqual(
-			eventsSince("follow-up", resumedAt).map((l) => l.detail),
-			[],
-			"the 20 s after a resume are the sleep's gap, not an unanswered GUI",
-		);
-		assert.ok(eventsSince("follow-resume", resumedAt).length === 1 && eventsSince("power-resume", resumedAt).length === 1);
-		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "the budget did not stop the follower, so the follower was running when it judged");
-		assert.equal(await onFailureScreen(), false, "no failure screen: the follower is running");
-		assert.deepEqual([...eventsSince("follow-screen", began), ...eventsSince("start-failed", began)].map((l) => l.detail ?? l.kind), [], "no shell screen was shown and no start failed since the suspend");
-		await until("the new sb server recorded", 180_000, newSb(old));
-		const url = (await until("the GUI view's address", 30_000, guiUrl)) as string;
-		await until("the GUI to answer 200", 120_000, async () => (await statusOf(url)) === 200);
-		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "no restart-budget event during the suspend check");
-		assert.equal(await onFailureScreen(), false);
 	});
 
 	check("has no folder hook on a page of another origin", async () => {
@@ -730,7 +746,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			if (quit.ok !== true) {
 				// Upstream seam U13: a pi that quits in a Herdr tab starts pi-straw-boss's pane-balance helper (`balance.mjs after-close`), which waits up to 30 s for a pane that cannot close
 				// any more. The base the folder hook opened has such a pi, so the stop may report that helper and nothing else: no refusal of the kill rule, and every program it reports a
-				// detached one (parent 1, or the quitting pi that started it) with a base's folder as its working folder, born after Herdr exited. Any other report fails.
+				// detached one (parent 1, or the quitting pi that started it) with a base's folder as its working folder, born after Herdr exited, a `node` that lived about 30 s. Any other report fails.
 				assert.deepEqual(stop.refused, [], `the stop refused to kill something: ${JSON.stringify(stop)}`);
 				const reported = (stop.leftovers ?? []) as Array<{ pid: number; file: string }>;
 				assert.ok(reported.length > 0, `the stop was not ok and reported no program: ${JSON.stringify(stop)}`);
@@ -747,6 +763,9 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 					assert.ok(v.ppid === 1 || (parent !== undefined && parent.last <= v.first + 1000), `not detached (${why}; parent ${JSON.stringify(parent)})`);
 					assert.ok(v.cwd !== null && realpathSync(v.cwd).startsWith(realpathSync(workFolder)) && realpathSync(v.cwd).startsWith(home), `its working folder is not a base's (${why})`);
 					assert.ok(v.bornAt >= exited - 1500, `born before Herdr exited (${why}; Herdr exited at ${exited})`);
+					// S53-F005: the helper is a `node` (told by its executable's path, never by a command line) that lives its 30 s and leaves; any other short-lived program of a quitting pi fails here.
+					assert.match(basename(v.file), /^node(\.exe)?$/i, `the reported program is not node (${why})`);
+					assert.ok(v.last - v.bornAt <= 36_000, `it lived longer than the helper's ~30 s (${why}: ${Math.round((v.last - v.bornAt) / 1000)} s)`);
 				}
 				console.log(`U13: the stop reported ${reported.length} pane-balance helper(s) (${reported.map((l) => l.pid).join(", ")}); each is detached (or was read while its quitting parent left), in a base's folder, and born after Herdr exited, and all had left when the wait ended`);
 			}
