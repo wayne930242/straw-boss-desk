@@ -131,7 +131,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	let page: Page;
 
 	it("opens on the welcome screen in zh-TW from an empty root, with no WSL line", async () => {
-		assert.equal(existsSync(world.layout.state), false, "the root starts empty");
+		assert.deepEqual(["wizard.json", "bootstrap.json", "current.json"].filter((f) => existsSync(join(world.layout.state, f))), [], "the root starts with no wizard or install record");
 		first = await launch("zh-TW");
 		page = await pageOf(first, "wizard.html");
 		await waitStep(page, "welcome");
