@@ -527,7 +527,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			return u && (await statusOf(u)) === 200 && (await shellVisible()) === false ? u : undefined;
 		});
 	};
-	const onFailureScreen = async () => (await shellView())?.screen === "failed";
+	// The card keeps a failure's text after Retry hides the shell view (run 41595908673 read it 12 s after Retry), so a screen counts only while the view shows.
+	const onFailureScreen = async () => (await shellView())?.screen === "failed" && (await shellVisible()) === true;
 	/** One `cli.mjs restart`, and the wait until the follower saw it (a new pid in start.json) or the failure screen came. */
 	const restartOnce = async (reason: string): Promise<void> => {
 		const old = startRecord()?.sb?.pid as number;
@@ -579,6 +580,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		assert.ok(eventsSince("follow-resume", resumedAt).length === 1 && eventsSince("power-resume", resumedAt).length === 1);
 		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "the budget did not stop the follower, so the follower was running when it judged");
 		assert.equal(await onFailureScreen(), false, "no failure screen: the follower is running");
+		assert.deepEqual([...eventsSince("follow-screen", began), ...eventsSince("start-failed", began)].map((l) => l.detail ?? l.kind), [], "no shell screen was shown and no start failed since the suspend");
 		await until("the new sb server recorded", 180_000, newSb(old));
 		const url = (await until("the GUI view's address", 30_000, guiUrl)) as string;
 		await until("the GUI to answer 200", 120_000, async () => (await statusOf(url)) === 200);
