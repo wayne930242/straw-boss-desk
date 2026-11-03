@@ -18,12 +18,12 @@ export function welcome(ctx: Ctx): HTMLElement {
 			? null
 			: h(
 					"div",
-					{ class: "finding", id: "finding-wsl", role: "status" },
+					{ class: "finding", id: "finding-wsl" },
 					h("p", {}, ctx.tr("welcome.wsl")),
 					h(
 						"details",
 						{ ...(detailsOpen ? { open: true } : {}), ontoggle: (e) => (detailsOpen = (e.target as HTMLDetailsElement).open) },
-						h("summary", {}, ctx.tr("welcome.wslDetails")),
+						h("summary", { id: "wsl-summary" }, ctx.tr("welcome.wslDetails")),
 						h("pre", {}, ctx.tr("welcome.wslPath", { path: wsl })),
 					),
 				),

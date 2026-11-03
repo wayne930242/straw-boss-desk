@@ -70,7 +70,7 @@ export function install(ctx: Ctx): HTMLElement {
 		h("p", { class: "lead" }, ctx.tr("install.lead")),
 		h(
 			"p",
-			{ class: "status", id: "install-line", role: "status" },
+			{ class: "status", id: "install-line" },
 			i.status === "running" && i.current !== null ? h("span", { class: "spinner", "aria-hidden": "true" }) : null,
 			i.status === "running" && i.current !== null ? ctx.tr("install.now", { stage: stageLabel(ctx, i.current) }) : i.status === "done" ? ctx.tr("install.allDone") : "",
 		),
@@ -79,7 +79,7 @@ export function install(ctx: Ctx): HTMLElement {
 			{ class: "stages", id: "install-stages" },
 			...i.stages.map((s) => h("li", { "data-stage": s.name, "data-badge": s.badge }, h("span", { class: "stage-name" }, stageLabel(ctx, s.name)), h("span", { class: `badge badge-${s.badge}` }, ctx.tr(`install.badge.${s.badge}`)))),
 		),
-		...i.failures.map((f) => h("p", { class: "problem", role: "alert" }, failureSentence(ctx, f))),
+		...i.failures.map((f) => h("p", { class: "problem" }, failureSentence(ctx, f))),
 		i.crashed === null ? null : h("p", { class: "problem" }, ctx.tr("install.crashed")),
 		failed ? h("div", { class: "actions" }, h("button", { type: "button", id: "install-retry", class: "primary", onclick: () => ctx.act({ type: "install-retry" }) }, ctx.tr("install.retry"))) : null,
 		i.failures.length === 0 && i.tail.length === 0
@@ -87,8 +87,8 @@ export function install(ctx: Ctx): HTMLElement {
 			: h(
 					"details",
 					{ id: "install-details", ...(detailsOpen ? { open: true } : {}), ontoggle: (e) => (detailsOpen = (e.target as HTMLDetailsElement).open) },
-					h("summary", {}, ctx.tr("install.details")),
-					h("pre", {}, [...i.failures.map((f) => `${f.stage || "(setup)"}: ${f.detail}`), ...i.tail].join("\n")),
+					h("summary", { id: "install-summary" }, ctx.tr("install.details")),
+					h("pre", {}, [...i.failures.map((f) => `${f.stage || ctx.tr("install.setup")}: ${f.detail}`), ...i.tail].join("\n")),
 				),
 	);
 }

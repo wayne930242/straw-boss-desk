@@ -2,6 +2,7 @@ import type { Locale } from "../shared/locale.ts";
 import type { WizardView } from "../shared/wizard.ts";
 import { clear, h } from "./dom.ts";
 import { catalogs, t } from "./i18n/index.ts";
+import { announcementParts, newParts } from "./wizard/announce.ts";
 import { makeCtx, type Ctx } from "./wizard/common.ts";
 import { done, launching } from "./wizard/done.ts";
 import { folder } from "./wizard/folder.ts";
@@ -26,8 +27,20 @@ const byId = (id: string): HTMLElement => {
 };
 const root = byId("step");
 const header = byId("header");
+const announce = byId("announce");
+let spoken: string[] = [];
+let shownStep = "";
 
 const STEPS: Record<string, (ctx: Ctx) => HTMLElement> = { welcome, recipe, trust, folder, install, start, claude, hosts, linear, done, launching };
+
+/** The element the PM is on, by something that survives a redraw: its id, or the language it switches to. */
+function focusKey(): string | null {
+	const el = document.activeElement;
+	if (el === null || el === document.body || !(root.contains(el) || header.contains(el))) return null;
+	if (el.id !== "") return `#${el.id}`;
+	const locale = el.getAttribute("data-locale");
+	return locale === null ? null : `[data-locale="${locale}"]`;
+}
 
 function draw(): void {
 	document.documentElement.lang = locale;
@@ -36,11 +49,15 @@ function draw(): void {
 	const ctx = makeCtx(view, locale, (action) => void shell?.wizardAct(action));
 	const render = STEPS[view.step] ?? welcome;
 	const index = view.steps.indexOf(view.step as never);
+	const keep = focusKey();
+	const selection = document.activeElement instanceof HTMLInputElement ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
 	document.body.dataset.step = view.step;
 	clear(header);
 	header.append(
+		h("span", { class: "brand" }, t(locale, "app.name")),
 		h("span", { class: "badge dev-badge", id: "dev-badge", hidden: !view.dev }, t(locale, "welcome.devBuild")),
 		h("span", { class: "progress", id: "progress" }, index >= 0 ? ctx.tr("steps.label", { n: index + 1, total: view.steps.length }) : ""),
+		h("span", { class: "track", "aria-hidden": "true" }, ...view.steps.map((_, i) => h("span", { class: "seg", "data-state": i < index ? "done" : i === index ? "current" : "todo" }))),
 		h(
 			"span",
 			{ class: "language", role: "group", "aria-label": t(locale, "welcome.languageLabel") },
@@ -50,7 +67,24 @@ function draw(): void {
 		),
 	);
 	clear(root);
-	root.append(render(ctx));
+	const step = render(ctx);
+	root.append(step);
+	// Focus stays where the PM was; a new step starts at its heading.
+	const target = keep === null ? null : document.querySelector<HTMLElement>(keep);
+	if (view.step !== shownStep) {
+		const heading = step.querySelector<HTMLElement>("h1");
+		heading?.setAttribute("tabindex", "-1");
+		if (keep !== null || shownStep === "") heading?.focus({ preventScroll: true });
+	} else if (target !== null) {
+		target.focus({ preventScroll: true });
+		if (target instanceof HTMLInputElement && selection !== null) target.setSelectionRange(selection[0] ?? null, selection[1] ?? null);
+	}
+	shownStep = view.step;
+	// A screen reader hears what changed, not the step again.
+	const parts = announcementParts(ctx);
+	const text = newParts(locale, spoken, parts);
+	spoken = parts;
+	if (text !== "") announce.textContent = text;
 }
 
 if (shell) {

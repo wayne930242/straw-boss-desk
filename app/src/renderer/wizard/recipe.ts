@@ -11,7 +11,14 @@ const MAX_READ_BYTES = 300 * 1024;
 /** Step 2: drop or choose `<id>.strawboss.json`, or say which code hosts are used. A refusal names the field and the rule, never the value. */
 export function recipe(ctx: Ctx): HTMLElement {
 	const refused = ctx.view.recipe.refused;
-	const drop = h("div", { class: "drop", id: "recipe-drop", tabindex: 0 }, ctx.tr("recipe.drop"));
+	// The drop zone is also a button: Enter or Space opens the file dialog, as Choose does (T9-F004).
+	const drop = h("div", { class: "drop", id: "recipe-drop", tabindex: 0, role: "button" }, ctx.tr("recipe.drop"));
+	drop.addEventListener("keydown", (e) => {
+		if (e.key !== "Enter" && e.key !== " ") return;
+		e.preventDefault();
+		ctx.act({ type: "choose-recipe-file" });
+	});
+	drop.addEventListener("click", () => ctx.act({ type: "choose-recipe-file" }));
 	drop.addEventListener("dragover", (e) => {
 		e.preventDefault();
 		drop.classList.add("over");
@@ -41,13 +48,13 @@ export function recipe(ctx: Ctx): HTMLElement {
 			? null
 			: h(
 					"div",
-					{ class: "refusal", id: "recipe-refused", role: "alert" },
+					{ class: "refusal", id: "recipe-refused" },
 					h("h2", {}, ctx.tr("recipe.refusedTitle")),
 					h("p", {}, ctx.tr("recipe.refusedLead")),
 					h(
 						"table",
 						{},
-						h("thead", {}, h("tr", {}, h("th", {}, ctx.tr("recipe.field")), h("th", {}, ctx.tr("recipe.rule")), h("th", {}))),
+						h("thead", {}, h("tr", {}, h("th", {}, ctx.tr("recipe.field")), h("th", {}, ctx.tr("recipe.rule")), h("th", {}, ctx.tr("recipe.explanation")))),
 						h(
 							"tbody",
 							{},

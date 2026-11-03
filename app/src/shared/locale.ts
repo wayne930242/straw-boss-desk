@@ -31,3 +31,6 @@ export async function currentLocale(shell: { readonly locale: Locale; getLocale(
 		return shell.locale;
 	}
 }
+
+/** Items joined the way the language joins a list: "A, B, and C" in English, "A、B和C" in Traditional Chinese. */
+export const listOf = (locale: Locale, items: readonly string[]): string => new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).format(items);

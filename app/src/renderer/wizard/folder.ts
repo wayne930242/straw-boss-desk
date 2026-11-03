@@ -11,7 +11,7 @@ export function folder(ctx: Ctx): HTMLElement {
 		h("h1", {}, ctx.tr("folder.title")),
 		h("p", { class: "lead" }, ctx.tr("folder.lead")),
 		h("p", { class: "path", id: "folder-path" }, f.path),
-		f.problem === null ? null : h("p", { class: "problem", id: "folder-problem", role: "alert" }, trOr(ctx, `folder.problems.${f.problem}`, "folder.problems.outside-home")),
+		f.problem === null ? null : h("p", { class: "problem", id: "folder-problem" }, trOr(ctx, `folder.problems.${f.problem}`, "folder.problems.outside-home")),
 		h(
 			"div",
 			{ class: "actions" },

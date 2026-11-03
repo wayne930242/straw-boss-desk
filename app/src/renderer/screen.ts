@@ -1,5 +1,5 @@
 import type { ShellState } from "../shared/shell-state.ts";
-import { currentLocale, type Locale } from "../shared/locale.ts";
+import { currentLocale, listOf, type Locale } from "../shared/locale.ts";
 import type { ShellNotice } from "../shared/wizard.ts";
 import { h } from "./dom.ts";
 import { catalogs, format, t } from "./i18n/index.ts";
@@ -54,7 +54,7 @@ function noticeRow(notice: ShellNotice): HTMLElement {
 			detail,
 		);
 	}
-	const items = notice.items.map((i) => format(t(locale, LATER_KEY[i.item]), "host" in i ? { host: i.host } : {})).join(", ");
+	const items = listOf(locale, notice.items.map((i) => format(t(locale, LATER_KEY[i.item]), "host" in i ? { host: i.host } : {})));
 	return h(
 		"div",
 		{ class: "notice", "data-notice": "later", role: "status" },
@@ -95,7 +95,7 @@ function render(state: ShellState): void {
 		title.textContent = t(locale, stopped ? "start.stopTitle" : "start.title");
 		sentence.textContent = failureSentence(failure.kind, failure.pid);
 		retry.textContent = t(locale, "start.retry");
-		leftovers.replaceChildren(...(failure.leftovers ?? []).map((l) => Object.assign(document.createElement("li"), { textContent: `${l.file} (${l.pid})` })));
+		leftovers.replaceChildren(...(failure.leftovers ?? []).map((l) => Object.assign(document.createElement("li"), { textContent: format(t(locale, "start.leftover"), { file: l.file, pid: l.pid }) })));
 		leftovers.hidden = (failure.leftovers?.length ?? 0) === 0;
 		reason.textContent = failure.reason;
 		details.hidden = failure.reason === "";

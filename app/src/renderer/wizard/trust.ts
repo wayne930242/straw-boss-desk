@@ -20,12 +20,12 @@ export function trust(ctx: Ctx): HTMLElement {
 			"div",
 			{ class: "trust-list", id: "trust-list" },
 			section(ctx.tr("trust.recipe"), h("p", { class: "strong" }, t.name), h("p", {}, ctx.tr("trust.version", { version: t.version })), h("p", {}, ctx.tr("trust.source", { file: t.source })), h("p", {}, ctx.tr("trust.sha"), h("br"), h("code", {}, t.sha256))),
-			section(ctx.tr("trust.forges"), list(t.forges.map((f) => `${f.host} (${ctx.tr("trust.installs", { cli: f.cli })})`))),
+			section(ctx.tr("trust.forges"), list(t.forges.map((f) => ctx.tr("trust.forgeLine", { host: f.host, cli: f.cli })))),
 			section(
 				ctx.tr("trust.repos"),
 				t.repos.length === 0
 					? h("p", {}, ctx.tr("trust.nothing"))
-					: list(t.repos.map((r) => `${ctx.tr("trust.repoLine", { label: r.label, url: r.url, folder: r.folder })}${r.defaultBranch === null ? "" : `, ${ctx.tr("trust.branch", { branch: r.defaultBranch })}`}`)),
+					: list(t.repos.map((r) => (r.defaultBranch === null ? ctx.tr("trust.repoLine", { label: r.label, url: r.url, folder: r.folder }) : ctx.tr("trust.repoBranchLine", { label: r.label, url: r.url, folder: r.folder, branch: r.defaultBranch })))),
 			),
 			t.relay === null ? null : section(ctx.tr("trust.relay"), h("p", {}, t.relay)),
 			t.tools.length === 0 ? null : section(ctx.tr("trust.tools"), list(t.tools.map((x) => ctx.tr("trust.toolVersion", { name: x.name, version: x.version ?? "?" })))),

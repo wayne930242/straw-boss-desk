@@ -13,20 +13,20 @@ export function start(ctx: Ctx): HTMLElement {
 		{ class: "step", "data-step": "start", "data-status": s.status },
 		h("h1", {}, ctx.tr("startStep.title")),
 		h("p", { class: "lead" }, ctx.tr("startStep.lead")),
-		s.status === "starting" ? h("p", { class: "status", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), ctx.tr("banner.starting")) : null,
+		s.status === "starting" ? h("p", { class: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), ctx.tr("banner.starting")) : null,
 		failure === null
 			? null
 			: h(
 					"div",
 					{ class: "refusal" },
-					h("p", { class: "problem", id: "start-failure", role: "alert", "data-kind": failure.kind }, text),
+					h("p", { class: "problem", id: "start-failure", "data-kind": failure.kind }, text),
 					h(
 						"div",
 						{ class: "actions" },
 						h("button", { type: "button", id: "start-retry", class: "primary", onclick: () => ctx.act({ type: "start-retry" }) }, ctx.tr("startStep.retry")),
 						failure.offerRepair === true ? h("button", { type: "button", id: "start-repair", onclick: () => ctx.act({ type: "repair" }) }, ctx.tr("startStep.repair")) : null,
 					),
-					failure.reason === "" ? null : h("details", {}, h("summary", {}, ctx.tr("start.details")), h("pre", {}, failure.reason)),
+					failure.reason === "" ? null : h("details", {}, h("summary", { id: "start-summary" }, ctx.tr("start.details")), h("pre", {}, failure.reason)),
 				),
 	);
 }

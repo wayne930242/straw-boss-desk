@@ -2,9 +2,10 @@ name: wizard-from-zero
 
 # The anchor of the wizard (spec: Workflows, task 9): the packaged
 # development build, from an empty data root to the GUI, every sign-in put
-# off. On macOS the root is the app's default one under the scratch home and
+# off. On macOS the root is the app's default one under the test's scratch home (not the
+# runner's) and
 # the Xcode tools are moved aside; on Windows it is under AppData\Local in a
-# folder named "sbd 測試". The runners are ephemeral, so the guarded fixtures
+# folder named "sbd 測試" under that scratch home (spec: Build notes, task 9). The runners are ephemeral, so the guarded fixtures
 # are safe; SBD_REQUIRE_HOSTED_FIXTURES=1 makes a refused one fail the job.
 
 on:
