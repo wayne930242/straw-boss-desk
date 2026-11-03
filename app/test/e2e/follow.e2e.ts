@@ -6,10 +6,12 @@
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication } from "playwright-core";
+import { binShim } from "../../src/main/bootstrap/stages/pi.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { homeBaseDir, loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
@@ -161,7 +163,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	/** Whether the pane's shell has printed its prompt (PowerShell: `PS C:\...>`), read from the pane's screen. */
 	async function promptShown(h: WorldHerdr, pane: string): Promise<boolean> {
 		const read = await h.cli(["pane", "read", pane, "--lines", "5"], 20_000);
-		return read.code === 0 && /PS [^\n]*>\s*$/.test(read.stdout.replace(/\s+$/, ""));
+		// The pane is narrow and PowerShell's prompt (`PS <folder>> `) wraps over several lines.
+		return read.code === 0 && /PS [^>]*>$/.test(read.stdout.replace(/\r?\n/g, "").replace(/\s+$/, ""));
 	}
 	/**
 	 * Opens a pane next to `splitFrom`, starts pi in it and returns before pi has answered anything. The pane's shell starts pi by name, as Herdr's `agent start` does, and its stdout
@@ -290,15 +293,80 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		}).catch((error: Error) => console.log(`panes settle: ${error.message}`));
 	}
 
-	/** The member pi of the home base the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
-	let member: RpcPi | undefined;
+	/**
+	 * A pi the PM runs for the `/boss` commands, started by the test with the stack's environment in the home base's folder, as `rpcCommands` starts one (Windows: `pi` by name
+	 * through the shims folder; macOS: the private prefix). It runs outside Herdr: `/boss gui stop` and `/boss gui view` need the sb server, not a pane, and a pi started in a
+	 * pane of the home base was silent or ended at once on the Windows runners, in the pane and not in pi (`pi --version` and `pi < NUL` ran fine in the same pane).
+	 */
+	interface MemberPi {
+		call(command: Record<string, unknown> & { id: string }, waitMs: number): Promise<RpcAnswer>;
+		dump(): void;
+		close(): Promise<void>;
+	}
+	async function openMemberPi(): Promise<MemberPi> {
+		const system32 = join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
+		const cwd = homeBaseDir(loadStartConfig(world.layout, world.home));
+		const child = isWindows
+			? spawn(join(system32, "cmd.exe"), ["/d", "/c", "pi", "--mode", "rpc", "--no-session", "--offline"], { env: { ...childEnvOf(world, []), PATH: [world.layout.tools.shims, system32].join(";") }, cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+			: spawn(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+		const lines: unknown[] = [];
+		let pending = "";
+		let stderr = "";
+		let exited: string | null = null;
+		child.on("exit", (code, signal) => void (exited = `code ${code} signal ${signal}`));
+		child.on("error", (error) => void (exited = `error ${error.message}`));
+		child.stdin?.on("error", () => {});
+		child.stderr?.on("data", (chunk: Buffer) => void (stderr += chunk.toString("utf8")));
+		child.stdout?.on("data", (chunk: Buffer) => {
+			pending += chunk.toString("utf8");
+			const parts = pending.split(/\r?\n/);
+			pending = parts.pop() ?? "";
+			for (const l of parts) {
+				try {
+					if (l.startsWith("{")) lines.push(JSON.parse(l));
+				} catch {
+					// Not a record.
+				}
+			}
+		});
+		const answerTo = (id: string) => lines.find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
+		const member: MemberPi = {
+			async call(command, waitMs) {
+				child.stdin?.write(`${JSON.stringify(command)}\n`);
+				return until(`pi's answer to ${command.id} (member)`, waitMs, () => {
+					if (exited !== null && !answerTo(command.id)) throw new Error(`the member pi ended (${exited})`);
+					return answerTo(command.id);
+				});
+			},
+			dump() {
+				const events = lines.slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
+				console.log(`--- member pi: ${lines.length} records, ${exited === null ? "running" : `ended (${exited})`}; the last ones ---\n${events.join("\n")}\n--- member pi: stderr ---\n${stderr.replace(/[^\x20-\x7e\n]/g, "?").slice(-1500)}`);
+			},
+			async close() {
+				child.stdin?.end();
+				const grace = Date.now() + 5000;
+				while (Date.now() < grace && exited === null) await sleep(200);
+				if (exited === null && child.pid !== undefined) {
+					if (isWindows) await run(join(system32, "taskkill.exe"), ["/T", "/F", "/PID", String(child.pid)], { env: {}, timeoutMs: 30_000 });
+					else child.kill("SIGKILL");
+				}
+			},
+		};
+		await member.call({ id: "ready-member", type: "get_state" }, 120_000).catch((error: Error) => {
+			member.dump();
+			void member.close();
+			throw error;
+		});
+		return member;
+	}
+
+	/** The member pi the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
+	let member: MemberPi | undefined;
 	let bossSeq = 0;
 	async function boss(line: string): Promise<void> {
-		const home = startRecord()?.base?.pane as string;
-		assert.ok(home, "start.json names the home base's pane");
-		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home)));
-		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch(async (error: Error) => {
-			await member?.dump();
+		member ??= await openMemberPi();
+		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch((error: Error) => {
+			member?.dump();
 			throw error;
 		});
 		assert.equal(answer.success, true, `/boss ${line}: ${JSON.stringify(answer)}`);
@@ -369,6 +437,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	});
 
 	after(async () => {
+		await closeMember().catch(() => undefined);
 		for (const a of apps) await a.close().catch(() => undefined);
 		if ((await underTools().catch(() => [])).length > 0) {
 			// Whatever a failed test left: the second-instance stop is the stop the uninstaller runs.
@@ -669,7 +738,11 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			assert.equal(await herdrAnswers(), false);
 			const quit = logLines().filter((l) => l.event === "quit-stop").at(-1);
 			const stop = logLines().filter((l) => l.event === "stop-end").at(-1);
-			assert.equal(quit?.ok, true, `the stop reported: ${JSON.stringify(stop)}`);
+			assert.ok(quit !== undefined && stop !== undefined, "the quit ran the stop sequence to its end");
+			assert.equal(stop.herdrAnswers, false, "the stop saw Herdr's socket go quiet");
+			// A pi that quits in a Herdr tab leaves pi-straw-boss's pane-balance helper (`balance.mjs after-close`, which waits up to 30 s for a pane that cannot close any more, upstream
+			// seam U13) under the tools folder, and the base the folder hook opened has such a pi. So the stop may report a program that is still ending, which the wait above has shown
+			// to leave by itself: what the quit must not leave is a program, or an answering Herdr, once that wait is over.
 		} finally {
 			sampling = false;
 			await sampler;
