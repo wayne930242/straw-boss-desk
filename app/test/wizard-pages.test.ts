@@ -4,7 +4,9 @@ import { describe, it } from "node:test";
 import { listOf } from "../src/shared/locale.ts";
 import type { WizardView } from "../src/shared/wizard.ts";
 import { catalogs } from "../src/renderer/i18n/index.ts";
+import { TOOLS_RUNNING_SENTENCE } from "../src/main/bootstrap/errors.ts";
 import { announcementParts, newParts } from "../src/renderer/wizard/announce.ts";
+import { failureSentence, nowLine } from "../src/renderer/wizard/install.ts";
 import { makeCtx } from "../src/renderer/wizard/common.ts";
 import { flattenKeys, readText, sourceFiles, valueAt } from "./harness/ui-rules.ts";
 
@@ -34,9 +36,18 @@ const parts = (v: WizardView) => announcementParts(makeCtx(v, v.locale, () => un
 describe("lists and parentheses follow the language (SA-04)", () => {
 	it("joins a list with the language's separators", () => {
 		const items = ["Claude", "GitHub（github.com）", "GitLab（gitlab.com）", "Linear"];
-		assert.equal(listOf("zh-TW", items), "Claude、GitHub（github.com）、GitLab（gitlab.com）和Linear");
+		assert.equal(listOf("zh-TW", items), "Claude、GitHub（github.com）、GitLab（gitlab.com）和 Linear");
 		assert.equal(listOf("en", ["Claude", "GitHub (github.com)", "Linear"]), "Claude, GitHub (github.com), and Linear");
 		assert.equal(listOf("zh-TW", ["Claude"]), "Claude");
+	});
+
+	it("spaces 「和」 from a Latin or digit neighbour in zh-TW, and only then (SA-09)", () => {
+		assert.equal(listOf("zh-TW", ["Claude", "Linear"]), "Claude 和 Linear", "Latin on both sides");
+		assert.equal(listOf("zh-TW", ["GitHub（github.com）", "Linear"]), "GitHub（github.com）和 Linear", "a full-width parenthesis needs no space");
+		assert.equal(listOf("zh-TW", ["Claude", "第二項"]), "Claude 和第二項", "Chinese after 和 needs none");
+		assert.equal(listOf("zh-TW", ["第一項", "第二項"]), "第一項和第二項");
+		assert.equal(listOf("zh-TW", ["甲", "乙", "7 號"]), "甲、乙和 7 號", "a digit counts as Latin");
+		assert.equal(listOf("en", ["Claude", "Linear"]), "Claude and Linear", "English is left to Intl.ListFormat");
 	});
 
 	it("uses full-width parentheses in every zh-TW string and half-width ones in every English string", () => {
@@ -60,8 +71,33 @@ describe("what a screen reader hears (T9-F004)", () => {
 		assert.deepEqual(first, ["Install", "Now: Programming runtime"]);
 		assert.equal(newParts("en", [], first), "Install. Now: Programming runtime");
 		assert.equal(newParts("en", first, parts(view())), "", "a redraw of the same view is silent");
-		const next = parts(view({ install: { ...view().install, current: "git" } }));
+		const next = parts(view({ install: { ...view().install, stages: [{ name: "node", badge: "done" }, { name: "git", badge: "working" }], current: "git" } }));
 		assert.equal(newParts("en", first, next), "Now: Version control", "only the change is spoken");
+	});
+
+	it("says how many stages work when several do, and names the stage when one does (SA-07)", () => {
+		const several = (locale: "en" | "zh-TW") =>
+			view({ locale, install: { ...view().install, stages: [{ name: "node", badge: "working" }, { name: "git", badge: "working" }, { name: "fd-rg", badge: "working" }, { name: "gh", badge: "waiting" }, { name: "herdr", badge: "done" }], current: "fd-rg" } });
+		assert.ok(parts(several("en")).includes("Now: 3 running"));
+		assert.ok(parts(several("zh-TW")).includes("目前：3 項進行中"));
+		const ctx = (v: WizardView) => makeCtx(v, v.locale, () => undefined);
+		assert.equal(nowLine(ctx(several("en")), several("en").install), "Now: 3 running", "never the name of one of three");
+		const one = view({ install: { ...view().install, stages: [{ name: "node", badge: "done" }, { name: "git", badge: "working" }], current: "node" } });
+		assert.equal(nowLine(ctx(one), one.install), "Now: Version control", "the working stage, not the last one that was started or finished");
+		const none = view({ install: { ...view().install, stages: [{ name: "node", badge: "done" }], current: null } });
+		assert.equal(nowLine(ctx(none), none.install), null);
+		const idle = view({ install: { ...view().install, status: "failed" } });
+		assert.equal(nowLine(ctx(idle), idle.install), null, "nothing works once the run has ended");
+	});
+
+	it("words the tools-running failure in both catalogs, and the engine's English sentence is the catalog's (R9-F001)", () => {
+		const failure = { stage: "pkg:x", category: "locked" as const, params: { reason: "tools-running" }, detail: "d" };
+		const text = (locale: "en" | "zh-TW") => failureSentence(makeCtx(view({ locale }), locale, () => undefined), failure);
+		assert.equal(text("en"), catalogs.en.install.failure.toolsRunning);
+		assert.equal(text("zh-TW"), catalogs["zh-TW"].install.failure.toolsRunning);
+		assert.equal(TOOLS_RUNNING_SENTENCE, catalogs.en.install.failure.toolsRunning);
+		assert.doesNotMatch(catalogs.en.install.failure.toolsRunning, /\b(npm|pi|node|Herdr)\b/, "no tool is named where the PM reads");
+		assert.match(catalogs["zh-TW"].install.failure.toolsRunning, /再試一次/, "it names the button the catalog has");
 	});
 
 	it("speaks a refusal, a folder problem and a failure once, in the page's language", () => {

@@ -1,3 +1,4 @@
+import { primaryAction, showsRepair } from "../../shared/failure-action.ts";
 import { catalogs } from "../i18n/index.ts";
 import { h } from "../dom.ts";
 import type { Ctx } from "./common.ts";
@@ -23,8 +24,8 @@ export function start(ctx: Ctx): HTMLElement {
 					h(
 						"div",
 						{ class: "actions" },
-						h("button", { type: "button", id: "start-retry", class: "primary", onclick: () => ctx.act({ type: "start-retry" }) }, ctx.tr("startStep.retry")),
-						failure.offerRepair === true ? h("button", { type: "button", id: "start-repair", onclick: () => ctx.act({ type: "repair" }) }, ctx.tr("startStep.repair")) : null,
+						h("button", { type: "button", id: "start-retry", class: primaryAction(failure) === "retry" ? "primary" : null, onclick: () => ctx.act({ type: "start-retry" }) }, ctx.tr("startStep.retry")),
+						showsRepair(failure) ? h("button", { type: "button", id: "start-repair", class: primaryAction(failure) === "repair" ? "primary" : null, onclick: () => ctx.act({ type: "repair" }) }, ctx.tr("startStep.repair")) : null,
 					),
 					failure.reason === "" ? null : h("details", {}, h("summary", { id: "start-summary" }, ctx.tr("start.details")), h("pre", {}, failure.reason)),
 				),

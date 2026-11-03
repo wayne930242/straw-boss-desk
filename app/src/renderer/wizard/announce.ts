@@ -1,7 +1,7 @@
 import type { Locale } from "../../shared/locale.ts";
 import { catalogs } from "../i18n/index.ts";
 import { trOr, type Ctx } from "./common.ts";
-import { failureSentence, stageLabel } from "./install.ts";
+import { failureSentence, nowLine } from "./install.ts";
 
 // What a screen reader is told (T9-F004). The page redraws a whole step on every change, so the step is not a live region: this page keeps one `#announce` region and speaks only the parts
 // that were not in the last announcement. A step change speaks its heading; a stage that starts, a refusal, a problem, a failure speak their own sentence once.
@@ -20,7 +20,8 @@ export function announcementParts(ctx: Ctx): string[] {
 			break;
 		case "install": {
 			const i = view.install;
-			if (i.status === "running" && i.current !== null) parts.push(ctx.tr("install.now", { stage: stageLabel(ctx, i.current) }));
+			const now = nowLine(ctx, i);
+			if (now !== null) parts.push(now);
 			if (i.status === "done") parts.push(ctx.tr("install.allDone"));
 			for (const f of i.failures) parts.push(failureSentence(ctx, f));
 			if (i.crashed !== null) parts.push(ctx.tr("install.crashed"));

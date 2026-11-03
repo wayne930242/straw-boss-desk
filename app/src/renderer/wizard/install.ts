@@ -1,4 +1,4 @@
-import type { InstallFailure } from "../../shared/wizard.ts";
+import type { InstallFailure, InstallView } from "../../shared/wizard.ts";
 import { h } from "../dom.ts";
 import type { Ctx } from "./common.ts";
 
@@ -50,6 +50,7 @@ export function failureSentence(ctx: Ctx, f: InstallFailure): string {
 		case "disk":
 			return ctx.tr("install.failure.disk");
 		case "locked":
+			if (p.reason === "tools-running") return ctx.tr("install.failure.toolsRunning");
 			return ctx.tr("install.failure.locked");
 		case "other":
 			if (p.reason === "package-may-load") return ctx.tr("install.failure.packageMayLoad", { name: p.name ?? "" });
@@ -59,10 +60,22 @@ export function failureSentence(ctx: Ctx, f: InstallFailure): string {
 	}
 }
 
+/**
+ * The plain line about what is going on: the one stage that works, or how many when several do at once (the downloads run three at a time, and an npm step beside them), so the line
+ * never names one of several (SA-07). Read from the badges, which are what the list shows. Null when none works.
+ */
+export function nowLine(ctx: Ctx, i: InstallView): string | null {
+	const working = i.stages.filter((s) => s.badge === "working");
+	if (i.status !== "running" || working.length === 0) return null;
+	const [only] = working;
+	return working.length === 1 && only !== undefined ? ctx.tr("install.now", { stage: stageLabel(ctx, only.name) }) : ctx.tr("install.nowMany", { count: String(working.length) });
+}
+
 /** Step 5: the engine's stages as a list with a badge each, one plain line for the current action, **Details**, and **Try again** on a failure. */
 export function install(ctx: Ctx): HTMLElement {
 	const i = ctx.view.install;
 	const failed = i.status === "failed";
+	const now = nowLine(ctx, i);
 	return h(
 		"div",
 		{ class: "step", "data-step": "install", "data-status": i.status },
@@ -71,8 +84,8 @@ export function install(ctx: Ctx): HTMLElement {
 		h(
 			"p",
 			{ class: "status", id: "install-line" },
-			i.status === "running" && i.current !== null ? h("span", { class: "spinner", "aria-hidden": "true" }) : null,
-			i.status === "running" && i.current !== null ? ctx.tr("install.now", { stage: stageLabel(ctx, i.current) }) : i.status === "done" ? ctx.tr("install.allDone") : "",
+			now !== null ? h("span", { class: "spinner", "aria-hidden": "true" }) : null,
+			now ?? (i.status === "done" ? ctx.tr("install.allDone") : ""),
 		),
 		h(
 			"ul",

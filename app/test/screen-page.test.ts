@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { catalogs } from "../src/renderer/i18n/index.ts";
 import { START_FAILURE_KINDS } from "../src/main/runtime/failure.ts";
+import { primaryAction, REPAIR_NAMED_KINDS, showsRepair } from "../src/shared/failure-action.ts";
 
 // The runtime page (screen.html, screen.ts) has no DOM in a node test, so these checks read the two files and the catalog: every element the script looks up is in the page, the page
 // is as strict as the welcome page, and every banner and failure kind has words in both languages.
@@ -51,3 +52,35 @@ describe("the runtime page", () => {
 		}
 	});
 });
+
+describe("the primary button of a failure (SA-10)", () => {
+	const kinds = Object.keys(catalogs.en.start.failure);
+
+	it("lists exactly the kinds whose sentence says to run Repair, in both languages", () => {
+		const en = kinds.filter((k) => /\bRun Repair\b/.test((catalogs.en.start.failure as Record<string, string>)[k] ?? ""));
+		const zh = kinds.filter((k) => /執行「修復」/.test((catalogs["zh-TW"].start.failure as Record<string, string>)[k] ?? ""));
+		assert.deepEqual([...REPAIR_NAMED_KINDS].sort(), en.sort(), "the English sentences");
+		assert.deepEqual([...REPAIR_NAMED_KINDS].sort(), zh.sort(), "the zh-TW sentences");
+	});
+
+	it("makes Repair the primary button where the sentence names it, and Try again everywhere else", () => {
+		for (const kind of REPAIR_NAMED_KINDS) assert.equal(primaryAction({ kind, offerRepair: true }), "repair", kind);
+		for (const kind of kinds.filter((k) => !REPAIR_NAMED_KINDS.includes(k))) assert.equal(primaryAction({ kind, offerRepair: kind === "repair-failed" }), "retry", kind);
+	});
+
+	it("shows the Repair button a sentence names, even where the failure did not set offerRepair", () => {
+		assert.equal(showsRepair({ kind: "loader" }), true);
+		assert.equal(showsRepair({ kind: "network" }), false);
+		assert.equal(showsRepair({ kind: "repair-failed", offerRepair: true }), true);
+	});
+
+	it("is applied by the runtime page and by the wizard's start step, and the stopped-screens' Start is primary", () => {
+		assert.match(script, /primaryAction\(failure\) === "repair"/);
+		assert.match(script, /retry\.classList\.toggle\("primary", !repairFirst\)/);
+		assert.match(script, /delete card\.dataset\.failureKind;\n\tretry\.classList\.add\("primary"\)/);
+		const start = readFileSync(join(renderer, "wizard", "start.ts"), "utf8");
+		assert.match(start, /primaryAction\(failure\) === "retry" \? "primary" : null/);
+		assert.match(start, /primaryAction\(failure\) === "repair" \? "primary" : null/);
+	});
+});
+

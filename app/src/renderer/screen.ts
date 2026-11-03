@@ -1,4 +1,5 @@
 import type { ShellState } from "../shared/shell-state.ts";
+import { primaryAction, showsRepair } from "../shared/failure-action.ts";
 import { currentLocale, listOf, type Locale } from "../shared/locale.ts";
 import type { ShellNotice } from "../shared/wizard.ts";
 import { h } from "./dom.ts";
@@ -99,10 +100,16 @@ function render(state: ShellState): void {
 		leftovers.hidden = (failure.leftovers?.length ?? 0) === 0;
 		reason.textContent = failure.reason;
 		details.hidden = failure.reason === "";
-		repair.hidden = failure.offerRepair !== true;
+		repair.hidden = !showsRepair(failure);
+		// The action the sentence names is the primary button (SA-10).
+		const repairFirst = primaryAction(failure) === "repair";
+		repair.classList.toggle("primary", repairFirst);
+		retry.classList.toggle("primary", !repairFirst);
 		return;
 	}
 	delete card.dataset.failureKind;
+	retry.classList.add("primary");
+	repair.classList.remove("primary");
 	const key = state.screen === "gui-stopped" ? "screen.guiStopped" : "screen.serverStopped";
 	title.textContent = t(locale, `${key}.title`);
 	sentence.textContent = t(locale, `${key}.body`);

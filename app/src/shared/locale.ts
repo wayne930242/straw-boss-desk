@@ -32,5 +32,20 @@ export async function currentLocale(shell: { readonly locale: Locale; getLocale(
 	}
 }
 
-/** Items joined the way the language joins a list: "A, B, and C" in English, "A、B和C" in Traditional Chinese. */
-export const listOf = (locale: Locale, items: readonly string[]): string => new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).format(items);
+const LATIN_OR_DIGIT = /[A-Za-z0-9]/;
+
+/**
+ * Items joined the way the language joins a list: "A, B, and C" in English, "A、B和C" in Traditional Chinese. Traditional Chinese puts a space between Chinese and a Latin letter or digit
+ * (「和 Linear」), and the full-width 、 and parentheses carry their own, so the only join that needs one is 「和」 beside a Latin or digit neighbour (SA-09).
+ */
+export function listOf(locale: Locale, items: readonly string[]): string {
+	const parts = new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).formatToParts(items);
+	return parts
+		.map((part, i) => {
+			if (locale !== "zh-TW" || part.type !== "literal" || !part.value.includes("和")) return part.value;
+			const before = parts[i - 1]?.value.slice(-1) ?? "";
+			const after = parts[i + 1]?.value.charAt(0) ?? "";
+			return `${LATIN_OR_DIGIT.test(before) ? " " : ""}${part.value}${LATIN_OR_DIGIT.test(after) ? " " : ""}`;
+		})
+		.join("");
+}

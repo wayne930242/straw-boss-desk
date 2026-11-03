@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { deskTokensCss, expectedTokens, guiStylesheet, integrityOf, pinnedTarball, pinOf, rootTokens, tarFiles } from "../scripts/lib/desk-tokens.ts";
-import { contrast, over, parseHex, tint, tokenMap, type Rgb } from "./harness/contrast.ts";
+import { COLOR_PROPERTIES, handWrittenColors, parseRules } from "./harness/css-colors.ts";
 import { readText, sourceFiles } from "./harness/ui-rules.ts";
 
 // The desk's pages use the tokens of the pi-straw-boss GUI's default dark theme (boss decision, 2026-11-03): generated from the pinned package, never copied by hand, and checked here.
@@ -12,6 +13,17 @@ import { readText, sourceFiles } from "./harness/ui-rules.ts";
 const renderer = join(import.meta.dirname, "..", "src", "renderer");
 const stackJson = readFileSync(join(import.meta.dirname, "..", "..", "stack.json"), "utf8");
 const committed = readFileSync(join(renderer, "desk-tokens.css"), "utf8");
+
+/** Scratch folders of these tests, removed when they are done (R9-F004 c): none is left in TMPDIR. */
+const scratchDirs: string[] = [];
+const scratch = (): string => {
+	const dir = mkdtempSync(join(tmpdir(), "sbd-tokens-"));
+	scratchDirs.push(dir);
+	return dir;
+};
+after(() => {
+	for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 /** A one-file-per-entry ustar archive, gzipped, as `npm pack` makes. */
 function tgz(files: Record<string, string>): Buffer {
@@ -49,6 +61,11 @@ describe("the tokens generator", () => {
 		assert.deepEqual(tokens[2], ["--mono", 'ui-monospace, "SF Mono", Menlo']);
 		assert.deepEqual(tokens[3], ["--sans", 'system-ui, "A;B"']);
 		assert.throws(() => rootTokens("html{}"), /no :root/);
+		const block = ":root{--a:1;--b:2;--c:3;--d:4;--e:5;--f:6;--g:7;--h:8;--i:9;--j:10}";
+		assert.equal(rootTokens(`@media (prefers-color-scheme:light){html{}} ${block}`).length, 10, "an at-rule before the block is no problem");
+		assert.equal(rootTokens(`/* :root{ in a comment */ a{content:"{"} ${block}`).length, 10, "braces in strings and comments are skipped");
+		assert.throws(() => rootTokens(`@media (prefers-color-scheme:light){${block}} ${block}`), /inside an at-rule/, "a light block ahead of the default one is refused");
+		assert.throws(() => rootTokens(`@supports (color:red){${block}}`), /inside an at-rule/);
 		assert.throws(() => rootTokens(":root{--a:1}"), /holds 1 custom/);
 	});
 
@@ -73,12 +90,18 @@ describe("the tokens generator", () => {
 	it("takes only a tarball that matches the pinned integrity, and keeps nothing else", async () => {
 		const bytes = fakePackage();
 		const pin = { name: "pi-straw-boss", version: "9.9.9", integrity: integrityOf(bytes) };
-		const dir = join(process.env.TMPDIR ?? "/tmp", `sbd-tokens-${process.pid}`);
+		const dir = scratch();
 		const answer = (body: Buffer): typeof fetch => (async () => new Response(new Uint8Array(body))) as typeof fetch;
 		assert.deepEqual(await pinnedTarball(pin, dir, answer(bytes)), bytes);
 		// Now cached: a fetch that would fail is never called.
 		assert.deepEqual(await pinnedTarball(pin, dir, (() => Promise.reject(new Error("no network"))) as typeof fetch), bytes);
 		await assert.rejects(pinnedTarball({ ...pin, version: "9.9.8" }, dir, answer(fakePackage(CSS.replace("#16161e", "#000000")))), /integrity .* does not match the pin/);
+	});
+
+	it("says what is missing when the tarball cannot be fetched and the cache is cold (offline), not only 'fetch failed' (R9-F004 c)", async () => {
+		const pin = { name: "pi-straw-boss", version: "9.9.9", integrity: integrityOf(fakePackage()) };
+		await assert.rejects(pinnedTarball(pin, scratch(), (() => Promise.reject(new TypeError("fetch failed"))) as typeof fetch), /could not be fetched; connect to the network, or set SBD_TOKENS_CACHE to a folder that holds pi-straw-boss-9\.9\.9\.tgz \(fetch failed\)/);
+		await assert.rejects(pinnedTarball(pin, scratch(), (async () => new Response("no", { status: 503 })) as typeof fetch), /could not be fetched.*HTTP 503/);
 	});
 
 	it("reads the pin from stack.json and fails on a package that is not pinned", () => {
@@ -104,13 +127,35 @@ describe("the desk's stylesheets", () => {
 	const pages = ["wizard", "settings", "screen"] as const;
 	const own = ["desk.css", "wizard.css", "settings.css", "screen.css"].map((f) => join(renderer, f));
 
-	it("write no colour of their own: every one is a token of the GUI's theme or a mix of tokens", () => {
+	it("write no colour of their own: every colour-valued declaration holds only tokens, mixes of tokens with transparent, transparent and currentColor", () => {
+		let checked = 0;
 		for (const file of own) {
-			const css = readText(file).replace(/\/\*[\s\S]*?\*\//g, "");
-			assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/, `${file} has a hex colour`);
-			assert.doesNotMatch(css, /\b(?:rgb|rgba|hsl|hsla|oklch|lab)\(/, `${file} has a colour function`);
-			assert.doesNotMatch(css, /\b(?:white|black|red|green|blue|orange)\b\s*[;}]/, `${file} has a named colour`);
+			for (const rule of parseRules(readText(file))) {
+				for (const [property, value] of rule.decls) {
+					if (!COLOR_PROPERTIES.has(property) && !property.startsWith("--")) continue;
+					assert.deepEqual(handWrittenColors(value), [], `${file}: ${rule.selectors.join(", ")} { ${property}: ${value} }`);
+					checked++;
+				}
+			}
 		}
+		assert.ok(checked > 80, `${checked} colour-valued declarations read`);
+	});
+
+	it("catches hand-written colours of every form (an allowlist, not a list of the forms somebody thought of)", () => {
+		for (const bad of ["#fff", "#16161e", "rgb(1, 2, 3)", "rgba(1,2,3,.5)", "hsl(10 20% 30%)", "hwb(10 20% 30%)", "lab(50 10 10)", "oklab(0.5 0.1 0.1)", "oklch(0.5 0.1 10)", "color(display-p3 1 0 0)", "light-dark(white, black)", "red", "White", "rebeccapurple", "color-mix(in srgb, white 50%, transparent)", "color-mix(in oklab, var(--accent) 50%, transparent)", "color-mix(in srgb, var(--accent) 50%, red)", "linear-gradient(red, var(--bg))", "1px solid #abc", "canvas"]) {
+			assert.notDeepEqual(handWrittenColors(bad), [], bad);
+		}
+		for (const good of ["var(--text)", "transparent", "currentColor", "color-mix(in srgb, var(--accent) 14%, transparent)", "1px solid var(--line)", "linear-gradient(var(--bg), var(--bg-2))", "radial-gradient(1100px 640px at 12% -10%, var(--aura-1), transparent 62%)", "2px dashed var(--line)", "none", "var(--line-c) transparent"]) {
+			assert.deepEqual(handWrittenColors(good), [], good);
+		}
+	});
+
+	it("make the page's scrollbars and native controls dark (SA-08): the dark colour scheme comes from the tokens, the scrollbar colours from tokens too", () => {
+		assert.match(committed, /^\s*color-scheme: dark;$/m);
+		const desk = parseRules(readText(join(renderer, "desk.css")));
+		const html = desk.find((r) => r.selectors.includes("html") && r.decls.some(([p]) => p === "scrollbar-color"));
+		assert.ok(html, "desk.css sets scrollbar-color on html, which every scroller inherits");
+		assert.match(html.decls.find(([p]) => p === "scrollbar-color")?.[1] ?? "", /^var\(--[\w-]+\) transparent$/);
 	});
 
 	it("are all loaded by each page, tokens first", () => {
@@ -119,46 +164,5 @@ describe("the desk's stylesheets", () => {
 			assert.deepEqual(links, ["desk-tokens.css", "desk.css", `${page}.css`]);
 		}
 		assert.equal(sourceFiles(renderer, [".css"]).length, 5);
-	});
-
-	it("give every foreground and background pair they use at least 4.5:1 (WCAG AA)", () => {
-		const t = tokenMap(committed);
-		const c = (name: string): Rgb => parseHex(t.get(`--${name}`) ?? "").rgb;
-		const panelOver = (base: Rgb): Rgb => {
-			const p = parseHex(t.get("--panel") ?? "");
-			return over(p.rgb, p.alpha, base);
-		};
-		// The page behind everything runs from --bg to --bg-2; a pair has to hold on both ends.
-		const pairs: Array<[string, Rgb, (base: Rgb) => Rgb]> = [];
-		const add = (name: string, fg: Rgb, bg: (base: Rgb) => Rgb): number => pairs.push([name, fg, bg]);
-		const pageBg = (b: Rgb): Rgb => b;
-		const panel = (b: Rgb): Rgb => panelOver(b);
-		const hoverTint = (b: Rgb): Rgb => tint(c("hi"), 4, panelOver(b));
-		add("text on the page", c("text"), pageBg);
-		add("text on a panel", c("text"), panel);
-		add("text on an input (surface-0)", c("text"), () => c("surface-0"));
-		add("text on a code block (sunken)", c("text"), () => c("sunken"));
-		add("text on a hovered button (hover tint on a panel)", c("text"), hoverTint);
-		add("quiet text on the page", c("dim"), pageBg);
-		add("quiet text on a panel", c("dim"), panel);
-		add("quiet text on a code block", c("dim"), () => c("sunken"));
-		add("placeholder on an input", c("dim"), () => c("surface-0"));
-		add("accent text on a panel", c("accent"), panel);
-		add("accent text on the page", c("accent"), pageBg);
-		add("accent badge text on its tint", c("accent"), (b) => tint(c("accent"), 14, panelOver(b)));
-		add("done badge text on its tint", c("ok"), (b) => tint(c("ok"), 12, panelOver(b)));
-		add("failure text on its tint", c("err-soft"), (b) => tint(c("err"), 12, panelOver(b)));
-		add("text on a warning", c("text"), (b) => tint(c("amber"), 8, panelOver(b)));
-		add("text on a pressed button", c("text"), (b) => tint(c("accent"), 22, panelOver(b)));
-		add("ink on the primary button", c("ink"), () => c("accent"));
-		add("ink on the primary button, hovered", c("ink"), () => c("accent-hi"));
-		add("text on the notice row (bg-2)", c("text"), () => c("bg-2"));
-		for (const [name, fg, bg] of pairs) {
-			for (const end of [c("bg"), c("bg-2")]) {
-				const ratio = contrast(fg, bg(end));
-				assert.ok(ratio >= 4.5, `${name}: ${ratio.toFixed(2)}:1`);
-			}
-		}
-		assert.ok(pairs.length >= 18);
 	});
 });

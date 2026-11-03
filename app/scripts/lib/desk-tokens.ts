@@ -34,8 +34,15 @@ export async function pinnedTarball(pin: PinnedPackage, cacheDir: string = join(
 		const cached = readFileSync(file);
 		if (integrityOf(cached) === pin.integrity) return cached;
 	}
-	const response = await fetchImpl(tarballUrl(pin), { signal: AbortSignal.timeout(120_000) });
-	if (!response.ok) throw new Error(`${tarballUrl(pin)}: HTTP ${response.status}`);
+	// Offline with a cold cache, a bare "fetch failed" would be all a developer sees (R9-F004 c): say what is missing and how to get it.
+	const hint = `the pinned ${pin.name}@${pin.version} tarball could not be fetched; connect to the network, or set SBD_TOKENS_CACHE to a folder that holds ${pin.name}-${pin.version}.tgz`;
+	let response: Response;
+	try {
+		response = await fetchImpl(tarballUrl(pin), { signal: AbortSignal.timeout(120_000) });
+	} catch (error) {
+		throw new Error(`${hint} (${(error as Error).message})`, { cause: error });
+	}
+	if (!response.ok) throw new Error(`${hint} (${tarballUrl(pin)}: HTTP ${response.status})`);
 	const bytes = Buffer.from(await response.arrayBuffer());
 	const got = integrityOf(bytes);
 	if (got !== pin.integrity) throw new Error(`${pin.name}@${pin.version}: integrity ${got} does not match the pin ${pin.integrity}`);
@@ -114,10 +121,32 @@ function declarations(body: string): string[] {
 	return out.map((d) => d.trim()).filter((d) => d !== "");
 }
 
-/** The custom properties (`--name: value`) of the first `:root` block of a stylesheet, in order. The GUI declares its default (dark) theme there. */
-export function rootTokens(css: string): Array<[string, string]> {
+/** How many blocks are open at `index` of a stylesheet: 0 at the top level, 1 inside an `@media` or `@supports`. Strings and comments are skipped. */
+function blockDepth(css: string, index: number): number {
+	let depth = 0;
+	let quote = "";
+	for (let i = 0; i < index; i++) {
+		const c = css[i] as string;
+		if (quote !== "") {
+			if (c === "\\") i++;
+			else if (c === quote) quote = "";
+		} else if (c === '"' || c === "'") quote = c;
+		else if (c === "/" && css[i + 1] === "*") i = css.indexOf("*/", i + 2) < 0 ? css.length : css.indexOf("*/", i + 2) + 1;
+		else if (c === "{") depth++;
+		else if (c === "}") depth--;
+	}
+	return depth;
+}
+
+/**
+ * The custom properties (`--name: value`) of the first `:root` block of a stylesheet, in order. The GUI declares its default (dark) theme there. A first block that is not at the top level
+ * (inside `@media (prefers-color-scheme: light)`, say) is refused: a later release that puts such a block ahead of the default one must not become the desk's tokens unnoticed (R9-F004 e).
+ */
+export function rootTokens(source: string): Array<[string, string]> {
+	const css = source.replace(/\/\*[\s\S]*?\*\//g, "");
 	const at = css.search(/:root\s*\{/);
 	if (at < 0) throw new Error("the stylesheet has no :root block");
+	if (blockDepth(css, at) !== 0) throw new Error("the first :root block of the stylesheet is inside an at-rule (@media or @supports), not at the top level: the GUI's default theme is no longer the first block");
 	const open = css.indexOf("{", at);
 	let depth = 0;
 	let close = -1;

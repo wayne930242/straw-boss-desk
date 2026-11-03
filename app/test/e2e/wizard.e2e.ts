@@ -3,12 +3,15 @@
 //   - a quit in the middle of the install and a relaunch open on the install step and finish it;
 //   - with the WSL check stubbed to report (`SBD_TEST_WSL_BASH`, development build), the welcome screen has its line and the banner shows its sentence over the GUI at start, in both languages;
 //   - a quit in the middle of the install leaves no process under <root>/tools (the engine is cancelled, not killed and forked again);
+//   - a quit inside a package stage (while pi's `pi install` runs) leaves that stage `running`, so a start would be refused; a program left running under <root>/tools (a stand-in for the npm that
+//     pi started) makes the relaunch's package stage wait for it, and the install then finishes (R9-F001, R9-F002);
 //   - the language chosen on the last wizard step is the one the banner over the GUI is worded in, and the one the settings page changes;
 //   - a later launch opens no wizard and reaches the GUI (the design says 30 s; the assertion allows 45 s, see the Build note on task 9), and a launch that cannot start shows the failure screen;
 //   - a second, short run in English up to the trust screen, and a reduced-motion pass.
 //   SBD_E2E=1 SBD_E2E_KIND=dev node --test test/e2e/wizard.e2e.ts        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
@@ -18,6 +21,7 @@ import { zhTW } from "../../src/renderer/i18n/zh-TW.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { statusSummary } from "../harness/status-summary.ts";
+import { relaunchNotice } from "../harness/relaunch-time.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, seedDownloads, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
@@ -230,7 +234,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await shotBoth(page, "wizard-install");
 	});
 
-	it("quit in the middle of the install: the relaunch opens on the install step and finishes it", async () => {
+	it("quit in the middle of the install: the relaunch opens on the install step", async () => {
 		await until("two stages done", 600_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) >= 2 || undefined, 200);
 		await close(first);
 		assert.equal(readWizard().step, "install", "wizard.json holds the install step");
@@ -243,10 +247,61 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const second = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		const again = await pageOf(second, "wizard.html");
 		await until("the install step on the relaunch", 60_000, async () => ["install", "start", "claude"].includes(await stepOf(again)) || undefined, 200);
+		page = again;
+		first = second;
+	});
+
+	it("quit inside a package stage: the record says the install was interrupted, a program left under <root>/tools makes the relaunch wait, and the install then finishes (R9-F001, R9-F002)", async () => {
+		const events = (): Array<Record<string, unknown>> =>
+			logText()
+				.split("\n")
+				.flatMap((line) => {
+					try {
+						return [JSON.parse(line) as Record<string, unknown>];
+					} catch {
+						return [];
+					}
+				});
+		/** The `pi install` and `pi remove` calls of the package stages, as the stage logs recorded them. */
+		const piCalls = () => events().filter((e) => e.event === "exec" && Array.isArray(e.args) && (e.args.includes("install") || e.args.includes("remove")) && typeof e.stage === "string" && /^(profile|pkg:|team-pkg:)/.test(e.stage));
+		const before = piCalls().length;
+		await until("a package stage's pi install to start", 20 * 60_000, () => piCalls().length > before || undefined, 100);
+		await close(first);
+		assert.equal(readWizard().step, "install", "wizard.json holds the install step");
+		assert.equal(logText().includes('"event":"engine-crashed"'), false, "the quit is not a crash of the engine");
+		const recorded = JSON.parse(readFileSync(join(world.layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> };
+		const interrupted = Object.entries(recorded.stages).filter(([name, r]) => /^(profile|pkg:|team-pkg:)/.test(name) && r.status === "running").map(([name]) => name);
+		assert.ok(interrupted.length >= 1, `a package stage is still recorded as running after the quit (${JSON.stringify(Object.fromEntries(Object.entries(recorded.stages).map(([n, r]) => [n, r.status])))})`);
+		// The npm that pi started may have outlived the quit (the runner ends only the child it holds); whether it did is not up to the test. A stand-in for it runs out of a copy of this Node under
+		// <root>/tools for 75 s, so the relaunch's package stage has something to wait for in every run (its own limit is 90 s).
+		const bin = join(world.layout.tools.root, "e2e-leftover");
+		mkdirSync(bin, { recursive: true });
+		const exe = join(bin, isWindows ? "node.exe" : "node");
+		copyFileSync(process.execPath, exe, constants.COPYFILE_FICLONE);
+		chmodSync(exe, 0o755);
+		const standIn = spawn(exe, ["-e", "setTimeout(() => {}, 75000)"], { stdio: "ignore", windowsHide: true });
+		const standInPid = standIn.pid;
+		assert.ok(standInPid !== undefined);
+		const exited = new Promise<number>((resolve) => standIn.once("exit", () => resolve(Date.now())));
+		const processes = createPlatform().processes;
+		await until("the stand-in to be visible under tools", 30_000, async () => (await processes.listUnder(world.layout.tools.root)).some((p) => p.pid === standInPid) || undefined, 250);
+		const relaunchedAt = new Date().toISOString();
+		const third = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
+		const again = await pageOf(third, "wizard.html");
 		// The relaunch resumes: it ends on the first sign-in step with the stack started.
 		await waitStep(again, "claude", 25 * 60_000);
 		page = again;
-		first = second;
+		first = third;
+		const exitedAt = await exited;
+		const since = events().filter((e) => typeof e.t === "string" && e.t >= relaunchedAt);
+		const busy = since.find((e) => e.event === "tools-busy");
+		assert.ok(busy, "the relaunch's package stage found the program under tools and waited");
+		assert.ok(((busy.programs as string[]) ?? []).some((p) => p.includes(`(pid ${standInPid})`)), `the stand-in is named by its file name and pid: ${JSON.stringify(busy.programs)}`);
+		assert.equal(since.some((e) => e.event === "tools-locked"), false, "the wait ended before its limit");
+		assert.ok(since.some((e) => e.event === "tools-quiet"), "and it ended because the program was gone");
+		const firstCall = since.filter((e) => e.event === "exec" && Array.isArray(e.args) && (e.args.includes("install") || e.args.includes("remove")) && typeof e.stage === "string" && /^(profile|pkg:|team-pkg:)/.test(e.stage))[0];
+		assert.ok(firstCall, "the relaunch ran pi for a package stage");
+		assert.ok(Date.parse(String(firstCall.t)) >= exitedAt - 1_500, `pi was started (${String(firstCall.t)}) only after the stand-in had gone (${new Date(exitedAt).toISOString()})`);
 		const bootstrap = JSON.parse(readFileSync(join(world.layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> };
 		const names = Object.keys(bootstrap.stages);
 		for (const stage of ["preflight", "node", "git", "herdr", "pi", "profile"]) assert.ok(names.includes(stage), `${stage} is recorded`);
@@ -305,7 +360,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const again = await pageOf(first, "screen.html");
 		await until("the zh-TW banner", 30_000, async () => (await again.locator('[data-notice="wsl"] .notice-text').innerText()) === zhTW.welcome.wsl, 250);
 		const laterZh = await again.locator('[data-notice="later"] .notice-text').innerText();
-		assert.match(laterZh, /Claude、GitHub（github\.com）、GitLab（gitlab\.com）和Linear。$/, laterZh);
+		assert.match(laterZh, /Claude、GitHub（github\.com）、GitLab（gitlab\.com）和 Linear。$/, laterZh);
 		await shot(again, "wizard-banner-zh-TW");
 		const installed = readInstalled(world.layout);
 		assert.ok(isInstalled(installed), "the install is complete");
@@ -325,7 +380,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const again = await launch("en-US", { SBD_TEST_WSL_BASH: WSL_BASH });
 		// The design says 30 s. The Windows runner took 26.7 s once, so the assertion allows 45 s and the time is logged (Build note, task 9).
 		const url = await until("the GUI view to load the server's address", 45_000, () => guiUrl(again));
-		console.log(`relaunch reached the GUI in ${((Date.now() - began) / 1000).toFixed(1)} s`);
+		console.log(relaunchNotice(Date.now() - began));
 		assert.ok(url);
 		assert.equal(readWizard().done, true);
 		const notices = await pageOf(again, "screen.html");
@@ -349,6 +404,9 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 				assert.equal(await screen.locator("#card").getAttribute("data-failure-kind"), "state-unreadable");
 				assert.equal(await screen.locator("#sentence").innerText(), words.start.failure["state-unreadable"]);
 				assert.equal(await screen.locator("#repair").isVisible(), true, "Repair is offered");
+				// The sentence tells the PM to run Repair, so Repair is the primary button and Try again is not (SA-10).
+				assert.equal(await screen.locator("#repair").evaluate((el) => el.classList.contains("primary")), true);
+				assert.equal(await screen.locator("#retry").evaluate((el) => el.classList.contains("primary")), false);
 				await shot(screen, `wizard-failure-${locale}`);
 				await close(app);
 			}
