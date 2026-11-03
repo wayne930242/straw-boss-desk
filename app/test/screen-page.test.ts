@@ -20,7 +20,7 @@ describe("the runtime page", () => {
 
 	it("loads only its own script and style, under the welcome page's strict CSP", () => {
 		assert.match(html, /default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'/);
-		assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]).sort(), ["screen.css", "screen.js"]);
+		assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]).sort(), ["desk-tokens.css", "desk.css", "screen.css", "screen.js"]);
 		assert.doesNotMatch(html, /<script(?![^>]*src=)/, "no inline script");
 		assert.doesNotMatch(html, /\son[a-z]+=/, "no inline handler");
 	});

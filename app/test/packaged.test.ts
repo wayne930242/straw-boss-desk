@@ -36,7 +36,7 @@ for (const kind of BUILD_KINDS) {
 
 		it("ships the compiled app and its shell page", () => {
 			const asar = join(packaged.resources, "app.asar");
-			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/preload/gui.cjs", "dist/renderer/wizard.html", "dist/renderer/wizard.js", "dist/renderer/wizard.css", "dist/renderer/settings.html", "dist/renderer/settings.js", "dist/renderer/settings.css", "dist/assets/recipe/validate.mjs", "dist/assets/recipe/secret-patterns.json", "dist/assets/stack.json", "dist/renderer/screen.html", "dist/renderer/screen.js", "dist/renderer/screen.css", "dist/renderer/i18n/zh-TW.js", "dist/assets/secret-patterns.json"]) {
+			for (const file of ["dist/main/index.js", "dist/preload/shell.cjs", "dist/preload/gui.cjs", "dist/renderer/wizard.html", "dist/renderer/wizard.js", "dist/renderer/wizard.css", "dist/renderer/desk.css", "dist/renderer/desk-tokens.css", "dist/renderer/settings.html", "dist/renderer/settings.js", "dist/renderer/settings.css", "dist/assets/recipe/validate.mjs", "dist/assets/recipe/secret-patterns.json", "dist/assets/stack.json", "dist/renderer/screen.html", "dist/renderer/screen.js", "dist/renderer/screen.css", "dist/renderer/i18n/zh-TW.js", "dist/assets/secret-patterns.json"]) {
 				assert.ok(readAsarFile(asar, file).length > 0, file);
 			}
 		});

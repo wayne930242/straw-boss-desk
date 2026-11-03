@@ -9,11 +9,12 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.ts",
+    "build": "node scripts/desk-tokens.ts --check && tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.ts",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.json",
     "pack": "node scripts/pack.ts",
     "test": "node --test \"test/**/*.test.ts\"",
-    "test:e2e": "node --test --test-concurrency=1 \"test/e2e/*.e2e.ts\""
+    "test:e2e": "node --test --test-concurrency=1 \"test/e2e/*.e2e.ts\"",
+    "tokens": "node scripts/desk-tokens.ts --write"
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",

@@ -18,7 +18,7 @@ describe("the wizard and settings pages", () => {
 		it(`${page} loads only its own script and style under the strict CSP, with no inline script or handler`, () => {
 			const html = read(page);
 			assert.match(html, /default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'/);
-			assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]).sort(), [style, script.replace(".ts", ".js")].sort());
+			assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]).sort(), ["desk-tokens.css", "desk.css", style, script.replace(".ts", ".js")].sort());
 			assert.doesNotMatch(html, /<script(?![^>]*src=)/);
 			assert.doesNotMatch(html, /\son[a-z]+=/);
 			const ids = [...read(script).matchAll(/getElementById\("([a-z-]+)"\)|byId\("([a-z-]+)"\)/g)].map((m) => m[1] ?? m[2] ?? "");

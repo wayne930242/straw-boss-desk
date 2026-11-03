@@ -8,7 +8,8 @@ import { flattenKeys, oneSidedBorders, placeholders, readText, reducedMotionGaps
 
 const renderer = join(import.meta.dirname, "..", "src", "renderer");
 const rendererSources = sourceFiles(renderer, [".ts", ".html", ".css"]);
-const cssFiles = sourceFiles(renderer, [".css"]);
+// `desk-tokens.css` is generated custom properties; the rules below are about the stylesheets written by hand (desk-tokens.test.ts checks the generated one).
+const cssFiles = sourceFiles(renderer, [".css"]).filter((f) => !f.endsWith("desk-tokens.css"));
 
 describe("i18n", () => {
 	it("keeps the key sets of en and zh-TW identical", () => {
@@ -84,8 +85,14 @@ describe("borders are uniform", () => {
 });
 
 describe("reduced motion", () => {
-	it("turns every animation and transition off in the renderer's CSS", () => {
-		for (const f of cssFiles) assert.deepEqual(reducedMotionGaps(f, readText(f)), []);
+	it("turns every animation and transition off on each page, through the stylesheets it loads", () => {
+		for (const page of ["wizard", "settings", "screen"]) {
+			const sheets = [...readText(join(renderer, `${page}.html`)).matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1] as string).filter((f) => f !== "desk-tokens.css");
+			assert.ok(sheets.length >= 2, page);
+			assert.deepEqual(reducedMotionGaps(page, sheets.map((f) => readText(join(renderer, f))).join("\n")), [], page);
+		}
+		// The shared stylesheet carries the block, so no page can forget it.
+		assert.deepEqual(reducedMotionGaps("desk.css", readText(join(renderer, "desk.css"))), []);
 	});
 
 	it("flags a stylesheet without the block or with a partial one", () => {
