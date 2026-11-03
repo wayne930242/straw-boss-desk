@@ -5,7 +5,7 @@
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -67,6 +67,21 @@ function strings(value: unknown, out: string[] = []): string[] {
 	else if (typeof value === "object" && value !== null) for (const v of Object.values(value)) strings(v, out);
 	return out;
 }
+
+/** A Node program that copies what is appended to its first argument's file to its stdout and ends when the reader goes away: the stdin of a pi started in a Windows pane. */
+const FEEDER = [
+	'import { closeSync, openSync, readSync } from "node:fs";',
+	"const fd = openSync(process.argv[2], 'r');",
+	"const buf = Buffer.alloc(65536);",
+	"let pos = 0;",
+	"process.stdout.on('error', () => process.exit(0));",
+	"setInterval(() => {",
+	"  const n = readSync(fd, buf, 0, buf.length, pos);",
+	"  if (n > 0) { pos += n; process.stdout.write(Buffer.from(buf.subarray(0, n))); }",
+	"}, 100);",
+	"process.on('exit', () => closeSync(fd));",
+	"",
+].join("\n");
 
 const GUI_URL = /^http:\/\/127\.0\.0\.1:\d+\//;
 
@@ -143,17 +158,42 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		dump(): Promise<void>;
 		close(): Promise<void>;
 	}
-	/** Opens a pane next to `splitFrom`, starts pi in it and returns before pi has answered anything. */
+	/** Whether the pane's shell has printed its prompt (PowerShell: `PS C:\...>`), read from the pane's screen. */
+	async function promptShown(h: WorldHerdr, pane: string): Promise<boolean> {
+		const read = await h.cli(["pane", "read", pane, "--lines", "5"], 20_000);
+		return read.code === 0 && /PS [^\n]*>\s*$/.test(read.stdout.replace(/\s+$/, ""));
+	}
+	/**
+	 * Opens a pane next to `splitFrom`, starts pi in it and returns before pi has answered anything. The pane's shell starts pi by name, as Herdr's `agent start` does, and its stdout
+	 * goes to a file the test reads. On macOS the test types the RPC commands into the pane. On Windows a line typed into a pane whose pi the shell has just started was lost
+	 * (the pi ended at once and PowerShell parsed the line instead), so pi reads its commands from a file that a small Node program streams into a pipe cmd makes (`FEEDER`), and its
+	 * error output and exit code go to files that a failure prints.
+	 */
 	async function startRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
 		const h = new WorldHerdr(world);
 		const split = await h.cli(["pane", "split", splitFrom, "--direction", "right", "--cwd", cwd, "--no-focus"]);
 		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
 		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
-		const out = join(world.base, `${label}-${pane.replace(/\W/g, "_")}.jsonl`);
-		// A shell needs a moment before it reads a typed line.
-		await sleep(isWindows ? 4000 : 1500);
-		// The pane starts pi by name, as Herdr's `agent start` does; its stdout goes to a file the test reads, and its stdin is the pane, where the test types the RPC commands.
-		await h.type(pane, isWindows ? `cmd /d /c "pi --mode rpc --offline > ${out}"` : `pi --mode rpc --offline > '${out}'`);
+		const stem = join(world.base, `${label}-${pane.replace(/\W/g, "_")}`);
+		const out = `${stem}.jsonl`;
+		const input = `${stem}.in`;
+		const err = `${stem}.err`;
+		const code = `${stem}.code`;
+		const feeder = join(world.base, "feed-input.mjs");
+		if (isWindows) {
+			// The first prompt means PowerShell has loaded; a line typed before it is read by a shell that is not ready for it.
+			await until(`the shell's prompt in the pane (${label})`, 90_000, () => promptShown(h, pane)).catch((error: Error) => console.log(`${label}: ${error.message}; typing anyway`));
+			await sleep(1000);
+			writeFileSync(input, "");
+			writeFileSync(feeder, FEEDER);
+			for (const path of [process.execPath, feeder, input, out, err, code]) assert.ok(!/\s/.test(path), `a path without a space is typed here unquoted: ${path}`);
+			// cmd makes the pipe itself, so the shell's console is not pi's stdin; `%errorlevel%` is read when the line runs, which `!errorlevel!` does with delayed expansion.
+			await h.type(pane, `cmd /d /v:on /c "${process.execPath} ${feeder} ${input} | pi --mode rpc --offline > ${out} 2> ${err} & echo !errorlevel! > ${code}"`);
+		} else {
+			// A shell needs a moment before it reads a typed line.
+			await sleep(1500);
+			await h.type(pane, `pi --mode rpc --offline > '${out}'`);
+		}
 		await until(`the shell to start pi in the pane (${label})`, 120_000, () => existsSync(out) || undefined);
 		const lines = (): unknown[] =>
 			(existsSync(out) ? readFileSync(out, "utf8").split(/\r?\n/) : []).flatMap((l) => {
@@ -164,7 +204,11 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 				}
 			});
 		const answerTo = (id: string) => lines().find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
-		const send = (command: Record<string, unknown>) => h.type(pane, JSON.stringify(command));
+		const send = async (command: Record<string, unknown>): Promise<void> => {
+			if (isWindows) appendFileSync(input, `${JSON.stringify(command)}\n`);
+			else await h.type(pane, JSON.stringify(command));
+		};
+		const text = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").replace(/[^\x20-\x7e\n]/g, "?").trim().slice(-1500) : "(none)");
 		return {
 			pane,
 			lines,
@@ -177,6 +221,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			async dump() {
 				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
 				console.log(`--- ${label}: the last events (${lines().length} in all, ${existsSync(out) ? readFileSync(out).length : -1} bytes in ${out}) ---\n${events.join("\n")}`);
+				if (isWindows) console.log(`--- ${label}: pi's error output ---\n${text(err)}\n--- ${label}: pi's exit code (empty while it runs) ---\n${text(code)}`);
 				const panes = await h.cli(["pane", "list"], 20_000);
 				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 3000)}`);
 				// Every pane of the workspace with the end of what it prints, this one included: a shell that could not start pi says so there.
@@ -593,22 +638,29 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	check("quits with nothing left under <root>/tools and no answering Herdr", async () => {
 		// While the app quits, every program under the tools folder is noted with its parent and age, so a program that is still there when the stop looks is explained by who
 		// started it (macOS: `ps` with pid, parent pid and elapsed time only; Windows passes without it).
-		const seen = new Map<number, string>();
+		const seen = new Map<number, { what: string; first: number; last: number }>();
+		const began = Date.now();
 		let sampling = !isWindows;
-		const psOf = async (pid: number): Promise<string> => {
-			const r = await run("ps", ["-o", "ppid=,etime=", "-p", String(pid)], { env: { PATH: "/bin:/usr/bin" }, timeoutMs: 5000 });
-			return r.stdout.trim().replace(/\s+/g, " ") || "gone";
+		const infoOf = async (pid: number): Promise<string> => {
+			const env = { PATH: "/bin:/usr/bin:/usr/sbin" };
+			const ps = await run("ps", ["-o", "ppid=,etime=", "-p", String(pid)], { env, timeoutMs: 5000 });
+			const cwd = await run("lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], { env, timeoutMs: 8000 });
+			return `ppid/etime ${ps.stdout.trim().replace(/\s+/g, " ") || "gone"}, cwd ${cwd.stdout.split("\n").find((l) => l.startsWith("n"))?.slice(1) ?? "?"}`;
 		};
 		const sampler = (async () => {
 			while (sampling) {
+				const now = Date.now();
 				for (const p of await underTools().catch(() => [])) {
-					if (seen.has(p.pid)) continue;
-					const stamp = new Date().toISOString().slice(11, 23);
-					seen.set(p.pid, `${basename(p.executable ?? "?")} first seen ${stamp}, ppid/etime ${await psOf(p.pid)}`);
+					const known = seen.get(p.pid);
+					if (known) known.last = now;
+					else seen.set(p.pid, { what: `${basename(p.executable ?? "?")}, ${await infoOf(p.pid)}`, first: now, last: now });
 				}
 				await sleep(100);
 			}
 		})();
+		const brokerFile = join(world.layout.agent, "intercom", "broker.pid");
+		const facts = () =>
+			`broker.pid=${existsSync(brokerFile) ? readFileSync(brokerFile, "utf8").trim() : "(none)"}; server.json=${JSON.stringify(serverRecord() ?? null)}; the start log's last stop: ${JSON.stringify(logLines().filter((l) => l.event === "stop-end").at(-1) ?? null)}`;
 		try {
 			await app.close();
 			const deadline = Date.now() + 180_000;
@@ -621,7 +673,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		} finally {
 			sampling = false;
 			await sampler;
-			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit ---\n${[...seen].map(([pid, what]) => `${pid} ${what}`).join("\n")}`);
+			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit (ms after the quit began) ---\n${[...seen].map(([pid, v]) => `${pid} ${v.what}, seen from +${v.first - began} to +${v.last - began} ms`).join("\n")}\n${facts()}`);
 		}
 	});
 

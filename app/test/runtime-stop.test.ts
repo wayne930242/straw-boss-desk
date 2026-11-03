@@ -352,7 +352,7 @@ describe("the intercom broker", () => {
 	});
 
 	it("waits at most the programs' wait for a program that stays, then kills the broker and reports the program", async () => {
-		const w = world({ timeouts: { programsWaitMs: 2000 } });
+		const w = world({ timeouts: { programsWaitMs: 2000, leftoversWaitMs: 0 } });
 		await w.startFile.update(() => w.record);
 		mkdirSync(dirname(brokerFile(w.layout)), { recursive: true });
 		writeFileSync(brokerFile(w.layout), "400\n");
@@ -364,6 +364,34 @@ describe("the intercom broker", () => {
 		assert.ok(w.log.some((l) => l.event === "broker-kill-early" && JSON.stringify(l.others) === "[501]"));
 		assert.deepEqual(report.leftovers.map((l) => l.pid), [501]);
 		assert.equal(report.ok, false);
+	});
+
+	it("does not report a program that is ending: the last listing is repeated until it finds nothing", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		// A helper that a dying pi started leaves a second and a half after Herdr stopped.
+		w.procs.add(600, { startTime: "H1", executable: w.exe("node") });
+		const list = w.procs.listUnder.bind(w.procs);
+		let looks = 0;
+		w.procs.listUnder = async (dir) => {
+			if (++looks === 4) w.procs.table.delete(600);
+			return list(dir);
+		};
+		const report = await runStop(w.deps);
+		assert.deepEqual(report.leftovers, []);
+		assert.equal(report.ok, true);
+		assert.ok(looks >= 4 && w.clock.slept.filter((ms) => ms === 500).length === 3, `${looks} looks, ${w.clock.slept.join(",")}`);
+		assert.ok(!report.notes.some((n) => n.includes("600")));
+	});
+
+	it("reports a program that stays after the last listing's wait, and waits no longer than that", async () => {
+		const w = world({ timeouts: { leftoversWaitMs: 1500 } });
+		await w.startFile.update(() => w.record);
+		w.procs.add(601, { startTime: "H1", executable: w.exe("node") });
+		const report = await runStop(w.deps);
+		assert.deepEqual(report.leftovers.map((l) => l.pid), [601]);
+		assert.equal(report.ok, false);
+		assert.equal(w.clock.slept.filter((ms) => ms === 500).length, 3, "three half seconds make the 1.5 s");
 	});
 
 	it("is left alone when broker.pid names a program that is not the app's (a stale pid another program holds now)", async () => {
