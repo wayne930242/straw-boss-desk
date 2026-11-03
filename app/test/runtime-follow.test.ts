@@ -261,6 +261,49 @@ describe("the follower (the kit's rules)", () => {
 		}
 	});
 
+	// S53-F003: the budget counts an `up` whose address still does not answer, not every recovery. A page that goes away and comes back five times in a row is five recoveries.
+	it("does not count gone-rule starts whose address answers, and logs restart-budget when the budget trips", async () => {
+		const { dir, write } = folder();
+		let current = await listener(tok(10));
+		write("server.json", { pid: 1, gui: { port: current.port, token: current.token } });
+		const h = fakeHost(async () => {
+			current = await listener(tok(10 + h.upCalls));
+			write("server.json", { pid: 1, gui: { port: current.port, token: current.token } });
+			return { ok: true, url: urlOf(current) };
+		});
+		const f = new Follower(dir, h.host, urlOf(current), timing, { pid: 1 });
+		f.start();
+		try {
+			for (let round = 1; round <= 5; round++) {
+				await sleep(150);
+				await current.close();
+				await until(`recovery ${round}`, 6000, () => h.upCalls === round && h.loads().length === round);
+			}
+			await sleep(300);
+			assert.deepEqual(h.screens(), [], "five recoveries that answered show no screen");
+			assert.equal(h.logged("restart-budget"), 0);
+		} finally {
+			f.stop();
+		}
+	});
+
+	it("logs restart-budget when the follower's own budget trips", async () => {
+		const { dir, write } = folder();
+		const dead = await listener(tok(4));
+		const wrong = tok(6);
+		write("server.json", { pid: 1, gui: { port: dead.port, token: wrong } });
+		const h = fakeHost(async () => ({ ok: true, url: `http://127.0.0.1:${dead.port}/${wrong}/` }));
+		const f = new Follower(dir, h.host, `http://127.0.0.1:${dead.port}/${wrong}/`, timing, { pid: 1 });
+		f.start();
+		try {
+			await until("the budget screen", 8000, () => h.screens().some((s) => s.kind === "failed"));
+			assert.equal(h.logged("restart-budget"), 1);
+			assert.equal(h.events.find((e) => e.kind === "log" && e.event === "restart-budget") !== undefined, true);
+		} finally {
+			f.stop();
+		}
+	});
+
 	it("gives up on a target that never answers once, and a Start press during a move is not lost", async () => {
 		const { dir, write } = folder();
 		const dead = await listener(tok(6));

@@ -11,8 +11,8 @@ import type { StartFailure } from "./failure.ts";
 //   - the `view` of `gui.json` (`standard`, `geek` or `zen`) is handed to the host when it appears or changes, so the window's background follows it;
 //   - sleep: `pause` stops the ticks, and `resume` reads the folder again and gives the URL a grace period before the gone rule applies;
 //   - the host's words are kinds, not strings: banners are kinds and a failed `up` is a typed `StartFailure`, so the shell's screens say them in the catalog's language;
-//   - the gone rule has a budget: an `up` it ran that printed an address which still did not answer counts, and the fourth within 10 minutes shows the `restart-budget` screen
-//     instead of running `up` every ~12 s for ever (T8B-F003).
+//   - the gone rule has a budget: an `up` it ran whose address, probed right after the load, still did not answer counts, and the fourth within 10 minutes logs `restart-budget` and
+//     shows the `restart-budget` screen instead of running `up` every ~12 s for ever (T8B-F003, S53-F003).
 // It reads `server.json` for `stopped`, `restarting`, `pid`, `started` and `gui: {port, token, stopped}`, with `gui.json` as the fallback for the GUI's port, token and `stopped`.
 // Both files are secrets: nothing here logs them or a URL's token. It never calls `cli.mjs status` (every call costs a PowerShell start on Windows). No Electron import: the window,
 // the screens and the `up` run are handed in, so the logic runs under plain Node.
@@ -409,9 +409,13 @@ export class Follower {
 		this.shown = undefined;
 		this.host.banner(undefined);
 		this.host.log("follow-up-done", { detail: `loaded port ${target.port}` });
-		// An `up` that answers `found` with an address that still does not answer would run again every goneMs + a tick: more than 3 in 10 minutes ends the loop with the screen and the Start button.
-		if (why === "gone" && this.goneBudget.hit(Date.now())) {
+		// An `up` that answers `found` with an address that still does not answer would run again every goneMs + a tick: more than 3 such runs in 10 minutes end the loop with the screen and
+		// the Start button. Only a run whose loaded address is probed and does not answer 200 counts (S53-F003): a gone page that came back is a recovery, however often it happens.
+		if (why !== "gone") return;
+		const answered = (await probe(r.url)) === 200;
+		if (!answered && !this.stopped && !this.paused && this.goneBudget.hit(Date.now())) {
 			this.giveUp = true;
+			this.host.log("restart-budget", { which: "gone" });
 			this.show("failed", { kind: "failed", failure: { kind: "restart-budget", reason: `the page did not answer after more than ${SERVER_RESTART_MAX} starts in 10 minutes` } });
 		}
 	}
