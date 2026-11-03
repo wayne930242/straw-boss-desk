@@ -200,8 +200,9 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 				const outcome = await killOwned(processes, { pid: sbPid, record: sbRecord, handle: null });
 				settle(report, "sb-server", outcome, log);
 				if (outcome.killed) await deps.clock.sleep(500);
-				// A server that left between the verdict and the kill is gone, not unverified: only a refusal, or a kill that failed on a process that still runs, is reported (T8B-F004).
-				else if (!outcome.verdict.may || alive(sbPid)) {
+				// A server that left before the verdict read it (`gone`), or between the verdict and the kill, is gone, not unverified: only a process that still runs is reported, whether the
+				// rule refused it or the kill failed (T8B-F004, S53-F002). A pid reused by another program stays reported, which is the safe direction.
+				else if (alive(sbPid)) {
 					report.unverifiedSb = sbPid;
 					note(`an sb server (pid ${sbPid}) runs from a package that is not verified and could not be shown to be this app's; it was not stopped`);
 					log({ event: "sb-server-unverified", pid: sbPid });

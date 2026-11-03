@@ -330,6 +330,22 @@ describe("a recorded sb server of an unverified package that leaves while the st
 		assert.ok(!w.log.some((l) => l.event === "sb-server-unverified"));
 	});
 
+	// S53-F002: the same exit, one step earlier. The process is alive when the stop decides to look at it and gone when the verdict reads it, so the verdict is `gone`.
+	it("is not reported as unverified when it exited before the verdict read it (S53-F002)", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		w.procs.inspect = async () => {
+			w.procs.table.delete(200);
+			return [];
+		};
+		const report = await runStop(w.deps);
+		assert.equal(report.unverifiedSb, null);
+		assert.deepEqual(w.procs.killed, []);
+		assert.equal(report.ok, true, report.notes.join("; "));
+		assert.ok(!w.log.some((l) => l.event === "sb-server-unverified"));
+	});
+
 	it("is still reported when the kill failed and the process runs on", async () => {
 		const w = world();
 		await w.startFile.update(() => w.record);
