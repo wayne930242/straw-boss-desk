@@ -133,6 +133,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	interface RpcPi {
 		pane: string;
 		lines(): unknown[];
+		/** Types one line into the pane's shell (or into pi, while pi runs). */
+		type(line: string): Promise<void>;
 		/** Types one RPC command into the pane. */
 		send(command: Record<string, unknown>): Promise<void>;
 		/** Types one RPC command and waits for its response. */
@@ -141,17 +143,18 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		dump(): Promise<void>;
 		close(): Promise<void>;
 	}
-	async function openRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
+	/** Opens a pane next to `splitFrom`, starts pi in it and returns before pi has answered anything. */
+	async function startRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
 		const h = new WorldHerdr(world);
 		const split = await h.cli(["pane", "split", splitFrom, "--direction", "right", "--cwd", cwd, "--no-focus"]);
 		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
 		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
-		const out = join(world.base, `${label}.jsonl`);
+		const out = join(world.base, `${label}-${pane.replace(/\W/g, "_")}.jsonl`);
 		// A shell needs a moment before it reads a typed line.
 		await sleep(isWindows ? 4000 : 1500);
 		// The pane starts pi by name, as Herdr's `agent start` does; its stdout goes to a file the test reads, and its stdin is the pane, where the test types the RPC commands.
 		await h.type(pane, isWindows ? `cmd /d /c "pi --mode rpc --offline > ${out}"` : `pi --mode rpc --offline > '${out}'`);
-		await until(`pi to start in the pane (${label})`, 120_000, () => existsSync(out) || undefined);
+		await until(`the shell to start pi in the pane (${label})`, 120_000, () => existsSync(out) || undefined);
 		const lines = (): unknown[] =>
 			(existsSync(out) ? readFileSync(out, "utf8").split(/\r?\n/) : []).flatMap((l) => {
 				try {
@@ -162,9 +165,10 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			});
 		const answerTo = (id: string) => lines().find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
 		const send = (command: Record<string, unknown>) => h.type(pane, JSON.stringify(command));
-		const rpc: RpcPi = {
+		return {
 			pane,
 			lines,
+			type: (line) => h.type(pane, line),
 			send,
 			async call(command, waitMs) {
 				await send(command);
@@ -183,13 +187,51 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			},
 			close: async () => void (await h.cli(["pane", "close", pane]).catch(() => undefined)),
 		};
-		// The shell creates the output file before pi runs, so the file proves nothing: pi is up when it answers a read-only command.
-		await rpc.call({ id: `ready-${label}`, type: "get_state" }, 100_000).catch(async (error: Error) => {
-			await rpc.dump();
-			await rpc.close();
-			throw error;
-		});
-		return rpc;
+	}
+	/**
+	 * What a pane whose pi went away says about it: where `pi` resolves, whether `pi --version` runs, and what `pi --mode rpc` does with an empty stdin, each printed to the pane
+	 * and read back. Test code that explains a failure; it changes nothing.
+	 */
+	let explained = false;
+	async function explainShell(rpc: RpcPi, label: string): Promise<void> {
+		if (explained) return;
+		explained = true;
+		const h = new WorldHerdr(world);
+		const steps: Array<[string, number]> = isWindows
+			? [
+					["where.exe pi", 4000],
+					['cmd /d /c "pi --version & echo EXITCODE=%errorlevel%"', 10_000],
+					['cmd /d /c "pi --mode rpc --offline < NUL & echo EXITCODE=%errorlevel%"', 14_000],
+					['"DESK=$env:STRAW_BOSS_DESK ROOT=$env:STRAW_BOSS_DESK_ROOT AGENT=$env:PI_CODING_AGENT_DIR"', 3000],
+				]
+			: [["command -v pi", 2000], ["pi --version; echo EXITCODE=$?", 6000]];
+		for (const [line, wait] of steps) {
+			await rpc.type(line);
+			await sleep(wait);
+		}
+		const read = await h.cli(["pane", "read", rpc.pane, "--lines", "60"], 20_000);
+		console.log(`--- ${label}: what the shell says (where pi resolves, pi --version, pi with an empty stdin) ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-4000)}`);
+	}
+	/**
+	 * A pi in a pane of a base, answering `get_state`. A pi that goes away at once is explained in the log and started once more in a fresh pane a little later (the first
+	 * failure is evidence, the second is the check).
+	 */
+	async function openRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
+		for (let attempt = 1; ; attempt++) {
+			const rpc = await startRpcPi(label, splitFrom, cwd);
+			try {
+				// The shell creates the output file before pi runs, so the file proves nothing: pi is up when it answers a read-only command.
+				await rpc.call({ id: `ready-${label}-${attempt}`, type: "get_state" }, 60_000);
+				return rpc;
+			} catch (error) {
+				await rpc.dump();
+				await explainShell(rpc, label);
+				await rpc.close();
+				if (attempt >= 2) throw error;
+				console.log(`${label}: pi did not answer in its first pane (${(error as Error).message}); trying once more in a fresh pane`);
+				await sleep(20_000);
+			}
+		}
 	}
 	/**
 	 * Closes every pane that was not there at `known` and waits until the programs those panes ran have left `<root>/tools`: the quit check below has to find nothing the checks started,
@@ -206,22 +248,10 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	/** The member pi of the home base the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
 	let member: RpcPi | undefined;
 	let bossSeq = 0;
-	let probed = false;
 	async function boss(line: string): Promise<void> {
 		const home = startRecord()?.base?.pane as string;
 		assert.ok(home, "start.json names the home base's pane");
-		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home))).catch(async (error: Error) => {
-			// Tells a problem of the home base's folder from a problem of the pane: the same pi started the same way in a plain folder.
-			if (!probed) {
-				probed = true;
-				const verdict = await openRpcPi("probe", home, world.base).then(
-					(probe) => probe.close().then(() => "answers"),
-					(probeError: Error) => `does not answer either: ${probeError.message}`,
-				);
-				console.log(`diagnostic: a pi started the same way in ${world.base} ${verdict}`);
-			}
-			throw error;
-		});
+		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home)));
 		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch(async (error: Error) => {
 			await member?.dump();
 			throw error;
@@ -561,13 +591,38 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	});
 
 	check("quits with nothing left under <root>/tools and no answering Herdr", async () => {
-		await app.close();
-		const deadline = Date.now() + 180_000;
-		while (Date.now() < deadline && ((await underTools()).length > 0 || (await herdrAnswers()))) await sleep(1000);
-		assert.deepEqual((await underTools()).map((p) => `${p.pid} ${basename(p.executable ?? "")}`), []);
-		assert.equal(await herdrAnswers(), false);
-		const quit = logLines().filter((l) => l.event === "quit-stop").at(-1);
-		assert.equal(quit?.ok, true);
+		// While the app quits, every program under the tools folder is noted with its parent and age, so a program that is still there when the stop looks is explained by who
+		// started it (macOS: `ps` with pid, parent pid and elapsed time only; Windows passes without it).
+		const seen = new Map<number, string>();
+		let sampling = !isWindows;
+		const psOf = async (pid: number): Promise<string> => {
+			const r = await run("ps", ["-o", "ppid=,etime=", "-p", String(pid)], { env: { PATH: "/bin:/usr/bin" }, timeoutMs: 5000 });
+			return r.stdout.trim().replace(/\s+/g, " ") || "gone";
+		};
+		const sampler = (async () => {
+			while (sampling) {
+				for (const p of await underTools().catch(() => [])) {
+					if (seen.has(p.pid)) continue;
+					const stamp = new Date().toISOString().slice(11, 23);
+					seen.set(p.pid, `${basename(p.executable ?? "?")} first seen ${stamp}, ppid/etime ${await psOf(p.pid)}`);
+				}
+				await sleep(100);
+			}
+		})();
+		try {
+			await app.close();
+			const deadline = Date.now() + 180_000;
+			while (Date.now() < deadline && ((await underTools()).length > 0 || (await herdrAnswers()))) await sleep(1000);
+			assert.deepEqual((await underTools()).map((p) => `${p.pid} ${basename(p.executable ?? "")}`), []);
+			assert.equal(await herdrAnswers(), false);
+			const quit = logLines().filter((l) => l.event === "quit-stop").at(-1);
+			const stop = logLines().filter((l) => l.event === "stop-end").at(-1);
+			assert.equal(quit?.ok, true, `the stop reported: ${JSON.stringify(stop)}`);
+		} finally {
+			sampling = false;
+			await sampler;
+			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit ---\n${[...seen].map(([pid, what]) => `${pid} ${what}`).join("\n")}`);
+		}
 	});
 
 	/** `name=path` lines from the lookup command's output (or a message that holds them, with JSON's escaped newlines already decoded). */

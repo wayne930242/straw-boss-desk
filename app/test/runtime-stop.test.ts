@@ -327,6 +327,45 @@ describe("the intercom broker", () => {
 		assert.equal(report.ok, true);
 	});
 
+	// A pi session of a pane that is still ending starts another broker when its own is gone (pi-intercom reconnects with `spawnBrokerIfNeeded`), so the broker is killed last.
+	it("is killed only after the other programs under the tools folder have left", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		mkdirSync(dirname(brokerFile(w.layout)), { recursive: true });
+		writeFileSync(brokerFile(w.layout), "400\n");
+		w.procs.add(400, { startTime: "B1", executable: w.exe("node") });
+		w.procs.add(500, { startTime: "P1", executable: w.exe("node") });
+		// The pane's pi ends on its own, a little after Herdr stopped: the third look finds it gone.
+		const list = w.procs.listUnder.bind(w.procs);
+		let looks = 0;
+		w.procs.listUnder = async (dir) => {
+			if (++looks === 3) w.procs.table.delete(500);
+			return list(dir);
+		};
+		const report = await runStop(w.deps);
+		assert.deepEqual(w.procs.killed, [400]);
+		assert.ok(looks >= 3, `the broker waited for the pi (${looks} looks)`);
+		assert.equal(w.clock.slept.filter((ms) => ms === 500).length, 2, "two half seconds, then the pi was gone");
+		assert.ok(!w.log.some((l) => l.event === "broker-kill-early"));
+		assert.deepEqual(report.leftovers, []);
+		assert.equal(report.ok, true);
+	});
+
+	it("waits at most the programs' wait for a program that stays, then kills the broker and reports the program", async () => {
+		const w = world({ timeouts: { programsWaitMs: 2000 } });
+		await w.startFile.update(() => w.record);
+		mkdirSync(dirname(brokerFile(w.layout)), { recursive: true });
+		writeFileSync(brokerFile(w.layout), "400\n");
+		w.procs.add(400, { startTime: "B1", executable: w.exe("node") });
+		w.procs.add(501, { startTime: "P1", executable: w.exe("node") });
+		const report = await runStop(w.deps);
+		assert.deepEqual(w.procs.killed, [400], "only the broker is killed: the pi is not recorded");
+		assert.equal(w.clock.slept.filter((ms) => ms === 500).length, 4, "four half seconds make the 2 s");
+		assert.ok(w.log.some((l) => l.event === "broker-kill-early" && JSON.stringify(l.others) === "[501]"));
+		assert.deepEqual(report.leftovers.map((l) => l.pid), [501]);
+		assert.equal(report.ok, false);
+	});
+
 	it("is left alone when broker.pid names a program that is not the app's (a stale pid another program holds now)", async () => {
 		const w = world();
 		await w.startFile.update(() => w.record);

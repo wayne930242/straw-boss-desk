@@ -20,7 +20,8 @@ import type { ProcessRecord, StartFile } from "./start-file.ts";
 //   2. wait 10 s for the sb server to go; one that stays is killed only while the kill rule allows it. With the package unverified there was no CLI to wait for, so a recorded
 //      sb server is killed at once, and one the rule does not allow (its start time is missing or differs) is reported like an unrecorded one.
 //   3. `herdr server stop` on the app's socket, then wait for the server's pid. Workspaces stay open: Herdr restores them at the next start.
-//   4. kill what is left of the recorded processes, and the pi-intercom broker, only by the kill rule (`identity.ts`).
+//   4. kill what is left of the recorded processes, and the pi-intercom broker, only by the kill rule (`identity.ts`). The broker goes last: a pi session of a pane that is still ending starts
+//      another one when its broker is gone (pi-intercom reconnects with `spawnBrokerIfNeeded`), so it is killed after the other programs under `<root>/tools` have left, or after a short wait.
 //   5. one listing for whatever still runs from `<root>/tools`, and a look at whether the app's Herdr socket still answers.
 // `gui.json` and `server.json` stay: the server owns them, and `server.json`'s `gui.port` is how the next start keeps the port.
 
@@ -32,9 +33,11 @@ export interface StopTimeouts {
 	herdrStopMs: number;
 	/** How long to wait for the Herdr server's pid after `herdr server stop`. */
 	herdrWaitMs: number;
+	/** How long the broker waits for the panes' programs to leave before it is killed anyway. */
+	programsWaitMs: number;
 }
 
-export const stopTimeoutsFor = (platform: "win32" | "darwin"): StopTimeouts => ({ cliStopMs: platform === "win32" ? 120_000 : 45_000, sbWaitMs: 10_000, herdrStopMs: 30_000, herdrWaitMs: 10_000 });
+export const stopTimeoutsFor = (platform: "win32" | "darwin"): StopTimeouts => ({ cliStopMs: platform === "win32" ? 120_000 : 45_000, sbWaitMs: 10_000, herdrStopMs: 30_000, herdrWaitMs: 10_000, programsWaitMs: 5_000 });
 
 export interface StopDeps {
 	layout: Layout;
@@ -127,6 +130,16 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 			await deps.clock.sleep(250);
 		}
 		return true;
+	};
+
+	/** Waits until no program other than `except` runs from `<root>/tools`, or `ms` have passed; answers what still runs. */
+	const waitProgramsGone = async (except: number, ms: number): Promise<Leftover[]> => {
+		const deadline = deps.clock.now() + ms;
+		for (;;) {
+			const others = await listLeftovers(processes, layout, [except]);
+			if (others.length === 0 || deps.clock.now() >= deadline) return others;
+			await deps.clock.sleep(500);
+		}
 	};
 
 	let rec = deps.startFile.read((why) => log({ event: "start-file-unreadable", detail: why }));
@@ -228,6 +241,9 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 		settle(report, "herdr", outcome, log);
 	}
 	if (broker !== null && alive(broker.pid)) {
+		// Herdr's stop ends the panes' programs, but not at once, and a pi session that outlives the broker starts another one: the broker goes after the others have left.
+		const waited = await waitProgramsGone(broker.pid, timeouts.programsWaitMs);
+		if (waited.length > 0) log({ event: "broker-kill-early", others: waited.map((l) => l.pid) });
 		const outcome = await killOwned(processes, { pid: broker.pid, record: broker, handle: null });
 		settle(report, "intercom-broker", outcome, log);
 	}
