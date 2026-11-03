@@ -209,11 +209,11 @@ describe("runUp: the retry rules", () => {
 		assert.equal(error.failure.kind, "acl");
 		assert.equal(error.failure.startError?.code, "acl");
 		// Under an administrator token: its own kind, still without a retry, and the tool's text stays under Details.
-		const admin = deps([failure({ startError: { code: "acl", text: "could not protect C:\\agent\\straw-boss before writing to it: the folder grants BA, who is neither the owner nor SYSTEM" }, reason: "cannot run" }, 3)]);
+		const admin = deps([failure({ startError: { code: "acl", text: "could not protect C:\\agent\\straw-boss before writing to it: the folder has an ACE of type D for BA" }, reason: "cannot run" }, 3)]);
 		const asAdmin = await failureOf(runUp(admin));
 		assert.equal(asAdmin.failure.kind, "acl-admin");
 		assert.equal(asAdmin.failure.startError?.code, "acl");
-		assert.match(asAdmin.failure.startError?.text ?? "", /grants BA/);
+		assert.match(asAdmin.failure.startError?.text ?? "", /type D for BA/);
 		assert.equal(admin.ran, 1, "an elevated token is not retried");
 		assert.ok(!error.failure.startError?.text.includes(TOKEN));
 		const failedRepair = deps([failure({ startError: { code: "loader" } }, 3)], { repairPackage: async () => false });

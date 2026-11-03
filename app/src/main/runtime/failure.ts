@@ -33,7 +33,7 @@ export type StartFailureKind =
 	| "loader" // kit 19
 	| "intercom" // kit 19
 	| "acl" // kit 19
-	| "acl-admin" // kit 19, an `acl` refusal that names the Administrators group: the app runs with an administrator token (T8A-F005)
+	| "acl-admin" // kit 19, an `acl` refusal that names the Administrators group: since pi-straw-boss 0.53.0 (seam U12) only an ACE it cannot remove (a deny entry) is left to name it (T8A-F005)
 	| "usage" // kit 20
 	| "no-url" // kit 21
 	| "slot" // kit 22

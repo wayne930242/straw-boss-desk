@@ -46,10 +46,10 @@ export type UpClass = "ok" | "nourl" | "usage" | "loader" | "intercom" | "acl" |
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /**
- * True when the text of an `acl` refusal names the Administrators group (`BA`, `S-1-5-32-544`, or its name). pi-straw-boss 0.51.0 protects its folder with
- * `icacls /inheritance:r /grant:r <user> SYSTEM` and then wants exactly the owner and SYSTEM; under a full administrator token (Run as administrator, UAC off, the
- * built-in Administrator) the folder also carries an explicit `BA` entry, and the refusal says "the folder grants BA, who is neither the owner nor SYSTEM"
- * (seam U12). The app never touches that folder's ACL; it only says what to do.
+ * True when the text of an `acl` refusal names the Administrators group (`BA`, `S-1-5-32-544`, or its name). Up to pi-straw-boss 0.52.0 a full administrator token (Run as
+ * administrator, UAC off, the built-in Administrator) left an explicit `BA` allow entry on the folder and the refusal said "the folder grants BA, who is neither the owner nor
+ * SYSTEM" (seam U12). Since 0.53.0 the server removes every explicit allow entry of another SID itself, so an elevated run starts; what still names the group is an entry it
+ * does not remove (a deny entry: "the folder has an ACE of type D for BA"). The app never touches that folder's ACL; it only says what to do.
  */
 export const namesAdministrators = (text: string): boolean => /\bBA\b|S-1-5-32-544|\bAdministrators\b/.test(text);
 

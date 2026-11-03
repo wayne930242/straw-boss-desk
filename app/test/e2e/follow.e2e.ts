@@ -15,7 +15,6 @@ import { homeBaseDir, loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, WorldHerdr, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
-import { prepareStateFolder } from "../harness/hosted-acl.ts";
 import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 
@@ -372,7 +371,6 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		await noteUserPath(world);
 		const installed = await runWorld(world, { profile: true, recipe: { forges: [{ kind: "github", host: "github.com" }], tools: [], id: "ci-follow", name: "CI follow", version: "1.0.0", instructions: "- the CI rule" } });
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
-		await prepareStateFolder(world);
 		// The scripted stub model is the agent folder's default: every pi of the stack answers from it, and nothing leaves the machine.
 		stub = await startStubModel();
 		writeFileSync(join(world.layout.agent, "models.json"), modelsJson(stub.baseUrl));
@@ -521,8 +519,52 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		}
 	});
 
-	check("runs no `up` when the URL is down across an emitted suspend and resume, and follows the server back", async () => {
+	/** Retry on the failure screen: a whole start, which begins both crash budgets again. Waits until the GUI answers and the screen is gone. */
+	const pressRetry = async (): Promise<string> => {
+		await inPage("screen", `document.getElementById('retry').click()`);
+		return until("the GUI to come back and the screen to go", 180_000, async () => {
+			const u = await guiUrl();
+			return u && (await statusOf(u)) === 200 && (await shellVisible()) === false ? u : undefined;
+		});
+	};
+	const onFailureScreen = async () => (await shellView())?.screen === "failed";
+	/** One `cli.mjs restart`, and the wait until the follower saw it (a new pid in start.json) or the failure screen came. */
+	const restartOnce = async (reason: string): Promise<void> => {
 		const old = startRecord()?.sb?.pid as number;
+		const r = await sbCli("restart", "--reason", reason);
+		assert.equal(r.code, 0, `cli.mjs restart: ${r.stdout.slice(0, 300)} ${r.stderr.slice(0, 300)}`);
+		await until("the restart seen", 120_000, async () => (await onFailureScreen()) || startRecord()?.sb?.pid !== old || undefined);
+		await sleep(1500);
+	};
+
+	// T8B-F001. The earlier checks restarted the sb server already (inside the same 10 minutes), so counting from here would trip the budget at an unknown restart. The check first spends
+	// whatever budget is left (restarts until the screen shows) and presses Retry, which is a whole start and begins the budget again; the four restarts after it are then its own, and
+	// the first three are asserted to leave the page alone and log no `restart-budget`.
+	check("shows the failure screen at the fourth restart within 10 minutes, and Retry starts the stack again", async () => {
+		for (let i = 0; i < 4 && !(await onFailureScreen()); i++) await restartOnce("e2e budget drain");
+		assert.equal(await onFailureScreen(), true, "the budget of the earlier restarts is spent");
+		const fresh = Date.now();
+		assert.match(await pressRetry(), GUI_URL);
+		for (let n = 1; n <= 3; n++) {
+			await restartOnce(`e2e budget ${n}`);
+			assert.equal(await onFailureScreen(), false, `no failure screen after restart ${n} of 3`);
+			assert.deepEqual(eventsSince("restart-budget", fresh).map((l) => l.which), [], `no restart-budget event after restart ${n} of 3`);
+		}
+		await restartOnce("e2e budget 4");
+		await until("the failure screen", 60_000, async () => (await onFailureScreen()) || undefined);
+		const screen = await shellView();
+		assert.equal(screen?.kind, "restart-budget");
+		assert.equal(await shellVisible(), true);
+		assert.deepEqual(eventsSince("restart-budget", fresh).map((l) => l.which), ["sb"], "logs/start.jsonl records that the fourth restart stopped the retrying, once");
+		assert.match(await pressRetry(), GUI_URL);
+	});
+
+	check("runs no `up` when the URL is down across an emitted suspend and resume, and follows the server back", async () => {
+		// T8B-F001: the budget check before this one ended with Retry, so the budget is fresh; a leftover failure screen is cleared the same way, since a stopped follower would make
+		// "no `up`" true without testing anything.
+		if (await onFailureScreen()) await pressRetry();
+		const old = startRecord()?.sb?.pid as number;
+		const began = Date.now();
 		await emitPower("suspend");
 		await killSb();
 		await sleep(2000);
@@ -535,31 +577,13 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			"the 20 s after a resume are the sleep's gap, not an unanswered GUI",
 		);
 		assert.ok(eventsSince("follow-resume", resumedAt).length === 1 && eventsSince("power-resume", resumedAt).length === 1);
+		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "the budget did not stop the follower, so the follower was running when it judged");
+		assert.equal(await onFailureScreen(), false, "no failure screen: the follower is running");
 		await until("the new sb server recorded", 180_000, newSb(old));
 		const url = (await until("the GUI view's address", 30_000, guiUrl)) as string;
 		await until("the GUI to answer 200", 120_000, async () => (await statusOf(url)) === 200);
-	});
-
-	check("shows the failure screen at the fourth restart within 10 minutes, and Retry starts the stack again", async () => {
-		for (let i = 0; i < 4; i++) {
-			if ((await shellView())?.screen === "failed") break;
-			const old = startRecord()?.sb?.pid as number;
-			const r = await sbCli("restart", "--reason", "e2e budget");
-			assert.equal(r.code, 0, `cli.mjs restart: ${r.stdout.slice(0, 300)} ${r.stderr.slice(0, 300)}`);
-			await until("the restart seen", 120_000, async () => (await shellView())?.screen === "failed" || startRecord()?.sb?.pid !== old || undefined);
-			await sleep(1500);
-		}
-		await until("the failure screen", 60_000, async () => (await shellView())?.screen === "failed" || undefined);
-		const screen = await shellView();
-		assert.equal(screen?.kind, "restart-budget");
-		assert.equal(await shellVisible(), true);
-		assert.ok(logLines().some((l) => l.event === "restart-budget" && l.which === "sb"), "logs/start.jsonl records that the budget stopped the retrying");
-		await inPage("screen", `document.getElementById('retry').click()`);
-		const url = await until("the GUI to come back and the screen to go", 180_000, async () => {
-			const u = await guiUrl();
-			return u && (await statusOf(u)) === 200 && (await shellVisible()) === false ? u : undefined;
-		});
-		assert.match(url, GUI_URL);
+		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "no restart-budget event during the suspend check");
+		assert.equal(await onFailureScreen(), false);
 	});
 
 	check("has no folder hook on a page of another origin", async () => {
