@@ -44,6 +44,8 @@ interface MakeOptions {
 	pick?: Partial<WizardDeps>;
 }
 
+const stackStopOptions: Array<{ waitForTools?: boolean } | undefined> = [];
+
 function make(options: MakeOptions = {}) {
 	const made = scratchRoot("sbd-ctl-");
 	scratch.push(made.base);
@@ -68,7 +70,10 @@ function make(options: MakeOptions = {}) {
 				return { url: "http://127.0.0.1:1/x/", slotDir: "", server: "started", herdrReused: false, notices: [] };
 			},
 			engineProxyEnv: async () => ({}),
-			withStackStopped: (work) => work(),
+			withStackStopped: (work, options) => {
+				stackStopOptions.push(options);
+				return work();
+			},
 			repairLock: () => undefined,
 		},
 		osLocale: () => "en",
@@ -341,6 +346,33 @@ describe("the start step", () => {
 			return { kind: "done", ok: false, outcomes: [] };
 		});
 		assert.deepEqual(await w.controller.repair(), { ok: false, failure: { kind: "repair-failed", reason: "npm broke", offerRepair: true } });
+	});
+});
+
+describe("Repair of a start failure that names one package (R9B-F001, R9B-F006)", () => {
+	for (const [kind, stage] of [["loader", "pkg:pi-straw-boss"], ["intercom", "pkg:pi-intercom"]] as const) {
+		it(`${kind} forces that package's stage, and the stop waits for leftovers`, async () => {
+			let attempts = 0;
+			const w = await atFolder({
+				start: async () => {
+					if (attempts++ === 0) throw new StartFailureError({ kind, reason: "x", offerRepair: true });
+				},
+			});
+			await w.controller.act({ type: "folder-next" });
+			stackStopOptions.length = 0;
+			await w.controller.act({ type: "repair" });
+			assert.deepEqual(w.engine.configs.at(-1)?.forceStages, [stage]);
+			assert.equal(w.engine.configs.at(-1)?.force, undefined);
+			assert.deepEqual(stackStopOptions, [{ waitForTools: true }]);
+		});
+	}
+
+	it("a Repair that follows no such failure forces nothing", async () => {
+		const w = make();
+		await w.controller.repair();
+		assert.equal(w.engine.configs.at(-1)?.forceStages, undefined);
+		assert.equal((await w.controller.repair("loader")).ok, true);
+		assert.deepEqual(w.engine.configs.at(-1)?.forceStages, ["pkg:pi-straw-boss"], "the kind the runtime page showed decides after the wizard");
 	});
 });
 

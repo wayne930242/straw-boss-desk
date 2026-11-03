@@ -42,10 +42,13 @@ export function listOf(locale: Locale, items: readonly string[]): string {
 	const parts = new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).formatToParts(items);
 	return parts
 		.map((part, i) => {
-			if (locale !== "zh-TW" || part.type !== "literal" || !part.value.includes("和")) return part.value;
+			if (locale !== "zh-TW" || part.type !== "literal") return part.value;
+			// The separator's own spaces go (the ICU data may carry them): after a full-width 「）」 a space shows as a gap before 「、」 or 「和」 (SA-11).
+			const word = part.value.trim();
+			if (!word.includes("和")) return word;
 			const before = parts[i - 1]?.value.slice(-1) ?? "";
 			const after = parts[i + 1]?.value.charAt(0) ?? "";
-			return `${LATIN_OR_DIGIT.test(before) ? " " : ""}${part.value}${LATIN_OR_DIGIT.test(after) ? " " : ""}`;
+			return `${LATIN_OR_DIGIT.test(before) ? " " : ""}${word}${LATIN_OR_DIGIT.test(after) ? " " : ""}`;
 		})
 		.join("");
 }

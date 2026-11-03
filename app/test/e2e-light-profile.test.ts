@@ -63,8 +63,8 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 		const result = await (isWindows
 			? rpcCommands(join(system32, "cmd.exe"), ["/d", "/c", "pi", "--mode", "rpc", "--no-session", "--offline"], { env: { ...childEnvOf(world, []), PATH: [world.layout.tools.shims, system32].join(";") }, cwd: world.home })
 			: rpcCommands(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd: world.home }));
-		// A pi session leaves detached helpers of its own behind (the extension loader's node, `esbuild --service`), which `rpcCommands` does not own. The desk's package stages wait for any program under
-		// <root>/tools to end before they install (R9-F001), and the product stops the stack and lists such programs before an engine run ever follows a session, so the test does the same here.
+		// A pi session leaves detached helpers of its own behind (pi-intercom's broker, a node that exits only after a registered session has left, and tsx's `esbuild --service` child), which `rpcCommands` does not own. The desk's package stages wait for any program under
+		// <root>/tools to end before they install (R9-F001), and the product stops the stack and lists such programs before an engine run ever follows a session, so the test ends them here, more broadly than the product's stop (it ends every program under the scratch folder, not only the broker `broker.pid` names).
 		await stopProcessesUnder(world.base);
 		return result;
 	};

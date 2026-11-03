@@ -14,6 +14,7 @@ import { Supervisor, type SupervisorEvent } from "../src/main/runtime/supervisor
 import type { SpawnFn } from "../src/main/runtime/herdr.ts";
 import { secretPatterns } from "./harness/engine-fixture.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, runWorld, type RunSummary, type World } from "./harness/e2e-light.ts";
+import { redactedServerLogTail } from "./harness/server-log-tail.ts";
 import { hostedCase } from "./harness/hosted.ts";
 import { assertElevatedRunner } from "./harness/elevation.ts";
 
@@ -137,7 +138,11 @@ describe("the runtime supervisor against the real programs (e2e, task 8a)", { sk
 
 	it("starts the stack and the GUI answers 200", async () => {
 		const started = Date.now();
-		const result = await supervisor.start();
+		const result = await supervisor.start().catch((error: unknown) => {
+			// The failure names the log by path only; the CI log gets its redacted tail (a "hello" that was not answered is otherwise a guess).
+			console.log(`the start failed: ${(error as Error).message}\n--- server.log tail ---\n${redactedServerLogTail(world.layout.agent, (t) => runtimeRedactor(secretPatterns).redact(t))}\n--- end ---`);
+			throw error;
+		});
 		console.log(`start took ${Math.round((Date.now() - started) / 1000)} s`);
 		assert.match(result.url, /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{16,}\/?/);
 		assert.equal(await statusOf(result.url), 200);

@@ -38,6 +38,8 @@ export interface EngineConfig {
 	secretPatterns: unknown;
 	/** Ignore `detect` and install everything (Repair). */
 	force?: boolean;
+	/** Stage names to install whatever `detect` says (Repair of a start failure that names one package: `loader` and `intercom`). */
+	forceStages?: string[];
 	/**
 	 * The active recipe, validated by main with `validateRecipe(text, recipeValidationOptions(stack))`: its forges decide which code-host CLIs are
 	 * installed, its `tools` which optional tools (bun). Absent means no recipe yet (the welcome screen's preflight): no forge and no optional tool.
@@ -176,7 +178,7 @@ export function createEngine(deps: EngineDeps): Engine {
 						appEnv: deps.appEnv ?? process.env,
 						...(config.proxyEnv ? { proxy: { env: config.proxyEnv, log: [] } } : {}),
 						...(deps.downloadIdleMs !== undefined ? { downloadIdleMs: deps.downloadIdleMs } : {}),
-						...(config.force ? { force: true } : {}),
+						...(config.force || config.forceStages?.includes(stage.name) ? { force: true } : {}),
 					}),
 				onStart: (stage) => deps.emit({ type: "stage-start", stage: stage.name }),
 				onOutcome: (outcome) => deps.emit({ type: "stage", outcome }),

@@ -32,7 +32,7 @@ import { FRESH, readWizardFile, writeWizardFile, type WizardFile } from "./state
 export interface WizardSupervisor {
 	start(): Promise<StartResult>;
 	engineProxyEnv(forgeHosts: readonly string[]): Promise<Record<string, string>>;
-	withStackStopped<T>(work: () => Promise<T>): Promise<T>;
+	withStackStopped<T>(work: () => Promise<T>, options?: { waitForTools?: boolean }): Promise<T>;
 	repairLock(): unknown;
 	readonly state: string;
 }
@@ -69,6 +69,9 @@ const STEP_ORDER: readonly WizardStep[] = WIZARD_STEPS;
 /** An engine process that ends is resumed this many times at most in one run; the same stage ending it twice fails the stage earlier. */
 const MAX_RESUMES = 5;
 const HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
+
+/** The start failures whose cause is one package the stage's own check cannot see, and the stage Repair forces for each. */
+const REPAIR_STAGE_OF: Record<string, string> = { loader: "pkg:pi-straw-boss", intercom: "pkg:pi-intercom" };
 
 export class WizardController {
 	readonly #d: WizardDeps;
@@ -482,7 +485,7 @@ export class WizardController {
 	 * Runs the engine once and returns how it ended, feeding the install list. An engine process that ends before it says it is done is a resumable event (spec: Crash and sleep): the run
 	 * starts again, since verified stages are skipped; a second crash in the same stage fails that stage.
 	 */
-	async #runEngine(options: { force?: boolean }): Promise<{ ok: boolean }> {
+	async #runEngine(options: { force?: boolean; forceStages?: string[] }): Promise<{ ok: boolean }> {
 		const d = this.#d;
 		const active = this.#stackNow();
 		const recipeObj = this.#engineRecipe();
@@ -500,6 +503,7 @@ export class WizardController {
 				secretPatterns: d.secretPatterns,
 				...(recipeObj !== undefined ? { recipe: recipeObj } : {}),
 				...(options.force ? { force: true } : {}),
+				...(options.forceStages !== undefined ? { forceStages: options.forceStages } : {}),
 				...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}),
 			};
 			let end: EngineEnd;
@@ -585,12 +589,15 @@ export class WizardController {
 	 * Repair (spec: Settings, Diagnostics): clears an engine lock nothing holds, stops the stack, runs the engine again (a stage whose files no longer match its record reinstalls; the
 	 * others are skipped), and starts the stack again if it was running. The caller starts a stack that was not running.
 	 */
-	async repair(): Promise<RepairOutcome> {
+	async repair(failureKind?: string): Promise<RepairOutcome> {
 		const d = this.#d;
 		d.supervisor.repairLock();
 		let result: { ok: boolean } = { ok: false };
 		try {
-			result = await d.supervisor.withStackStopped(() => this.#runEngine({}));
+			// A start failure that names one package (`loader`, `intercom`) cannot be seen by that stage's check, so Repair installs the package anyway (R9B-F001). The stop waits for
+			// leftovers as the engine does (R9B-F006).
+			const named = REPAIR_STAGE_OF[failureKind ?? this.#startFailure?.kind ?? ""];
+			result = await d.supervisor.withStackStopped(() => this.#runEngine(named === undefined ? {} : { forceStages: [named] }), { waitForTools: true });
 		} catch (error) {
 			const failure: ShellFailure = { kind: "repair-failed", reason: firstLineOf((error as Error).message), offerRepair: true };
 			return { ok: false, failure };

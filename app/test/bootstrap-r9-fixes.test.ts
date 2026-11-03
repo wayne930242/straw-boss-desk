@@ -253,3 +253,29 @@ describe("R9-F001: a package stage does not start while a program of the data ro
 		assert.equal(t.calls(), 1);
 	});
 });
+
+describe("R9B-F001: forceStages installs a stage whose check passes", () => {
+	it("runs the named stage's install and skips the others", async () => {
+		const made = scratchRoot("sbd-r9b-force-");
+		scratch.push(made.base);
+		const installs: string[] = [];
+		const stage = (name: string): Stage => ({
+			name,
+			needs: [],
+			lane: "npm",
+			plannedVersion: () => "1.0.0",
+			detect: async () => ({ text: "x", version: "1.0.0", files: [] }),
+			async install() {
+				installs.push(name);
+			},
+			verify: async () => ({ text: "x", version: "1.0.0", files: [] }),
+			activate: async () => undefined,
+		});
+		const t = testEngine(made.root, () => [stage("pkg:a"), stage("pkg:b")]);
+		await t.run(makeStack({}));
+		assert.deepEqual(installs, [], "both pass their check on a second look");
+		const running = await t.engine.handle({ type: "run", config: { root: made.root, stack: makeStack({}), secretPatterns, forceStages: ["pkg:b"] } });
+		void running;
+		assert.deepEqual(installs, ["pkg:b"]);
+	});
+});

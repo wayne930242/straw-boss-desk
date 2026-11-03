@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { TOOLS_WAIT_MS } from "../bootstrap/tools-quiet.ts";
 import { osPidAlive, StateStore } from "../bootstrap/state.ts";
 import { buildEnv, resolveOsProxy, type EnvLike, type EnvMap, type ProxyResolver } from "../env.ts";
 import type { PaneFindings } from "../pane-path.ts";
@@ -688,7 +689,7 @@ export class Supervisor {
 		return this.#queue.run(() => this.#stop());
 	}
 
-	async #stop(): Promise<StopReport> {
+	async #stop(leftoversWaitMs?: number): Promise<StopReport> {
 		const { layout, platform, run, log } = this.#d;
 		this.#setState("stopping");
 		this.#stopFollower();
@@ -717,7 +718,7 @@ export class Supervisor {
 				herdrHandle: handle,
 				clock: this.#clock,
 				log,
-				timeouts: { ...stopTimeoutsFor(layout.platform), ...this.#d.stopTimeouts },
+				timeouts: { ...stopTimeoutsFor(layout.platform), ...(leftoversWaitMs !== undefined ? { leftoversWaitMs } : {}), ...this.#d.stopTimeouts },
 				...(this.#d.pidAlive ? { pidAlive: this.#d.pidAlive } : {}),
 				syncSbRecord: (pid) => this.noteSbServer(pid),
 			});
@@ -791,10 +792,10 @@ export class Supervisor {
 	 * reason `work` must not call `start`, `stop`, or `upOnce` of this supervisor: they would queue behind the job that is waiting for them.
 	 * The work's own error is the one the caller gets: a restart that fails after it is shown (the `failure` event) and logged, and only a good run reports it.
 	 */
-	withStackStopped<T>(work: () => Promise<T>): Promise<T> {
+	withStackStopped<T>(work: () => Promise<T>, options: { waitForTools?: boolean } = {}): Promise<T> {
 		return this.#queue.run(async () => {
 			const wasRunning = this.#state === "running";
-			const report = await this.#stop();
+			const report = await this.#stop(options.waitForTools ? TOOLS_WAIT_MS : undefined);
 			if (!report.ok) throw new StackBusyError(report);
 			let outcome: { value: T } | { error: unknown };
 			try {

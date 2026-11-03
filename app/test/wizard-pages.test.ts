@@ -50,6 +50,19 @@ describe("lists and parentheses follow the language (SA-04)", () => {
 		assert.equal(listOf("en", ["Claude", "Linear"]), "Claude and Linear", "English is left to Intl.ListFormat");
 	});
 
+	it("puts no space between a full-width 「）」 and 「、」 or 「和」, whatever spaces the ICU separators carry (SA-11)", () => {
+		const real = Intl.ListFormat.prototype.formatToParts;
+		Intl.ListFormat.prototype.formatToParts = function (this: Intl.ListFormat, list: Iterable<string>) {
+			return real.call(this, list).map((p) => (p.type === "literal" ? { ...p, value: ` ${p.value} ` } : p));
+		};
+		try {
+			assert.equal(listOf("zh-TW", ["GitHub（github.com）", "GitLab（gitlab.com）", "Linear"]), "GitHub（github.com）、GitLab（gitlab.com）和 Linear");
+			assert.equal(listOf("zh-TW", ["GitHub（github.com）", "第二項"]), "GitHub（github.com）和第二項");
+		} finally {
+			Intl.ListFormat.prototype.formatToParts = real;
+		}
+	});
+
 	it("uses full-width parentheses in every zh-TW string and half-width ones in every English string", () => {
 		for (const key of flattenKeys(catalogs["zh-TW"])) assert.doesNotMatch(String(valueAt(catalogs["zh-TW"], key)), /[()]/, `zh-TW ${key}`);
 		for (const key of flattenKeys(catalogs.en)) assert.doesNotMatch(String(valueAt(catalogs.en, key)), /[（）]/, `en ${key}`);

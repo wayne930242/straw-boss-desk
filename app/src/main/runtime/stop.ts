@@ -32,9 +32,12 @@ export interface StopTimeouts {
 	herdrStopMs: number;
 	/** How long to wait for the Herdr server's pid after `herdr server stop`. */
 	herdrWaitMs: number;
+	/** How long the final listing waits for programs under the tools folder to end (0: one listing). A Repair after a quit inside a package stage sets it to the engine's 90 s. */
+	leftoversWaitMs: number;
+	leftoversPollMs: number;
 }
 
-export const stopTimeoutsFor = (platform: "win32" | "darwin"): StopTimeouts => ({ cliStopMs: platform === "win32" ? 120_000 : 45_000, sbWaitMs: 10_000, herdrStopMs: 30_000, herdrWaitMs: 10_000 });
+export const stopTimeoutsFor = (platform: "win32" | "darwin"): StopTimeouts => ({ cliStopMs: platform === "win32" ? 120_000 : 45_000, sbWaitMs: 10_000, herdrStopMs: 30_000, herdrWaitMs: 10_000, leftoversWaitMs: 0, leftoversPollMs: 1_000 });
 
 export interface StopDeps {
 	layout: Layout;
@@ -238,6 +241,11 @@ export async function runStop(deps: StopDeps): Promise<StopReport> {
 	// 5. what still runs.
 	await deps.clock.sleep(700);
 	report.leftovers = await listLeftovers(processes, layout);
+	const waitUntil = deps.clock.now() + timeouts.leftoversWaitMs;
+	while (report.leftovers.length > 0 && deps.clock.now() < waitUntil) {
+		await deps.clock.sleep(Math.min(timeouts.leftoversPollMs, Math.max(0, waitUntil - deps.clock.now())));
+		report.leftovers = await listLeftovers(processes, layout);
+	}
 	report.herdrAnswers = await deps.herdr.answers();
 	for (const l of report.leftovers) note(`still running from the app's tools folder: pid ${l.pid} (${l.file})`);
 	if (report.herdrAnswers) note("the Herdr server still answers on the app's socket");

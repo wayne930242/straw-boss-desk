@@ -135,12 +135,16 @@ function settingsView(section: SettingsSection): SettingsView {
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
+/** The kind of the last start failure the runtime page showed: Repair of `loader` or `intercom` reinstalls that one package. */
+let lastFailureKind: string | undefined;
+
 async function runRepair(): Promise<void> {
-	const outcome = await wizard.repair();
+	const outcome = await wizard.repair(lastFailureKind);
 	if (!outcome.ok) {
 		desk?.setState({ mode: "screen", screen: "failed", failure: outcome.failure });
 		return;
 	}
+	lastFailureKind = undefined;
 	if (supervisor.state !== "running") await supervisor.start().catch(() => undefined);
 }
 
@@ -168,6 +172,7 @@ supervisor.on((event) => {
 			break;
 		case "failure":
 			// During the wizard the start step words the failure itself (the shell view keeps the wizard page then); afterwards the runtime page shows it.
+			lastFailureKind = event.failure.kind;
 			desk?.setState(failureState(event.failure));
 			break;
 		case "notice":

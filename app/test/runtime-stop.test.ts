@@ -130,6 +130,24 @@ describe("the stop sequence", () => {
 		assert.deepEqual([stopTimeoutsFor("win32").cliStopMs, stopTimeoutsFor("darwin").cliStopMs], [120_000, 45_000]);
 	});
 
+	it("waits for a program of the tools folder to end when asked, and reports it when it stays (R9B-F006)", async () => {
+		for (const [leaves, expectOk] of [[true, true], [false, false]] as const) {
+			const w = world();
+			await w.startFile.update(() => w.record);
+			w.procs.add(300, { startTime: SB_START, executable: w.exe("node") });
+			const sleep = w.clock.sleep;
+			w.deps.clock = { ...w.clock, sleep: async (ms) => { await sleep(ms); if (leaves && w.clock.slept.reduce((a, b) => a + b, 0) >= 3_000) w.procs.table.delete(300); } };
+			w.deps.timeouts = { leftoversWaitMs: 90_000, leftoversPollMs: 1_000 };
+			const report = await runStop(w.deps);
+			assert.equal(report.ok, expectOk, report.notes.join("; "));
+			if (!leaves) assert.ok(w.clock.slept.reduce((a, b) => a + b, 0) >= 90_000, "waited the whole limit");
+		}
+		const w = world();
+		await w.startFile.update(() => w.record);
+		w.procs.add(300, { startTime: SB_START, executable: w.exe("node") });
+		assert.equal((await runStop(w.deps)).ok, false, "without the wait one listing decides, as a quit needs");
+	});
+
 	it("a test stop whose cli.mjs stop leaves the sb server running reports it by pid when it may not kill it", async () => {
 		const w = world({ cliStop: { code: 1, endsSb: false, stderr: "Stopping the sb server on purpose\nexit-timeout: the server was asked and did not exit\n", stdout: "" }, records: { herdr: true, sb: true, sbStart: null } });
 		await w.startFile.update(() => w.record);
