@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { binShim } from "../src/main/bootstrap/stages/pi.ts";
 import { agentPackageDir, installedVersion } from "../src/main/bootstrap/pi-cli.ts";
-import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, realStack, runWorld, stateOf, type RunSummary, type World } from "./harness/e2e-light.ts";
+import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, realStack, runWorld, stateOf, stopProcessesUnder, type RunSummary, type World } from "./harness/e2e-light.ts";
 import { rpcCommands } from "./harness/rpc-commands.ts";
 
 // The task 7 anchor (spec: Tasks 7): from a root the tool stages and `pi` filled, the profile, every pi package of `stack.json`, a recipe package, and the
@@ -60,9 +60,13 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 	/** Starts the pinned pi in RPC mode the way a pane would (Windows: `pi` by name through the shims folder; macOS: the private prefix) and asks for its commands. */
 	const commands = async () => {
 		const system32 = join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
-		return isWindows
+		const result = await (isWindows
 			? rpcCommands(join(system32, "cmd.exe"), ["/d", "/c", "pi", "--mode", "rpc", "--no-session", "--offline"], { env: { ...childEnvOf(world, []), PATH: [world.layout.tools.shims, system32].join(";") }, cwd: world.home })
-			: rpcCommands(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd: world.home });
+			: rpcCommands(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd: world.home }));
+		// A pi session leaves detached helpers of its own behind (the extension loader's node, `esbuild --service`), which `rpcCommands` does not own. The desk's package stages wait for any program under
+		// <root>/tools to end before they install (R9-F001), and the product stops the stack and lists such programs before an engine run ever follows a session, so the test does the same here.
+		await stopProcessesUnder(world.base);
+		return result;
 	};
 
 	it("runs every stage: the tool stages, the profile, each package of the stack, the recipe's package, and claude, all verified", (t) => {
