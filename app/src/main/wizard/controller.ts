@@ -49,7 +49,7 @@ export interface WizardDeps {
 	engine: EngineHost;
 	supervisor: WizardSupervisor;
 	/** The language the OS asks for, when the PM has not chosen one. */
-	osLocale: Locale;
+	osLocale: () => Locale;
 	/** Opens the file dialog for a recipe and reads the file; null when the PM cancelled. Throws a plain message when the file cannot be read. */
 	pickRecipeFile(): Promise<{ name: string; text: string } | null>;
 	pickFolder(defaultPath: string): Promise<string | null>;
@@ -96,7 +96,7 @@ export class WizardController {
 	// ---- reading -----------------------------------------------------------------------------------------------------
 
 	get locale(): Locale {
-		return this.#file.locale ?? this.#d.osLocale;
+		return this.#file.locale ?? this.#d.osLocale();
 	}
 
 	get done(): boolean {

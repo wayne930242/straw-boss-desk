@@ -99,7 +99,8 @@ const wizard = new WizardController({
 	validate: validateRecipe,
 	engine: engineHost,
 	supervisor,
-	osLocale: pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
+	// A function: `app.getLocale()` answers the default (en-US) before the app is ready, and the controller is built at module load.
+	osLocale: () => pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
 	pickRecipeFile: async () => {
 		const window = desk?.window;
 		const options = { properties: ["openFile" as const], filters: [{ name: "Straw Boss recipe", extensions: ["json"] }] };

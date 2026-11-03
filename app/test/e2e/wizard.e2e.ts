@@ -205,7 +205,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await until("two stages done", 600_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) >= 2 || undefined, 200);
 		await close(first);
 		assert.equal(readWizard().step, "install", "wizard.json holds the install step");
-		const second = await launch("zh-TW");
+		// The stub is set at launch: a process started now would otherwise start the stack before a test could set it.
+		const second = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		const again = await pageOf(second, "wizard.html");
 		await until("the install step on the relaunch", 60_000, async () => ["install", "start", "claude"].includes(await stepOf(again)) || undefined, 200);
 		// The relaunch resumes: it ends on the first sign-in step with the stack started.

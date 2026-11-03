@@ -71,7 +71,7 @@ function make(options: MakeOptions = {}) {
 			withStackStopped: (work) => work(),
 			repairLock: () => undefined,
 		},
-		osLocale: "en",
+		osLocale: () => "en",
 		pickRecipeFile: async () => null,
 		pickFolder: async () => null,
 		logTail: () => ["a log line"],
@@ -373,5 +373,23 @@ describe("the launch", () => {
 		wsl = true;
 		await w.controller.act({ type: "rescan" });
 		assert.equal(w.controller.view().welcome.wslBash, "C:\\Windows\\System32\\bash.exe");
+	});
+});
+
+describe("the interface language", () => {
+	it("asks the OS for its language when it is first needed, not when the controller is built (Electron answers en-US before ready)", () => {
+		let asked = 0;
+		const w = make({
+			pick: {
+				osLocale: () => {
+					asked++;
+					return "zh-TW";
+				},
+			},
+		});
+		assert.equal(asked, 0);
+		assert.equal(w.controller.locale, "zh-TW");
+		assert.equal(w.controller.view().locale, "zh-TW");
+		assert.ok(asked >= 1);
 	});
 });
