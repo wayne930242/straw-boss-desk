@@ -162,7 +162,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			});
 		const answerTo = (id: string) => lines().find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
 		const send = (command: Record<string, unknown>) => h.type(pane, JSON.stringify(command));
-		return {
+		const rpc: RpcPi = {
 			pane,
 			lines,
 			send,
@@ -172,17 +172,24 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			},
 			async dump() {
 				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
-				console.log(`--- ${label}: the last events ---\n${events.join("\n")}`);
+				console.log(`--- ${label}: the last events (${lines().length} in all, ${existsSync(out) ? readFileSync(out).length : -1} bytes in ${out}) ---\n${events.join("\n")}`);
 				const panes = await h.cli(["pane", "list"], 20_000);
-				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 1500)}`);
+				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 3000)}`);
+				// Every pane of the workspace with the end of what it prints, this one included: a shell that could not start pi says so there.
 				for (const id of await paneIds()) {
-					if (id === pane) continue;
-					const read = await h.cli(["pane", "read", id, "--lines", "25"], 20_000);
-					console.log(`--- pane ${id} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-1800)}`);
+					const read = await h.cli(["pane", "read", id, "--lines", "30"], 20_000);
+					console.log(`--- pane ${id}${id === pane ? ` (${label})` : ""} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-2400)}`);
 				}
 			},
 			close: async () => void (await h.cli(["pane", "close", pane]).catch(() => undefined)),
 		};
+		// The shell creates the output file before pi runs, so the file proves nothing: pi is up when it answers a read-only command.
+		await rpc.call({ id: `ready-${label}`, type: "get_state" }, 100_000).catch(async (error: Error) => {
+			await rpc.dump();
+			await rpc.close();
+			throw error;
+		});
+		return rpc;
 	}
 	/**
 	 * Closes every pane that was not there at `known` and waits until the programs those panes ran have left `<root>/tools`: the quit check below has to find nothing the checks started,
@@ -199,11 +206,23 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	/** The member pi of the home base the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
 	let member: RpcPi | undefined;
 	let bossSeq = 0;
+	let probed = false;
 	async function boss(line: string): Promise<void> {
 		const home = startRecord()?.base?.pane as string;
 		assert.ok(home, "start.json names the home base's pane");
-		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home)));
-		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 120_000).catch(async (error: Error) => {
+		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home))).catch(async (error: Error) => {
+			// Tells a problem of the home base's folder from a problem of the pane: the same pi started the same way in a plain folder.
+			if (!probed) {
+				probed = true;
+				const verdict = await openRpcPi("probe", home, world.base).then(
+					(probe) => probe.close().then(() => "answers"),
+					(probeError: Error) => `does not answer either: ${probeError.message}`,
+				);
+				console.log(`diagnostic: a pi started the same way in ${world.base} ${verdict}`);
+			}
+			throw error;
+		});
+		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch(async (error: Error) => {
 			await member?.dump();
 			throw error;
 		});

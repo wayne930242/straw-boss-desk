@@ -132,13 +132,10 @@ export class Supervisor {
 	#herdr: HerdrControl | null = null;
 	#herdrChild: HerdrChild | null = null;
 	#slotDir: string | null = null;
-	#lastSbPid: number | null = null;
 	/** More than 3 restarts of either server in 10 minutes stop the retrying and show the failure screen (spec: Crash and sleep). */
 	readonly #herdrBudget = new SlidingBudget(SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS);
 	readonly #sbBudget = new SlidingBudget(SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS);
 	#follower: Follower | null = null;
-	/** The GUI's address with its page token: in memory only, for the follower to start from. */
-	#guiUrl: string | null = null;
 	#view: GuiView | undefined;
 	#viewKnown = false;
 	#after: Promise<void> = Promise.resolve();
@@ -607,8 +604,6 @@ export class Supervisor {
 	 * here. Every address the supervisor announces comes through this one place, so the follower's idea of the loaded page and of the sb server never lags behind.
 	 */
 	#announce(url: string, sbPid: number, reason: "start" | "restart" | "moved", emit = true): void {
-		this.#guiUrl = url;
-		this.#lastSbPid = sbPid;
 		if (this.#slotDir !== null) this.#setView(readGuiView(this.#slotDir));
 		if (this.#follower !== null) this.#follower.adopt(url, { pid: sbPid });
 		else this.#startFollower(url, sbPid);
@@ -638,7 +633,6 @@ export class Supervisor {
 		return {
 			log: (event, data) => this.#d.log({ event, ...((data ?? {}) as Record<string, LogValue>) }),
 			load: (url) => {
-				this.#guiUrl = url;
 				this.#emit({ type: "gui-url", url, reason: "moved" });
 			},
 			screen: (screen) => this.#emit({ type: "screen", screen }),
@@ -680,7 +674,6 @@ export class Supervisor {
 
 	/** The sb server restarted under a new pid (the follower sees it in `server.json`): the old record goes and the new pid is recorded, if its executable is the app's. */
 	noteSbServer(pid: number): Promise<void> {
-		this.#lastSbPid = pid;
 		this.#d.log({ event: "sb-server-restarted", pid });
 		return this.#times.rerecord("sb", pid, { ...(this.#slotDir !== null ? { slotDir: this.#slotDir } : {}) });
 	}
