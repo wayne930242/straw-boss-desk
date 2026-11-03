@@ -13,6 +13,7 @@
 		<span class="strip-dot" aria-hidden="true"></span>
 		<span id="strip-text"></span>
 	</div>
+	<div class="notices" id="notices" hidden></div>
 	<main class="card" id="card" hidden>
 		<h1 id="title"></h1>
 		<p class="sentence" id="sentence"></p>
@@ -20,7 +21,9 @@
 		<p class="note" id="starting" role="status" hidden data-i18n="screen.starting"></p>
 		<div class="actions">
 			<button type="button" id="retry"></button>
+			<button type="button" id="repair" hidden></button>
 		</div>
+		<p class="note" id="repairing" role="status" hidden data-i18n="start.repairing"></p>
 		<details class="details" id="details" hidden>
 			<summary data-i18n="start.details"></summary>
 			<pre id="reason"></pre>

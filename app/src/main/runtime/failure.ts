@@ -17,6 +17,7 @@ export type StartFailureKind =
 	| "sb-unverified" // a stop that left an sb server of a package that is not verified running, which no record proves ours: its pid is in `unverifiedSb` (T8C-F002)
 	| "restart-budget" // more than 3 restarts of the Herdr server or of the sb server in 10 minutes: the app stopped retrying (spec: Crash and sleep)
 	| "renderer" // the GUI view's renderer went away twice in a minute (spec: Crash and sleep)
+	| "repair-failed" // Repair ran the engine and it did not finish (task 9): the screen offers Repair again
 	// `up` exit 1 with a `wait` value
 	| "lock" // kit 10
 	| "start" // kit 11
@@ -56,6 +57,7 @@ export const KIT_EXIT_CODE: Readonly<Record<StartFailureKind, number | null>> = 
 	"sb-unverified": null,
 	"restart-budget": null,
 	renderer: null,
+	"repair-failed": null,
 	lock: 10,
 	start: 11,
 	hello: 12,

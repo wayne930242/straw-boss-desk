@@ -1,14 +1,22 @@
-import { app, Menu, powerMonitor, session } from "electron";
+import { app, dialog, Menu, powerMonitor, session, utilityProcess } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { pickLocale } from "../shared/locale.ts";
 import { identityFromProductName } from "./build.ts";
 import { dataRoot, electronDir, computeLayout } from "./paths.ts";
 import { DeskWindow } from "./desk-window.ts";
 import { GuiPresenter } from "./gui-presenter.ts";
 import { bannerState, failureState, screenState } from "./shell-state.ts";
+import { tailLines } from "./bootstrap/log.ts";
+import { menuTemplate } from "./menu.ts";
+import { catalogs } from "../renderer/i18n/index.ts";
+import type { SettingsSection, SettingsView, ShellNotice } from "../shared/wizard.ts";
+import { UtilityEngineHost, type UtilityChild } from "./wizard/engine-host.ts";
+import { WizardController } from "./wizard/controller.ts";
+import type { ValidateRecipe } from "./wizard/recipe-intake.ts";
 import { createPlatform } from "./platform/index.ts";
 import { execRunner } from "./platform/exec.ts";
 import { checkPaneLookups } from "./pane-path.ts";
@@ -33,9 +41,19 @@ app.setPath("userData", electronDir(root));
 const home = homedir();
 const layout = computeLayout({ root, home, platform: process.platform === "win32" ? "win32" : "darwin" });
 // The credential shapes of `recipe/secret-patterns.json`, shipped beside the app by `scripts/copy-assets.ts`: a missing or damaged file stops the app before it logs anything.
-const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(JSON.parse(readFileSync(join(import.meta.dirname, "..", "assets", "secret-patterns.json"), "utf8"))) });
+const assetsDir = join(import.meta.dirname, "..", "assets");
+const secretPatterns: unknown = JSON.parse(readFileSync(join(assetsDir, "secret-patterns.json"), "utf8"));
+const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(secretPatterns) });
+// The recipe validator is a plain module beside the recipe schema (`recipe/validate.mjs`), copied to `dist/assets/recipe` by `scripts/copy-assets.ts`; it is loaded from there, not bundled.
+const { validateRecipe } = (await import(pathToFileURL(join(assetsDir, "recipe", "validate.mjs")).href)) as { validateRecipe: ValidateRecipe };
 const platform = createPlatform();
 const run = execRunner();
+
+// One `utilityProcess` per engine run (spec: Decisions, Where the engine runs); `engine.js` starts its message loop when it finds a parent port.
+const engineHost = new UtilityEngineHost({
+	// SAFETY: a `UtilityProcess` has every member of `UtilityChild`; the cast only narrows its `on` overloads to the two events the host listens to.
+	fork: () => utilityProcess.fork(join(import.meta.dirname, "bootstrap", "engine.js"), [], { serviceName: "straw-boss-desk-engine", stdio: "ignore" }) as unknown as UtilityChild,
+});
 
 const supervisor = new Supervisor({
 	layout,
@@ -50,13 +68,70 @@ const supervisor = new Supervisor({
 	// Follow the GUI once the stack runs: restarts, a moved address, a stopped GUI, a gone one (task 8b).
 	follow: {},
 	resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-	// No engine runs in the main process yet: the wizard (task 9) starts it as a `utilityProcess` and answers for its pid here, so Repair leaves a running install's lock alone.
-	isOurEngine: () => false,
+	// The wizard runs the engine as a `utilityProcess`; a lock it holds is ours, so Repair leaves a running install's lock alone.
+	isOurEngine: (pid) => engineHost.pid === pid,
 	// Windows: what a pane's `bash` would resolve to, at every start (the WSL notice).
 	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
 });
 
 let desk: DeskWindow | undefined;
+
+/** The most a recipe file is read for: the validator's own limit is 256 KB, so a bigger file is handed over empty and refused by the validator (`too-large` is not reached; `invalid-json` is). */
+const MAX_RECIPE_READ = 300 * 1024;
+
+const wizard = new WizardController({
+	layout,
+	home,
+	platform: layout.platform,
+	dev: identity.kind === "dev",
+	bundledStack: join(assetsDir, "stack.json"),
+	secretPatterns,
+	validate: validateRecipe,
+	engine: engineHost,
+	supervisor,
+	osLocale: pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
+	pickRecipeFile: async () => {
+		const window = desk?.window;
+		const options = { properties: ["openFile" as const], filters: [{ name: "Straw Boss recipe", extensions: ["json"] }] };
+		const picked = window === undefined ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options);
+		const file = picked.filePaths[0];
+		if (picked.canceled || file === undefined) return null;
+		return { name: basename(file), text: statSync(file).size > MAX_RECIPE_READ ? "" : readFileSync(file, "utf8") };
+	},
+	pickFolder: async (defaultPath) => {
+		const window = desk?.window;
+		const options = { defaultPath, properties: ["openDirectory" as const, "createDirectory" as const] };
+		const picked = window === undefined ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options);
+		return picked.canceled ? null : (picked.filePaths[0] ?? null);
+	},
+	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
+	logTail: (count) => tailLines(join(layout.logs, "bootstrap.jsonl"), count).map((line) => runtimeLog.redactor.redact(line)),
+	log: (fields) => runtimeLog.event(fields),
+});
+
+/** The WSL sentence, until dismissed for this start. */
+let wslNotice: ShellNotice | null = null;
+
+/** Notices over the GUI: the WSL sentence, and the sign-ins put off once the wizard is over. */
+function refreshNotices(): void {
+	const later = wizard.done && wizard.later.length > 0 ? [{ id: "later" as const, items: wizard.later }] : [];
+	desk?.setNotices([...(wslNotice === null ? [] : [wslNotice]), ...later]);
+}
+
+function settingsView(section: SettingsSection): SettingsView {
+	const recipe = wizard.recipe;
+	return { locale: wizard.locale, section, later: wizard.later, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
+}
+
+/** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
+async function runRepair(): Promise<void> {
+	const outcome = await wizard.repair();
+	if (!outcome.ok) {
+		desk?.setState({ mode: "screen", screen: "failed", failure: outcome.failure });
+		return;
+	}
+	if (supervisor.state !== "running") await supervisor.start().catch(() => undefined);
+}
 
 // No page of the app may attach a <webview>.
 app.on("web-contents-created", (_event, contents) => {
@@ -81,8 +156,14 @@ supervisor.on((event) => {
 			else desk?.setState(bannerState(event.kind));
 			break;
 		case "failure":
-			// Nothing installed yet is the wizard's to show (task 9): until it exists the welcome page stays, and the failure is in logs/start.jsonl.
-			if (event.failure.kind !== "tool-missing") desk?.setState(failureState(event.failure));
+			// During the wizard the start step words the failure itself (the shell view keeps the wizard page then); afterwards the runtime page shows it.
+			desk?.setState(failureState(event.failure));
+			break;
+		case "notice":
+			if (event.kind === "wsl-bash" && event.path !== undefined) {
+				wslNotice = { id: "wsl", path: event.path };
+				refreshNotices();
+			}
 			break;
 		default:
 			break;
@@ -96,14 +177,19 @@ function openWindow(): void {
 }
 
 function buildMenu(): void {
-	// Roles only: Electron labels them in the OS language, so no string of ours is needed here.
-	Menu.setApplicationMenu(Menu.buildFromTemplate([
-		...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),
-		{ role: "fileMenu" },
-		{ role: "editMenu" },
-		{ role: "viewMenu" },
-		{ role: "windowMenu" },
-	]));
+	Menu.setApplicationMenu(
+		Menu.buildFromTemplate(
+			menuTemplate({
+				locale: wizard.locale,
+				platform: process.platform,
+				settingsEnabled: wizard.done,
+				openSettings: (section) => {
+					openWindow();
+					desk?.openSettings(section);
+				},
+			}),
+		),
+	);
 }
 
 // The quit holds until the stop sequence is done, then leaves with `app.exit`, so a quit never abandons the stack half stopped.
@@ -113,8 +199,11 @@ let stopped = false;
 function stopThenExit(code: (ok: boolean) => number): void {
 	if (stopping) return;
 	stopping = true;
-	supervisor
-		.stop()
+	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
+	engineHost
+		.dispose()
+		.catch(() => undefined)
+		.then(() => supervisor.stop())
 		.then((report) => {
 			runtimeLog.event({ event: "quit-stop", ok: report.ok, leftovers: report.leftovers.length });
 			return report.ok;
@@ -159,21 +248,43 @@ if (!app.requestSingleInstanceLock()) {
 	});
 	app.on("activate", () => openWindow());
 	void app.whenReady().then(() => {
+		const mode = wizard.launchMode();
 		buildMenu();
 		desk = new DeskWindow({
 			productName: identity.productName,
-			locale: pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
+			locale: wizard.locale,
 			build: identity.kind,
 			distDir: join(import.meta.dirname, ".."),
 			workFolder: () => loadStartConfig(layout, home).workFolder,
-			// Start and Try again are one request: the follower's `up` while the stack runs, a whole start after a failure.
-			onAction: () => void supervisor.retry().catch(() => undefined),
+			// Start and Try again are one request (the follower's `up` while the stack runs, a whole start after a failure); Repair runs the engine again.
+			onAction: (action) => (action === "repair" ? void runRepair().catch(() => undefined) : void supervisor.retry().catch(() => undefined)),
+			wizardView: () => wizard.view(),
+			onWizardAction: (action) => wizard.act(action),
+			settingsView,
 			onSessionEnd: () => supervisor.stopForSessionEnd(),
 			log: (fields) => runtimeLog.event(fields),
 		});
+		let shownLocale = wizard.locale;
+		wizard.onChange(() => {
+			desk?.pushWizard(wizard.view());
+			desk?.pushSettings();
+			if (wizard.locale !== shownLocale) {
+				shownLocale = wizard.locale;
+				desk?.setLocale(shownLocale);
+				buildMenu();
+			}
+		});
+		wizard.onDone(() => {
+			desk?.setWizardActive(false);
+			buildMenu();
+			refreshNotices();
+		});
+		desk.setWizardActive(mode === "wizard");
+		refreshNotices();
 		attachPower(powerMonitor, supervisor, (fields) => runtimeLog.event(fields));
 		openWindow();
+		if (mode === "wizard") void wizard.resume().catch((error: Error) => runtimeLog.event({ event: "wizard-resume-failed", detail: error.message.slice(0, 300) }));
 		// Failures reach the runtime page through the supervisor's `failure` event; they are in logs/start.jsonl too.
-		void supervisor.start().catch(() => undefined);
+		else void supervisor.start().catch(() => undefined);
 	});
 }

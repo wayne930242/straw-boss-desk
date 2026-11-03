@@ -1,12 +1,15 @@
 import type { ShellState } from "../shared/shell-state.ts";
 import type { Locale } from "../shared/locale.ts";
-import { catalogs, t } from "./i18n/index.ts";
+import type { ShellNotice } from "../shared/wizard.ts";
+import { h } from "./dom.ts";
+import { catalogs, format, t } from "./i18n/index.ts";
 
 // The runtime page of the shell view (spec: Runtime supervisor, Following the GUI; Crash and sleep): a small notice over the GUI while the stack restarts, or a whole screen when the GUI
 // was stopped or a start failed, with **Start** or **Try again**. Main sends a state and this page words it from the catalog; it holds no logic of its own beyond that.
 
 const shell = window.sbdShell;
-const locale: Locale = shell?.locale ?? "en";
+let locale: Locale = shell?.locale ?? "en";
+let last: ShellState = { mode: "none" };
 
 const byId = <T extends HTMLElement>(id: string): T => {
 	const el = document.getElementById(id);
@@ -23,6 +26,9 @@ const starting = byId<HTMLParagraphElement>("starting");
 const retry = byId<HTMLButtonElement>("retry");
 const details = byId<HTMLDetailsElement>("details");
 const reason = byId<HTMLPreElement>("reason");
+const repair = byId<HTMLButtonElement>("repair");
+const repairing = byId<HTMLParagraphElement>("repairing");
+const notices = byId<HTMLDivElement>("notices");
 
 const BANNER_KEY = { restarting: "banner.restarting", "address-changed": "banner.addressChanged", starting: "banner.starting" } as const;
 
@@ -33,17 +39,51 @@ function failureSentence(kind: string, pid: number | undefined): string {
 	return pid === undefined ? text : text.replaceAll("{pid}", String(pid));
 }
 
+const LATER_KEY = { claude: "later.claude", github: "later.github", gitlab: "later.gitlab", linear: "later.linear" } as const;
+
+/** One row per notice: the WSL sentence with its Details and Dismiss, and one row for every sign-in put off with a Settings button. */
+function noticeRow(notice: ShellNotice): HTMLElement {
+	if (notice.id === "wsl") {
+		const detail = h("pre", { hidden: true }, format(t(locale, "welcome.wslPath"), { path: notice.path }));
+		return h(
+			"div",
+			{ class: "notice", "data-notice": "wsl", role: "status" },
+			h("span", { class: "notice-text" }, t(locale, "welcome.wsl")),
+			h("button", { type: "button", id: "wsl-details", onclick: () => (detail.hidden = !detail.hidden) }, t(locale, "later.wslDetails")),
+			h("button", { type: "button", id: "wsl-dismiss", onclick: () => shell?.act({ type: "dismiss-notice", id: "wsl" }) }, t(locale, "later.dismiss")),
+			detail,
+		);
+	}
+	const items = notice.items.map((i) => format(t(locale, LATER_KEY[i.item]), "host" in i ? { host: i.host } : {})).join(", ");
+	return h(
+		"div",
+		{ class: "notice", "data-notice": "later", role: "status" },
+		h("span", { class: "notice-text" }, format(t(locale, "later.banner"), { items })),
+		h("button", { type: "button", id: "open-settings", onclick: () => shell?.act({ type: "open-settings", section: "accounts" }) }, t(locale, "later.settings")),
+	);
+}
+
 function render(state: ShellState): void {
+	last = state;
 	document.documentElement.lang = locale;
 	document.title = catalogs[locale].app.name;
 	document.body.dataset.mode = state.mode;
 	strip.hidden = state.mode !== "banner";
 	card.hidden = state.mode !== "screen";
+	notices.hidden = state.mode !== "notices";
 	starting.hidden = true;
+	repairing.hidden = true;
 	retry.disabled = false;
+	repair.disabled = false;
+	repair.hidden = true;
+	repair.textContent = t(locale, "start.repair");
 	for (const el of document.querySelectorAll<HTMLElement>("[data-i18n]")) el.textContent = t(locale, el.dataset.i18n ?? "");
 	if (state.mode === "banner") {
 		stripText.textContent = t(locale, BANNER_KEY[state.banner]);
+		return;
+	}
+	if (state.mode === "notices") {
+		notices.replaceChildren(...state.notices.map(noticeRow));
 		return;
 	}
 	if (state.mode !== "screen") return;
@@ -59,6 +99,7 @@ function render(state: ShellState): void {
 		leftovers.hidden = (failure.leftovers?.length ?? 0) === 0;
 		reason.textContent = failure.reason;
 		details.hidden = failure.reason === "";
+		repair.hidden = failure.offerRepair !== true;
 		return;
 	}
 	delete card.dataset.failureKind;
@@ -70,6 +111,18 @@ function render(state: ShellState): void {
 	details.hidden = true;
 }
 
+// The window gives the notice strip the height this page measures (it clamps it): only the page knows how tall its rows are.
+new ResizeObserver(() => {
+	if (!notices.hidden) shell?.act({ type: "strip-height", height: Math.ceil(notices.getBoundingClientRect().height) });
+}).observe(notices);
+
+repair.addEventListener("click", () => {
+	repair.disabled = true;
+	retry.disabled = true;
+	repairing.hidden = false;
+	shell?.act("repair");
+});
+
 retry.addEventListener("click", () => {
 	retry.disabled = true;
 	starting.hidden = false;
@@ -77,6 +130,10 @@ retry.addEventListener("click", () => {
 });
 
 if (shell) {
+	shell.onLocale((next) => {
+		locale = next;
+		render(last);
+	});
 	shell.onState(render);
 	void shell.state().then(render);
 } else {

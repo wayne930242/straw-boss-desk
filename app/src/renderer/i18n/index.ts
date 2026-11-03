@@ -14,3 +14,8 @@ export function t(locale: Locale, key: string): string {
 	if (typeof node !== "string") throw new Error(`string key ${key} in ${locale} is not a string`);
 	return node;
 }
+
+/** `{name}` placeholders replaced from `vars`; a placeholder with no value stays as written, so a missing value shows instead of vanishing. */
+export function format(text: string, vars: Readonly<Record<string, string | number>> = {}): string {
+	return text.replace(/\{([A-Za-z]+)\}/g, (whole, name: string) => (name in vars ? String(vars[name]) : whole));
+}

@@ -1,0 +1,68 @@
+/* The settings page of the shell view: a list of sections beside the open one. Same palette and rules as the wizard. */
+:root {
+	color-scheme: light dark;
+	--bg: #f6f4ef;
+	--panel: #ffffff;
+	--text: #1f2328;
+	--muted: #5b6470;
+	--line: #d6d2c8;
+	--accent: #b4530a;
+	--accent-tint: #fbeedd;
+	font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #16161e;
+		--panel: #1f2030;
+		--text: #ece8df;
+		--muted: #a6a39a;
+		--line: #3a3b52;
+		--accent: #f0a15c;
+		--accent-tint: #3a2a18;
+	}
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+
+.layout { display: grid; grid-template-columns: 220px 1fr; height: 100%; gap: 16px; padding: 16px; }
+.nav, .body { padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: auto; }
+.nav { display: grid; align-content: start; gap: 6px; }
+.nav h2 { margin: 8px 0 4px; font-size: 18px; }
+
+h1 { margin: 0 0 12px; font-size: 24px; }
+.lead { margin: 0 0 16px; line-height: 1.6; }
+.note { color: var(--muted); line-height: 1.6; }
+
+button {
+	padding: 8px 16px;
+	font: inherit;
+	color: var(--text);
+	text-align: left;
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+button:hover { border-color: var(--accent); }
+button[aria-current="true"], .language-button[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.accounts { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; }
+.accounts li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+
+.badge { display: inline-block; padding: 2px 10px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; font-size: 12px; white-space: nowrap; }
+
+.language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
+.language-label { color: var(--muted); margin-right: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		animation: none !important;
+		transition: none !important;
+		scroll-behavior: auto !important;
+	}
+}

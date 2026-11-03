@@ -1,6 +1,8 @@
 import { BaseWindow, dialog, ipcMain, session, shell, WebContentsView, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { CHANNELS, type ShellAction, type ShellState } from "../shared/shell-state.ts";
+import type { Locale } from "../shared/locale.ts";
+import { SETTINGS_SECTIONS, type SettingsAction, type SettingsSection, type SettingsView, type ShellNotice, type WizardAction, type WizardView } from "../shared/wizard.ts";
 import { dialogTitle, externalLink, guiOriginOf, guiPortOf, isGuiUrl, permissionAllowed } from "./page-security.ts";
 import { closeWindowViews, type GuiSurface } from "./gui-presenter.ts";
 import { RENDERER_GONE_MAX, RENDERER_GONE_WINDOW_MS, SlidingBudget } from "./runtime/budget.ts";
@@ -8,11 +10,13 @@ import { backgroundOf, type GuiView } from "./runtime/follow.ts";
 import type { RuntimeEvent } from "./runtime/log.ts";
 
 // The app's window (spec: Decisions, Window; Runtime supervisor, Window and page security, Crash and sleep): one `BaseWindow` with two `WebContentsView`s, the GUI view (pi-straw-boss)
-// and the shell view above it (the welcome page; the runtime page for a notice or a screen). This file is Electron wiring only: every rule that decides something is a pure function in
+// and the shell view above it (the wizard; the runtime page for a notice or a screen; the settings). This file is Electron wiring only: every rule that decides something is a pure function in
 // `page-security.ts`, `shell-state.ts` or `runtime/budget.ts`, with its own unit tests, and the e2e test checks that the wiring calls them.
 
 /** A notice over the GUI is a strip this high; the GUI view gives it the room, so nothing under it is covered. */
 const BANNER_HEIGHT = 44;
+/** The notice strip never grows past this, whatever the page measures. */
+const MAX_STRIP_HEIGHT = 240;
 
 export interface DeskWindowDeps {
 	productName: string;
@@ -22,8 +26,13 @@ export interface DeskWindowDeps {
 	distDir: string;
 	/** The work folder: the folder dialog opens there. */
 	workFolder(): string;
-	/** The runtime page's **Start** or **Try again**. */
+	/** The runtime page's requests: **Start**, **Try again**, **Repair**, and a notice's buttons (the ones about the window itself are handled here and not passed). */
 	onAction(action: ShellAction): void;
+	/** The wizard's state and its requests. */
+	wizardView(): WizardView;
+	onWizardAction(action: WizardAction): Promise<void>;
+	/** The settings page's state. */
+	settingsView(section: SettingsSection): SettingsView;
 	/** Windows log off or shutdown (`session-end`): the stop that fits in the time Windows gives. */
 	onSessionEnd(): void;
 	log: RuntimeEvent;
@@ -34,8 +43,16 @@ export class DeskWindow {
 	#window: BaseWindow | undefined;
 	#gui: WebContentsView | undefined;
 	#shell: WebContentsView | undefined;
-	/** The runtime page is loaded in the shell view (the welcome page was before). */
-	#screenPage = false;
+	/** The page the shell view has loaded: the wizard (also the short wait of a later launch), the runtime page, or the settings. */
+	#page: "wizard" | "screen" | "settings" | null = null;
+	/** The wizard has not finished: its page stays over the GUI view through the sign-in steps. */
+	#wizardActive = false;
+	#settingsOpen = false;
+	#section: SettingsSection = "accounts";
+	#locale: Locale;
+	#notices: ShellNotice[] = [];
+	/** The height of the notice strip as the page measured it. */
+	#stripHeight = BANNER_HEIGHT;
 	#state: ShellState = { mode: "none" };
 	/** The GUI view has been given an address: the shell view stays out of the way unless it has something to say. */
 	#guiShown = false;
@@ -47,6 +64,7 @@ export class DeskWindow {
 
 	constructor(deps: DeskWindowDeps) {
 		this.#d = deps;
+		this.#locale = deps.locale === "zh-TW" ? "zh-TW" : "en";
 		this.#registerIpc();
 		this.#restrictPermissions();
 	}
@@ -64,7 +82,7 @@ export class DeskWindow {
 		const { distDir } = this.#d;
 		const window = new BaseWindow({ width: 1280, height: 860, minWidth: 720, minHeight: 520, title: this.#d.productName, backgroundColor: this.#background });
 		this.#window = window;
-		this.#screenPage = false;
+		this.#page = null;
 		this.#guiShown = false;
 
 		// The GUI stays loaded under any shell screen or banner, so it is added first and the shell view sits above it.
@@ -76,7 +94,7 @@ export class DeskWindow {
 				contextIsolation: true,
 				nodeIntegration: false,
 				preload: join(distDir, "preload", "shell.cjs"),
-				additionalArguments: [`--sbd-locale=${this.#d.locale}`, `--sbd-product=${this.#d.productName}`, `--sbd-build=${this.#d.build}`],
+				additionalArguments: [`--sbd-locale=${this.#locale}`, `--sbd-product=${this.#d.productName}`, `--sbd-build=${this.#d.build}`],
 			},
 		});
 		this.#gui = gui;
@@ -100,7 +118,7 @@ export class DeskWindow {
 			}
 			onClosed();
 		});
-		void shellView.webContents.loadFile(join(distDir, "renderer", "welcome.html"));
+		this.#applyState();
 		return {
 			show: (url, onLoaded) => this.#showGui(url, onLoaded),
 		};
@@ -145,37 +163,113 @@ export class DeskWindow {
 		if (this.#state.mode === "banner") this.setState({ mode: "none" });
 	}
 
+	/** The notices that stay over the GUI until dealt with (the WSL sentence, the sign-ins put off). */
+	setNotices(notices: ShellNotice[]): void {
+		this.#notices = notices;
+		this.#applyState();
+	}
+
+	get notices(): readonly ShellNotice[] {
+		return this.#notices;
+	}
+
+	/** The wizard has not finished (true) or has (false). While it has not, its page covers the GUI view. */
+	setWizardActive(active: boolean): void {
+		this.#wizardActive = active;
+		this.#applyState();
+	}
+
+	/** The wizard's state changed: the wizard page hears it. */
+	pushWizard(view: WizardView): void {
+		if (this.#page === "wizard") this.#send(CHANNELS.wizardChanged, view);
+	}
+
+	/** The settings' state changed (a sign-in put off, a new language). */
+	pushSettings(): void {
+		if (this.#page === "settings") this.#send(CHANNELS.settingsChanged, this.#d.settingsView(this.#section));
+	}
+
+	/** The interface language changed: every shell page follows. */
+	setLocale(locale: Locale): void {
+		if (locale === this.#locale) return;
+		this.#locale = locale;
+		this.#send(CHANNELS.localeChanged, locale);
+	}
+
+	get settingsOpen(): boolean {
+		return this.#settingsOpen;
+	}
+
+	openSettings(section: SettingsSection = "accounts"): void {
+		this.#section = section;
+		this.#settingsOpen = true;
+		this.#applyState();
+	}
+
+	closeSettings(): void {
+		if (!this.#settingsOpen) return;
+		this.#settingsOpen = false;
+		this.#applyState();
+	}
+
+	#send(channel: string, payload: unknown): void {
+		const contents = this.#shell?.webContents;
+		if (contents !== undefined && !contents.isDestroyed()) contents.send(channel, payload);
+	}
+
+	/** The state the runtime page shows: a screen or a restart notice first, else the notices that stay. */
+	#effective(): ShellState {
+		if (this.#state.mode === "screen" || this.#state.mode === "banner") return this.#state;
+		return this.#notices.length > 0 ? { mode: "notices", notices: this.#notices } : { mode: "none" };
+	}
+
+	/** Which page the shell view should show, by what is going on. */
+	#wantedPage(): "wizard" | "screen" | "settings" | "hidden" {
+		if (this.#settingsOpen) return "settings";
+		if (this.#wizardActive) return "wizard";
+		const state = this.#effective();
+		if (state.mode === "screen") return "screen";
+		if (!this.#guiShown) return state.mode === "none" ? "wizard" : "screen";
+		return state.mode === "none" ? "hidden" : "screen";
+	}
+
+	#load(page: "wizard" | "screen" | "settings"): void {
+		const shellView = this.#shell;
+		if (shellView === undefined || shellView.webContents.isDestroyed()) return;
+		this.#page = page;
+		void shellView.webContents.loadFile(join(this.#d.distDir, "renderer", `${page}.html`));
+	}
+
 	#applyState(): void {
 		const shellView = this.#shell;
 		if (shellView === undefined || shellView.webContents.isDestroyed()) return;
-		const state = this.#state;
-		if (state.mode === "none") {
-			// The welcome page shows until the GUI does; after that the shell view is hidden.
-			if (!this.#guiShown && this.#screenPage) {
-				this.#screenPage = false;
-				void shellView.webContents.loadFile(join(this.#d.distDir, "renderer", "welcome.html"));
-			}
-			shellView.setVisible(!this.#guiShown);
+		const wanted = this.#wantedPage();
+		if (wanted === "hidden") {
+			shellView.setVisible(false);
 			this.#layout();
 			return;
 		}
-		if (!this.#screenPage) {
-			this.#screenPage = true;
-			void shellView.webContents.loadFile(join(this.#d.distDir, "renderer", "screen.html"));
-		} else {
-			shellView.webContents.send(CHANNELS.stateChanged, state);
-		}
+		if (this.#page !== wanted) this.#load(wanted);
+		else if (wanted === "screen") shellView.webContents.send(CHANNELS.stateChanged, this.#effective());
+		else if (wanted === "settings") this.pushSettings();
 		shellView.setVisible(true);
 		this.#layout();
+	}
+
+	/** True when the shell view is a strip over the GUI, not a whole page. */
+	#stripMode(): boolean {
+		const state = this.#effective();
+		return this.#wantedPage() === "screen" && this.#guiShown && (state.mode === "banner" || state.mode === "notices");
 	}
 
 	#layout(): void {
 		const window = this.#window;
 		if (window === undefined || window.isDestroyed()) return;
 		const { width, height } = window.getContentBounds();
-		const strip = this.#state.mode === "banner" && this.#guiShown;
-		this.#gui?.setBounds({ x: 0, y: strip ? BANNER_HEIGHT : 0, width, height: strip ? Math.max(0, height - BANNER_HEIGHT) : height });
-		this.#shell?.setBounds(this.#state.mode === "banner" && this.#guiShown ? { x: 0, y: 0, width, height: BANNER_HEIGHT } : { x: 0, y: 0, width, height });
+		const strip = this.#stripMode();
+		const stripHeight = strip ? (this.#effective().mode === "notices" ? this.#stripHeight : BANNER_HEIGHT) : 0;
+		this.#gui?.setBounds({ x: 0, y: stripHeight, width, height: Math.max(0, height - stripHeight) });
+		this.#shell?.setBounds(strip ? { x: 0, y: 0, width, height: stripHeight } : { x: 0, y: 0, width, height });
 	}
 
 	// ---- the GUI view's page security -----------------------------------------------------------------------------------
@@ -272,11 +366,51 @@ export class DeskWindow {
 		});
 		ipcMain.handle(CHANNELS.state, (event): ShellState => {
 			if (!this.#fromShell(event)) throw new Error("the state is for the shell page only");
-			return this.#state;
+			return this.#effective();
 		});
 		ipcMain.on(CHANNELS.action, (event, action: unknown) => {
-			if (!this.#fromShell(event) || action !== "retry") return;
-			this.#d.onAction("retry");
+			if (!this.#fromShell(event)) return;
+			if (action === "retry" || action === "repair") {
+				this.#d.onAction(action);
+				return;
+			}
+			if (typeof action !== "object" || action === null) return;
+			const a = action as { type?: unknown; id?: unknown; section?: unknown; height?: unknown };
+			if (a.type === "dismiss-notice" && a.id === "wsl") {
+				this.setNotices(this.#notices.filter((n) => n.id !== "wsl"));
+			} else if (a.type === "open-settings" && (SETTINGS_SECTIONS as readonly unknown[]).includes(a.section)) {
+				this.openSettings(a.section as SettingsSection);
+			} else if (a.type === "strip-height" && typeof a.height === "number" && Number.isFinite(a.height)) {
+				// The page measures its own rows; the window clamps the answer so a page cannot take the GUI's room.
+				const height = Math.min(Math.max(Math.round(a.height), BANNER_HEIGHT), MAX_STRIP_HEIGHT);
+				if (height !== this.#stripHeight) {
+					this.#stripHeight = height;
+					this.#layout();
+				}
+			}
+		});
+		ipcMain.handle(CHANNELS.locale, (event): Locale => {
+			if (!this.#fromShell(event)) throw new Error("the language is for the shell page only");
+			return this.#locale;
+		});
+		ipcMain.handle(CHANNELS.wizardState, (event): WizardView => {
+			if (!this.#fromShell(event)) throw new Error("the wizard state is for the shell page only");
+			return this.#d.wizardView();
+		});
+		ipcMain.handle(CHANNELS.wizardAct, async (event, action: unknown): Promise<void> => {
+			if (!this.#fromShell(event) || typeof action !== "object" || action === null || typeof (action as { type?: unknown }).type !== "string") return;
+			await this.#d.onWizardAction(action as WizardAction);
+		});
+		ipcMain.handle(CHANNELS.settingsState, (event): SettingsView => {
+			if (!this.#fromShell(event)) throw new Error("the settings state is for the shell page only");
+			return this.#d.settingsView(this.#section);
+		});
+		ipcMain.handle(CHANNELS.settingsAct, async (event, action: unknown): Promise<void> => {
+			if (!this.#fromShell(event) || typeof action !== "object" || action === null) return;
+			const a = action as SettingsAction;
+			if (a.type === "close") this.closeSettings();
+			else if (a.type === "section" && (SETTINGS_SECTIONS as readonly unknown[]).includes(a.section)) this.openSettings(a.section);
+			else if (a.type === "set-locale" && (a.locale === "en" || a.locale === "zh-TW")) await this.#d.onWizardAction({ type: "set-locale", locale: a.locale });
 		});
 	}
 }
