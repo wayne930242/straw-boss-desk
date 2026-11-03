@@ -474,6 +474,8 @@ export class Supervisor {
 			this.#slotDir = slotDir;
 			this.#announce(up.url, up.pid, "restart");
 		} catch (error) {
+			// The state is `failed` from here: a follower that stayed could run `up` and replace the failure screen with a GUI the state does not know (T8B-F005).
+			this.#stopFollower();
 			this.#fail(error);
 		}
 	}

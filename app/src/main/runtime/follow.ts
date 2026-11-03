@@ -1,6 +1,7 @@
 import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { request, type IncomingMessage } from "node:http";
 import { join } from "node:path";
+import { SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS, SlidingBudget } from "./budget.ts";
 import type { StartFailure } from "./failure.ts";
 
 // Follows the GUI of the sb server through token rotations, restarts and stops (spec: Runtime supervisor, Following the GUI; desk B7 plan, "The GUI URL and a rotation"). This is the
@@ -9,7 +10,9 @@ import type { StartFailure } from "./failure.ts";
 //   - restarts: the server's `pid` and `started` from `server.json` are kept, and a change is logged and handed to the host (the supervisor counts it and records the new pid);
 //   - the `view` of `gui.json` (`standard`, `geek` or `zen`) is handed to the host when it appears or changes, so the window's background follows it;
 //   - sleep: `pause` stops the ticks, and `resume` reads the folder again and gives the URL a grace period before the gone rule applies;
-//   - the host's words are kinds, not strings: banners are kinds and a failed `up` is a typed `StartFailure`, so the shell's screens say them in the catalog's language.
+//   - the host's words are kinds, not strings: banners are kinds and a failed `up` is a typed `StartFailure`, so the shell's screens say them in the catalog's language;
+//   - the gone rule has a budget: an `up` it ran that printed an address which still did not answer counts, and the fourth within 10 minutes shows the `restart-budget` screen
+//     instead of running `up` every ~12 s for ever (T8B-F003).
 // It reads `server.json` for `stopped`, `restarting`, `pid`, `started` and `gui: {port, token, stopped}`, with `gui.json` as the fallback for the GUI's port, token and `stopped`.
 // Both files are secrets: nothing here logs them or a URL's token. It never calls `cli.mjs status` (every call costs a PowerShell start on Windows). No Electron import: the window,
 // the screens and the `up` run are handed in, so the logic runs under plain Node.
@@ -151,6 +154,7 @@ export class Follower {
 	private graceUntil = 0; // after a resume, the gone rule stays off until this time
 	private pendingStart = false; // the Start button was pressed while a run was going: the next exclusive run starts the stack
 	private server: ServerIdentity | undefined; // the sb server as last seen; a change is a restart
+	private readonly goneBudget = new SlidingBudget(SERVER_RESTART_MAX, SERVER_RESTART_WINDOW_MS); // gone-rule `up` runs; reset by the Start button and by a new follower
 	private view: GuiView | undefined;
 	private viewSeen = false;
 	private timer: NodeJS.Timeout | undefined;
@@ -223,6 +227,7 @@ export class Follower {
 	/** The Start button of a shell screen: the same run as `gone`, also after a failure. */
 	async startFromScreen() {
 		this.giveUp = false;
+		this.goneBudget.reset();
 		this.failedTarget = undefined;
 		this.pendingStart = true;
 		await this.exclusive(() => this.tick());
@@ -338,7 +343,10 @@ export class Follower {
 		if (this.shown?.startsWith("banner:")) this.note(undefined);
 		if (!this.loaded) return; // a screen is showing and nothing new was recorded: the Start button is the way on
 		// live or gone: the URL in the window must answer.
-		if ((await probe(urlOf(this.loaded))) === 200) {
+		const answer = await probe(urlOf(this.loaded));
+		// A suspend that arrived while the probe was out: its answer (or its silence) says nothing about the GUI, and the gone rule must not run `up` for the sleep's gap (T8B-F002).
+		if (this.paused || this.stopped) return;
+		if (answer === 200) {
 			this.unansweredSince = undefined;
 			return;
 		}
@@ -377,6 +385,7 @@ export class Follower {
 	/** gone: run `up` once, then load its URL; a failure shows the failure screen and waits for the Start button. */
 	private async bringUp(why: string) {
 		if (this.stopped) return;
+		if (this.paused && why === "gone") return; // only the Start button runs `up` through a sleep
 		this.note("starting");
 		this.host.log("follow-up", { detail: why });
 		const r = await this.host.runUp();
@@ -400,5 +409,10 @@ export class Follower {
 		this.shown = undefined;
 		this.host.banner(undefined);
 		this.host.log("follow-up-done", { detail: `loaded port ${target.port}` });
+		// An `up` that answers `found` with an address that still does not answer would run again every goneMs + a tick: more than 3 in 10 minutes ends the loop with the screen and the Start button.
+		if (why === "gone" && this.goneBudget.hit(Date.now())) {
+			this.giveUp = true;
+			this.show("failed", { kind: "failed", failure: { kind: "restart-budget", reason: `the page did not answer after more than ${SERVER_RESTART_MAX} starts in 10 minutes` } });
+		}
 	}
 }

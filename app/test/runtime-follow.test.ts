@@ -238,6 +238,29 @@ describe("the follower (the kit's rules)", () => {
 		f.stop();
 	});
 
+	// T8B-F003. `up` answers `found` with the same address and the page still does not answer: without a budget `up` ran every ~goneMs for ever and the GUI never showed a screen.
+	it("stops running `up` when the page stays unanswered after 3 gone-rule starts, shows the restart-budget screen, and the Start button begins a fresh budget", async () => {
+		const { dir, write } = folder();
+		const dead = await listener(tok(4)); // answers 403 on any other token's path
+		const wrong = tok(6);
+		write("server.json", { pid: 1, gui: { port: dead.port, token: wrong } });
+		const h = fakeHost(async () => ({ ok: true, url: `http://127.0.0.1:${dead.port}/${wrong}/` }));
+		const f = new Follower(dir, h.host, `http://127.0.0.1:${dead.port}/${wrong}/`, timing, { pid: 1 });
+		f.start();
+		try {
+			await until("the budget screen", 8000, () => h.screens().some((s) => s.kind === "failed"));
+			const screen = h.screens().find((s) => s.kind === "failed");
+			assert.equal(screen?.kind === "failed" ? screen.failure.kind : "", "restart-budget");
+			assert.equal(h.upCalls, 4, "3 starts are inside the budget; the 4th ends it");
+			await sleep(timing.goneMs! * 3);
+			assert.equal(h.upCalls, 4, "no automatic `up` after the screen");
+			await f.startFromScreen();
+			await until("the Start button's `up`", 2000, () => h.upCalls === 5);
+		} finally {
+			f.stop();
+		}
+	});
+
 	it("gives up on a target that never answers once, and a Start press during a move is not lost", async () => {
 		const { dir, write } = folder();
 		const dead = await listener(tok(6));
@@ -465,6 +488,39 @@ describe("sleep and resume (spec: Crash and sleep)", () => {
 		assert.equal(h.upCalls, 0);
 		assert.deepEqual(h.screens(), []);
 		await back.close();
+	});
+
+	// T8B-F002. A tick already waiting for its probe when `suspend` arrives must not go on to the gone rule: the URL was down before the sleep, and the sleep's gap would pass the 10 s.
+	it("runs no `up` for a tick whose probe was out when the computer went to sleep", async () => {
+		const { dir, write } = folder();
+		let mode: "ok" | "refuse" | "hold" = "ok";
+		const held: Array<() => void> = [];
+		const token = tok(1);
+		const srv = createServer((req, res) => {
+			if (mode === "ok") return void res.writeHead(200).end("x");
+			if (mode === "refuse") return void res.writeHead(403).end("x");
+			held.push(() => res.writeHead(403).end("x"));
+		});
+		servers.push(srv);
+		await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+		const port = (srv.address() as { port: number }).port;
+		write("server.json", { pid: 1, gui: { port, token } });
+		const h = fakeHost();
+		const f = new Follower(dir, h.host, `http://127.0.0.1:${port}/${token}/`, timing, { pid: 1 });
+		f.start();
+		await sleep(150);
+		mode = "refuse";
+		await sleep(timing.goneMs! - 150); // unanswered for almost goneMs, still short of it
+		mode = "hold"; // the next tick's probe is out and silent
+		await until("a probe in flight", 2000, () => held.length > 0);
+		f.pause();
+		await sleep(250); // the gap: unansweredSince is now older than goneMs
+		for (const answer of held.splice(0)) answer();
+		await sleep(300);
+		f.stop();
+		assert.equal(h.upCalls, 0, "the probe that finished after suspend started no `up`");
+		assert.equal(h.logged("follow-gone"), 0);
+		for (const answer of held.splice(0)) answer();
 	});
 
 	it("reads the slot folder again at resume: a restart that happened during the sleep is seen", async () => {

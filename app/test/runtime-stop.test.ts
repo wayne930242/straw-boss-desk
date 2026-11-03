@@ -312,6 +312,38 @@ describe("a pi-straw-boss that is not verified (R8A-F001)", () => {
 	});
 });
 
+describe("a recorded sb server of an unverified package that leaves while the stop looks at it (T8B-F004)", () => {
+	it("is not reported as unverified when it exited between the verdict and the kill", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		// The verdict reads the process (it is there, its start time is the record's), and the process leaves before `kill` runs.
+		const inspect = w.procs.inspect.bind(w.procs);
+		w.procs.inspect = async (pids) => {
+			const answer = await inspect(pids);
+			w.procs.table.delete(200);
+			return answer;
+		};
+		const report = await runStop(w.deps);
+		assert.equal(report.unverifiedSb, null);
+		assert.equal(report.ok, true, report.notes.join("; "));
+		assert.ok(!w.log.some((l) => l.event === "sb-server-unverified"));
+	});
+
+	it("is still reported when the kill failed and the process runs on", async () => {
+		const w = world();
+		await w.startFile.update(() => w.record);
+		w.deps.sbPackageVerified = false;
+		w.procs.kill = (pid) => {
+			w.procs.killed.push(pid);
+			return false; // refused by the OS: the process stays
+		};
+		const report = await runStop(w.deps);
+		assert.equal(report.unverifiedSb, 200);
+		assert.equal(report.ok, false);
+	});
+});
+
 describe("the intercom broker", () => {
 	const brokerFile = (layout: ReturnType<typeof testLayout>) => join(layout.agent, "intercom", "broker.pid");
 

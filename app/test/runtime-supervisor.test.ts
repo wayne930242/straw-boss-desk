@@ -917,6 +917,36 @@ describe("the follower inside the supervisor (task 8b)", () => {
 		await w.supervisor.stop();
 	});
 
+	// T8B-F005. The state is `failed` after a Herdr restart that did not come back; a follower that stayed could run `up` and put a GUI over the failure screen.
+	it("stops following when the Herdr restart fails: the gone rule runs no `up` under the failure screen", async () => {
+		let failSpawn = false;
+		const w = world({
+			follow: FOLLOW,
+			onSpawn: () => {
+				if (failSpawn) throw new Error("herdr could not be started again");
+			},
+		});
+		const a = await guiListener(TOKEN);
+		w.upQueue.push(w.upOk({ url: a.url }));
+		writeServer(w, { pid: 200, gui: { port: a.port, token: TOKEN } });
+		await w.supervisor.start();
+		failSpawn = true;
+		w.children[0]?.end(137);
+		await until(() => w.supervisor.state === "failed", "the failed state");
+		assert.ok(w.events.some((e) => e.type === "failure"));
+		const ups = w.order.filter((o) => o === "up").length;
+		const urls = urlEvents(w.events).length;
+		await a.close(); // the GUI is gone: the gone rule would call `up`
+		await new Promise((r) => setTimeout(r, FOLLOW.timing.goneMs * 3));
+		try {
+			assert.equal(w.order.filter((o) => o === "up").length, ups, "no `up` after the failure");
+			assert.equal(urlEvents(w.events).length, urls, "no GUI replaced the failure screen");
+			assert.equal(w.supervisor.state, "failed");
+		} finally {
+			await w.supervisor.stop(); // ends a follower that a failing assertion left running
+		}
+	});
+
 	it("stops following when the stack stops: a pid that changes afterwards is not looked at", async () => {
 		const w = world({ follow: FOLLOW });
 		const a = await guiListener(TOKEN);
