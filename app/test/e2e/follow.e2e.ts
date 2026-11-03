@@ -728,7 +728,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			if (quit.ok !== true) {
 				// Upstream seam U13: a pi that quits in a Herdr tab starts pi-straw-boss's pane-balance helper (`balance.mjs after-close`), which waits up to 30 s for a pane that cannot close
 				// any more. The base the folder hook opened has such a pi, so the stop may report that helper and nothing else: no refusal of the kill rule, and every program it reports a
-				// detached one (parent 1) with a base's folder as its working folder, born after Herdr exited. Any other report fails.
+				// detached one (parent 1, or the quitting pi that started it) with a base's folder as its working folder, born after Herdr exited. Any other report fails.
 				assert.deepEqual(stop.refused, [], `the stop refused to kill something: ${JSON.stringify(stop)}`);
 				const reported = (stop.leftovers ?? []) as Array<{ pid: number; file: string }>;
 				assert.ok(reported.length > 0, `the stop was not ok and reported no program: ${JSON.stringify(stop)}`);
@@ -739,11 +739,14 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 					const v = seen.get(l.pid);
 					const why = `${l.pid} ${l.file}: ${JSON.stringify(v)}`;
 					assert.ok(v !== undefined && !isWindows, `a program the stop reported was never looked at (${why})`);
-					assert.equal(v.ppid, 1, `not detached (${why})`);
+					// Detached means the parent is gone or going: parent 1, or the quitting pi that started it, which the sampler saw leave within a second of the helper's birth (run 41593065968:
+					// `ps` read the helper while its parent pi still ended, so the parent pid was the pi's).
+					const parent = v.ppid === null ? undefined : seen.get(v.ppid);
+					assert.ok(v.ppid === 1 || (parent !== undefined && parent.last <= v.first + 1000), `not detached (${why}; parent ${JSON.stringify(parent)})`);
 					assert.ok(v.cwd !== null && realpathSync(v.cwd).startsWith(realpathSync(workFolder)) && realpathSync(v.cwd).startsWith(home), `its working folder is not a base's (${why})`);
 					assert.ok(v.bornAt >= exited - 1500, `born before Herdr exited (${why}; Herdr exited at ${exited})`);
 				}
-				console.log(`U13: the stop reported ${reported.length} pane-balance helper(s) (${reported.map((l) => l.pid).join(", ")}); each is detached, in a base's folder, and born after Herdr exited, and all had left when the wait ended`);
+				console.log(`U13: the stop reported ${reported.length} pane-balance helper(s) (${reported.map((l) => l.pid).join(", ")}); each is detached (or was read while its quitting parent left), in a base's folder, and born after Herdr exited, and all had left when the wait ended`);
 			}
 		} finally {
 			sampling = false;
