@@ -93,7 +93,9 @@ describe(`packaged ${kind} app`, { skip }, () => {
 		assert.equal(await page.locator("button[data-locale='en']").getAttribute("aria-pressed"), "true");
 		await shot(page, "welcome-en");
 
+		// A language button asks main, which sends the view back: the page changes a moment after the click, so the test waits for the heading.
 		await page.locator("button[data-locale='zh-TW']").click();
+		await page.waitForFunction((title) => document.querySelector("h1")?.textContent === title, zhTW.welcome.title, { timeout: 15_000 });
 		assert.equal(await page.locator("h1").innerText(), zhTW.welcome.title);
 		assert.equal(await page.locator("html").getAttribute("lang"), "zh-TW");
 		assert.equal(await page.title(), zhTW.app.name);
@@ -101,6 +103,7 @@ describe(`packaged ${kind} app`, { skip }, () => {
 		await shot(page, "welcome-zh-TW");
 
 		await page.locator("button[data-locale='en']").click();
+		await page.waitForFunction((title) => document.querySelector("h1")?.textContent === title, en.welcome.title, { timeout: 15_000 });
 		assert.equal(await page.locator("h1").innerText(), en.welcome.title);
 	});
 
