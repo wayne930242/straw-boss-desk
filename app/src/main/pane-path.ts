@@ -104,6 +104,16 @@ export async function checkPaneLookups(input: { run: CommandRunner; locate: Loca
 	return walkPanePath({ machine, user, exists: input.exists, env: input.env });
 }
 
+/**
+ * The WSL check stubbed for the e2e (test code, spec: task 9 anchor): in a development build, `SBD_TEST_WSL_BASH` read at the time of the check says that a pane's `bash` would be that file, so a
+ * test can turn the case on and off in a running app (`electronApp.evaluate` sets the variable in main). A release build never reads it. Null: no stub, run the real check.
+ */
+export function stubbedPaneFindings(env: Readonly<Record<string, string | undefined>>, dev: boolean): PaneFindings | null {
+	const bash = env.SBD_TEST_WSL_BASH;
+	if (!dev || bash === undefined || bash === "") return null;
+	return { firstBash: bash, wslBash: true, machinePi: null, machineBun: null, machineBunx: null };
+}
+
 /** The sentence of the shell banner and the welcome screen (spec: Panes on Windows); the catalog carries zh-TW from the warning's `kind`. */
 export const WSL_SENTENCE = "On this computer, agents cannot hand work to helper agents, because Windows Subsystem for Linux provides its own bash. Everything else works.";
 

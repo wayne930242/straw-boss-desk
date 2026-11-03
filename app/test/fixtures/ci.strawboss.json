@@ -1,0 +1,14 @@
+{
+  "recipe": 1,
+  "id": "ci-wizard",
+  "name": "CI 測試團隊",
+  "version": "1.0.0",
+  "forges": [
+    { "kind": "github", "host": "github.com" },
+    { "kind": "gitlab", "host": "gitlab.com" }
+  ],
+  "repos": [{ "url": "https://github.com/octocat/Hello-World.git", "folder": "hello-world", "label": "Hello World" }],
+  "linear": { "enabled": true },
+  "tools": [],
+  "instructions": "- 這是 CI 測試用的團隊指引。"
+}

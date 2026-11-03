@@ -33,7 +33,7 @@ function makeRoot(): { parent: string; root: string } {
 async function shellPage(app: ElectronApplication): Promise<Page> {
 	const deadline = Date.now() + 30_000;
 	while (Date.now() < deadline) {
-		const page = app.windows().find((w) => w.url().endsWith("welcome.html"));
+		const page = app.windows().find((w) => w.url().endsWith("wizard.html"));
 		if (page) { await page.waitForLoadState("domcontentloaded"); return page; }
 		await sleep(250);
 	}
@@ -121,10 +121,9 @@ describe(`packaged ${kind} app`, { skip }, () => {
 		assert.deepEqual(pageErrors, []);
 	});
 
-	it("runs no infinite animation under reduced motion, and has one without it", async () => {
+	it("runs no infinite animation under reduced motion", async () => {
+		// The welcome step has no spinner; the install step's working spinner is checked in the wizard e2e (wizard.e2e.ts), where it exists to be turned off.
 		const running = () => page.evaluate(() => document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations === Infinity).length);
-		await page.emulateMedia({ reducedMotion: "no-preference" });
-		assert.ok((await running()) >= 1, "the welcome screen should pulse when motion is allowed");
 		await page.emulateMedia({ reducedMotion: "reduce" });
 		assert.equal(await running(), 0);
 		await page.emulateMedia({ reducedMotion: null });

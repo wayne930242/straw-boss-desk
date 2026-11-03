@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { describe, it } from "node:test";
-import { checkPaneLookups, expandPercent, MACHINE_ENVIRONMENT_KEY, parseRegPath, pathEntries, readPaneRegistry, USER_ENVIRONMENT_KEY, walkPanePath } from "../src/main/pane-path.ts";
+import { checkPaneLookups, expandPercent, MACHINE_ENVIRONMENT_KEY, parseRegPath, pathEntries, readPaneRegistry, stubbedPaneFindings, USER_ENVIRONMENT_KEY, walkPanePath } from "../src/main/pane-path.ts";
 import { createWinLocate } from "../src/main/platform/win.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
 import type { CommandRunner } from "../src/main/platform/types.ts";
@@ -133,5 +133,14 @@ describe("the real reg.exe, on Windows", { skip: process.platform === "win32" ? 
 		assert.ok(read.user === null || typeof read.user === "string");
 		const found = await checkPaneLookups({ run: execRunner(), locate, exists: existsSync, env: process.env });
 		assert.equal(typeof found.wslBash, "boolean");
+	});
+});
+
+describe("the e2e's WSL stub", () => {
+	it("answers only in a development build and only while the variable is set", () => {
+		assert.deepEqual(stubbedPaneFindings({ SBD_TEST_WSL_BASH: "C:\\Windows\\System32\\bash.exe" }, true), { firstBash: "C:\\Windows\\System32\\bash.exe", wslBash: true, machinePi: null, machineBun: null, machineBunx: null });
+		assert.equal(stubbedPaneFindings({ SBD_TEST_WSL_BASH: "C:\\x\\bash.exe" }, false), null, "a release build never reads it");
+		assert.equal(stubbedPaneFindings({}, true), null);
+		assert.equal(stubbedPaneFindings({ SBD_TEST_WSL_BASH: "" }, true), null);
 	});
 });

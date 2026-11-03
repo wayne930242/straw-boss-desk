@@ -19,7 +19,7 @@ import { WizardController } from "./wizard/controller.ts";
 import type { ValidateRecipe } from "./wizard/recipe-intake.ts";
 import { createPlatform } from "./platform/index.ts";
 import { execRunner } from "./platform/exec.ts";
-import { checkPaneLookups } from "./pane-path.ts";
+import { checkPaneLookups, stubbedPaneFindings, type PaneFindings } from "./pane-path.ts";
 import { hasStopStack } from "./runtime/args.ts";
 import { loadStartConfig } from "./runtime/config.ts";
 import { RuntimeLog, runtimeRedactor } from "./runtime/log.ts";
@@ -50,6 +50,16 @@ const platform = createPlatform();
 const run = execRunner();
 
 // One `utilityProcess` per engine run (spec: Decisions, Where the engine runs); `engine.js` starts its message loop when it finds a parent port.
+/**
+ * What a pane's `bash` would resolve to (the WSL check): the real walk on Windows. A development build also answers the e2e's stub (`stubbedPaneFindings`), on macOS too, where no real check exists,
+ * so the welcome line and the banner are proved on both runners.
+ */
+const NO_FINDINGS: PaneFindings = { firstBash: null, wslBash: false, machinePi: null, machineBun: null, machineBunx: null };
+const paneCheck: (() => Promise<PaneFindings>) | undefined =
+	layout.platform === "win32" || identity.kind === "dev"
+		? async () => stubbedPaneFindings(process.env, identity.kind === "dev") ?? (layout.platform === "win32" ? await checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) : NO_FINDINGS)
+		: undefined;
+
 const engineHost = new UtilityEngineHost({
 	// SAFETY: a `UtilityProcess` has every member of `UtilityChild`; the cast only narrows its `on` overloads to the two events the host listens to.
 	fork: () => utilityProcess.fork(join(import.meta.dirname, "bootstrap", "engine.js"), [], { serviceName: "straw-boss-desk-engine", stdio: "ignore" }) as unknown as UtilityChild,
@@ -70,8 +80,8 @@ const supervisor = new Supervisor({
 	resolveProxy: (url) => session.defaultSession.resolveProxy(url),
 	// The wizard runs the engine as a `utilityProcess`; a lock it holds is ours, so Repair leaves a running install's lock alone.
 	isOurEngine: (pid) => engineHost.pid === pid,
-	// Windows: what a pane's `bash` would resolve to, at every start (the WSL notice).
-	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
+	// What a pane's `bash` would resolve to, at every start (the WSL notice).
+	...(paneCheck === undefined ? {} : { checkPane: paneCheck }),
 });
 
 let desk: DeskWindow | undefined;
@@ -104,7 +114,7 @@ const wizard = new WizardController({
 		const picked = window === undefined ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options);
 		return picked.canceled ? null : (picked.filePaths[0] ?? null);
 	},
-	...(layout.platform === "win32" ? { checkPane: () => checkPaneLookups({ run, locate: platform.locate, exists: existsSync, env: process.env }) } : {}),
+	...(paneCheck === undefined ? {} : { checkPane: paneCheck }),
 	logTail: (count) => tailLines(join(layout.logs, "bootstrap.jsonl"), count).map((line) => runtimeLog.redactor.redact(line)),
 	log: (fields) => runtimeLog.event(fields),
 });
