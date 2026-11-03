@@ -727,6 +727,29 @@ describe("a Herdr server that ends on its own", () => {
 		assert.equal(w.children.length, 4, "no fifth Herdr");
 	});
 
+	it("counts an `up` that started another sb server as a restart of it: the fourth within 10 minutes fails, and an `up` that only found the server counts for nothing", async () => {
+		const w = world();
+		await w.supervisor.start();
+		for (let i = 0; i < 6; i++) {
+			w.upQueue.push(w.upOk({ server: "found" }));
+			await w.supervisor.upOnce();
+		}
+		assert.ok(!w.events.some((e) => e.type === "failure"), "finding the server again is no restart");
+		for (let i = 0; i < 3; i++) {
+			w.upQueue.push(w.upOk({ server: "restarted" }));
+			await w.supervisor.upOnce();
+			w.clock.advance(1000);
+		}
+		assert.equal(w.supervisor.state, "running", "three restarts are inside the budget");
+		assert.ok(!w.events.some((e) => e.type === "failure"));
+		w.upQueue.push(w.upOk({ server: "started" }));
+		await w.supervisor.upOnce();
+		const failure = w.events.find((e): e is Extract<SupervisorEvent, { type: "failure" }> => e.type === "failure")?.failure;
+		assert.equal(failure?.kind, "restart-budget");
+		assert.match(failure?.reason ?? "", /sb server restarted more than 3 times in 10 minutes/);
+		assert.equal(w.supervisor.state, "failed");
+	});
+
 	it("is not restarted while the stack is being stopped", async () => {
 		const w = world();
 		await w.supervisor.start();
