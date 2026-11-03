@@ -11,7 +11,7 @@ import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication } from "playwright-core";
 import { createPlatform } from "../../src/main/platform/index.ts";
-import { loadStartConfig } from "../../src/main/runtime/config.ts";
+import { homeBaseDir, loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, WorldHerdr, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
@@ -115,21 +115,105 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	const underTools = () => platform.processes.listUnder(world.layout.tools.root);
 	const herdrBinary = () => childEnvOf(world).HERDR_BIN_PATH as string;
 	const herdr = (args: string[], timeoutMs = 30_000) => run(herdrBinary(), args, { env: childEnvOf(world), timeoutMs });
-	/**
-	 * A line typed into the home base's pi, as its user does: `agent prompt` refuses a pane whose agent Herdr does not call a named one (the tower's pi in a base is
-	 * not), so the line goes in as keys once the pane's agent is idle.
-	 */
-	async function promptBase(text: string): Promise<void> {
-		const pane = startRecord()?.base?.pane as string;
-		assert.ok(pane, "start.json names the home base's pane");
-		await until("the base's pi to be idle", 180_000, async () => {
-			const agents = await herdr(["agent", "list"], 20_000);
-			return agents.code === 0 && new RegExp(`"agent_status":"idle"[^}]*"pane_id":"${pane}"|"pane_id":"${pane}"[^}]*"agent_status":"idle"`).test(agents.stdout);
-		});
-		await sleep(1500);
-		await new WorldHerdr(world).type(pane, text);
-	}
 	const herdrAnswers = async () => (await herdr(["workspace", "list"], 15_000)).code === 0;
+	const paneIds = async (): Promise<string[]> => [...(await herdr(["pane", "list"], 20_000)).stdout.matchAll(/"pane_id":"([^"]+)"/g)].map((m) => m[1] as string);
+	const toolPids = async (): Promise<Set<number>> => new Set((await underTools()).map((p) => p.pid));
+
+	interface RpcAnswer {
+		id?: string;
+		type?: string;
+		success?: boolean;
+		error?: string;
+		data?: { output?: string; exitCode?: number };
+	}
+	/**
+	 * A pi started in a pane of a base as the pane starts it (`pi`, by name, in RPC mode): its stdout goes to a file the test reads, and the test types the RPC commands into the pane.
+	 * It is a member of the base like any pi a PM opens, so its `/boss` commands are the PM's (the base's own pane is the tower's prompt, which takes no `/boss`).
+	 */
+	interface RpcPi {
+		pane: string;
+		lines(): unknown[];
+		/** Types one RPC command into the pane. */
+		send(command: Record<string, unknown>): Promise<void>;
+		/** Types one RPC command and waits for its response. */
+		call(command: Record<string, unknown> & { id: string }, waitMs: number): Promise<RpcAnswer>;
+		/** What the runner can show of a run that went nowhere: the last events, and the other panes of the workspace with the end of what they print. */
+		dump(): Promise<void>;
+		close(): Promise<void>;
+	}
+	async function openRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
+		const h = new WorldHerdr(world);
+		const split = await h.cli(["pane", "split", splitFrom, "--direction", "right", "--cwd", cwd, "--no-focus"]);
+		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
+		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
+		const out = join(world.base, `${label}.jsonl`);
+		// A shell needs a moment before it reads a typed line.
+		await sleep(isWindows ? 4000 : 1500);
+		// The pane starts pi by name, as Herdr's `agent start` does; its stdout goes to a file the test reads, and its stdin is the pane, where the test types the RPC commands.
+		await h.type(pane, isWindows ? `cmd /d /c "pi --mode rpc --offline > ${out}"` : `pi --mode rpc --offline > '${out}'`);
+		await until(`pi to start in the pane (${label})`, 120_000, () => existsSync(out) || undefined);
+		const lines = (): unknown[] =>
+			(existsSync(out) ? readFileSync(out, "utf8").split(/\r?\n/) : []).flatMap((l) => {
+				try {
+					return l.startsWith("{") ? [JSON.parse(l) as unknown] : [];
+				} catch {
+					return [];
+				}
+			});
+		const answerTo = (id: string) => lines().find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
+		const send = (command: Record<string, unknown>) => h.type(pane, JSON.stringify(command));
+		return {
+			pane,
+			lines,
+			send,
+			async call(command, waitMs) {
+				await send(command);
+				return until(`pi's answer to ${command.id} (${label})`, waitMs, () => answerTo(command.id));
+			},
+			async dump() {
+				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
+				console.log(`--- ${label}: the last events ---\n${events.join("\n")}`);
+				const panes = await h.cli(["pane", "list"], 20_000);
+				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 1500)}`);
+				for (const id of await paneIds()) {
+					if (id === pane) continue;
+					const read = await h.cli(["pane", "read", id, "--lines", "25"], 20_000);
+					console.log(`--- pane ${id} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-1800)}`);
+				}
+			},
+			close: async () => void (await h.cli(["pane", "close", pane]).catch(() => undefined)),
+		};
+	}
+	/**
+	 * Closes every pane that was not there at `known` and waits until the programs those panes ran have left `<root>/tools`: the quit check below has to find nothing the checks started,
+	 * and a pi whose pane was closed a moment ago is still ending.
+	 */
+	async function settlePanes(known: readonly string[], programsBefore: ReadonlySet<number>): Promise<void> {
+		for (const id of await paneIds()) if (!known.includes(id)) await herdr(["pane", "close", id], 20_000).catch(() => undefined);
+		await until("the closed panes' programs to leave the tools folder", 90_000, async () => {
+			const now = [...(await toolPids())].filter((pid) => !programsBefore.has(pid));
+			return now.length === 0 ? true : undefined;
+		}).catch((error: Error) => console.log(`panes settle: ${error.message}`));
+	}
+
+	/** The member pi of the home base the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
+	let member: RpcPi | undefined;
+	let bossSeq = 0;
+	async function boss(line: string): Promise<void> {
+		const home = startRecord()?.base?.pane as string;
+		assert.ok(home, "start.json names the home base's pane");
+		member ??= await openRpcPi("member", home, homeBaseDir(loadStartConfig(world.layout, world.home)));
+		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 120_000).catch(async (error: Error) => {
+			await member?.dump();
+			throw error;
+		});
+		assert.equal(answer.success, true, `/boss ${line}: ${JSON.stringify(answer)}`);
+	}
+	async function closeMember(): Promise<void> {
+		const open = member;
+		member = undefined;
+		await open?.close();
+	}
 
 	/** Runs `code` in the page of the first web contents whose URL passes `test`; `test` is source text, since it runs inside the app. */
 	const inPage = (urlTest: "gui" | "screen", code: string): Promise<unknown> =>
@@ -258,7 +342,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 
 	check("shows the shell screen after `/boss gui stop`, and Start brings the GUI back", async () => {
 		const since = Date.now();
-		await promptBase("/boss gui stop");
+		await boss("gui stop");
 		await until("the gui-stopped screen", 90_000, async () => (await shellView())?.screen === "gui-stopped");
 		assert.equal(await shellVisible(), true);
 		await inPage("screen", `document.getElementById('retry').click()`);
@@ -271,13 +355,17 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	});
 
 	check("paints the window in the colour of the server's default view when it changes", async () => {
-		const set = (view: string) => promptBase(`/boss gui view ${view}`);
-		await set("zen");
-		await until("the Zen background", 60_000, async () => /14110e/i.test(String(await background())) || undefined);
-		await set("geek");
-		await until("the geek background", 60_000, async () => /000000/.test(String(await background())) || undefined);
-		await set("standard");
-		await until("the standard background", 60_000, async () => /16161e/i.test(String(await background())) || undefined);
+		try {
+			await boss("gui view zen");
+			await until("the Zen background", 60_000, async () => /14110e/i.test(String(await background())) || undefined);
+			await boss("gui view geek");
+			await until("the geek background", 60_000, async () => /000000/.test(String(await background())) || undefined);
+			await boss("gui view standard");
+			await until("the standard background", 60_000, async () => /16161e/i.test(String(await background())) || undefined);
+		} finally {
+			// The next checks kill and restart the sb server: a pi session of the base would look for it too.
+			await closeMember();
+		}
 	});
 
 	check("runs no `up` when the URL is down across an emitted suspend and resume, and follows the server back", async () => {
@@ -422,50 +510,25 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	check("resolves gh, git and pi in a pane of the base to the app's folders, and a subagent does too", async () => {
 		assert.ok(base, "the base was opened");
 		const repo = join(workFolder, "e2e-repo");
-		const h = new WorldHerdr(world);
-		const split = await h.cli(["pane", "split", base.pane, "--direction", "right", "--cwd", repo, "--no-focus"]);
-		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
-		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
-		const out = join(world.base, "parent.jsonl");
+		const knownPanes = await paneIds();
+		const programsBefore = await toolPids();
+		const parent = await openRpcPi("parent", base.pane, repo);
 		try {
-			// A shell needs a moment before it reads a typed line.
-			await sleep(isWindows ? 4000 : 1500);
-			// The pane starts pi by name, as Herdr's `agent start` does; its stdout goes to a file the test reads, and its stdin is the pane, where the test types the RPC commands.
-			await h.type(pane, isWindows ? `cmd /d /c "pi --mode rpc --offline > ${out}"` : `pi --mode rpc --offline > '${out}'`);
-			await until("pi to start in the pane", 120_000, () => existsSync(out) || undefined);
-			const lines = (): unknown[] =>
-				(existsSync(out) ? readFileSync(out, "utf8").split(/\r?\n/) : []).flatMap((l) => {
-					try {
-						return l.startsWith("{") ? [JSON.parse(l) as unknown] : [];
-					} catch {
-						return [];
-					}
-				});
-			const answerTo = (id: string) => lines().find((l) => (l as { id?: string; type?: string }).id === id && (l as { type?: string }).type === "response") as { success?: boolean; data?: { output?: string; exitCode?: number } } | undefined;
-			// Typed at once: the pane's terminal holds the line until pi reads its stdin.
-			await h.type(pane, JSON.stringify({ id: "lookup", type: "bash", command: LOOKUP_COMMAND }));
-			const lookup = await until("pi's bash tool to answer", 180_000, () => answerTo("lookup"));
+			const lookup = await parent.call({ id: "lookup", type: "bash", command: LOOKUP_COMMAND }, 180_000);
 			assert.equal(lookup.success, true, JSON.stringify(lookup));
 			const resolved = resolutions(lookup.data?.output ?? "");
 			assertAppFolders(resolved, ["gh", "git", "pi"]);
 			console.log(`pane resolves: ${JSON.stringify(Object.fromEntries(Object.entries(resolved).map(([k, v]) => [k, v.replace(/[^\x20-\x7e]/g, "?")])))}`);
 
-			// One subagent through the scripted stub: the parent calls `subagent`, the child runs the lookup in its bash tool, and the parent hears of its completion.
-			await h.type(pane, JSON.stringify({ id: "dispatch", type: "prompt", message: `${SUBAGENT_MARKER} go` }));
+			// One subagent through the scripted stub: the parent calls `subagent`, the child runs the lookup in its bash tool, and the parent hears of its completion. The `bash`
+			// command above makes pi run a turn of its own (pi-robot-hand's follow-up), so the prompt is queued behind it when that turn still runs.
+			const dispatched = await parent.call({ id: "dispatch", type: "prompt", message: `${SUBAGENT_MARKER} go`, streamingBehavior: "followUp" }, 60_000);
+			assert.equal(dispatched.success, true, JSON.stringify(dispatched));
 			const heard = await until("the parent to hear of the child", 300_000, () => {
-				const all = strings(lines());
+				const all = strings(parent.lines());
 				return all.find((s) => s.includes(`Sub-agent "${CHILD_NAME}"`) && /completed|failed/.test(s));
 			}).catch(async (error: Error) => {
-				// What the runner can show of a dispatch that went nowhere: the parent's last events, and the other panes of the workspace with the end of what they print.
-				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
-				console.log(`--- the parent's last events ---\n${events.join("\n")}`);
-				const panes = await h.cli(["pane", "list"], 20_000);
-				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 1500)}`);
-				for (const match of panes.stdout.matchAll(/"pane_id":"([^"]+)"/g)) {
-					if (match[1] === pane || match[1] === base?.pane) continue;
-					const read = await h.cli(["pane", "read", match[1] as string, "--lines", "25"], 20_000);
-					console.log(`--- pane ${match[1]} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-1800)}`);
-				}
+				await parent.dump();
 				throw error;
 			});
 			assert.match(heard, new RegExp(`Sub-agent "${CHILD_NAME}" completed`), `the child's result: ${heard.slice(0, 600)}`);
@@ -474,7 +537,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			assertAppFolders(child, ["gh", "git", "pi"]);
 			if (isWindows) assertAppFolders(child, ["bash"]);
 		} finally {
-			await h.cli(["pane", "close", pane]).catch(() => undefined);
+			await settlePanes(knownPanes, programsBefore);
 		}
 	});
 
