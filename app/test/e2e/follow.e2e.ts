@@ -5,13 +5,11 @@
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication } from "playwright-core";
-import { binShim } from "../../src/main/bootstrap/stages/pi.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { homeBaseDir, loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
@@ -185,7 +183,10 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		const feeder = join(world.base, "feed-input.mjs");
 		if (isWindows) {
 			// The first prompt means PowerShell has loaded; a line typed before it is read by a shell that is not ready for it.
-			await until(`the shell's prompt in the pane (${label})`, 90_000, () => promptShown(h, pane)).catch((error: Error) => console.log(`${label}: ${error.message}; typing anyway`));
+			await until(`the shell's prompt in the pane (${label})`, 40_000, () => promptShown(h, pane)).catch(async (error: Error) => {
+				const screen = await h.cli(["pane", "read", pane, "--lines", "8"], 20_000);
+				console.log(`${label}: ${error.message}; the pane shows ${JSON.stringify(screen.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-300))}; typing anyway`);
+			});
 			await sleep(1000);
 			writeFileSync(input, "");
 			writeFileSync(feeder, FEEDER);
@@ -294,82 +295,29 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	}
 
 	/**
-	 * A pi the PM runs for the `/boss` commands, started by the test with the stack's environment in the home base's folder, as `rpcCommands` starts one (Windows: `pi` by name
-	 * through the shims folder; macOS: the private prefix). It runs outside Herdr: `/boss gui stop` and `/boss gui view` need the sb server, not a pane, and a pi started in a
-	 * pane of the home base was silent or ended at once on the Windows runners, in the pane and not in pi (`pi --version` and `pi < NUL` ran fine in the same pane).
+	 * The pi the `/boss` commands run in: a pi in a split pane of the base the folder hook opened (a pi outside Herdr answers a `/boss gui` command with success and does nothing,
+	 * since its session has no way to the sb server; one in a pane of the home base was silent or ended at once on the Windows runners, in the pane and not in pi, while the panes
+	 * of this base always ran one). Opened by the first check that needs it, closed by `closeMember`.
 	 */
-	interface MemberPi {
-		call(command: Record<string, unknown> & { id: string }, waitMs: number): Promise<RpcAnswer>;
-		dump(): void;
-		close(): Promise<void>;
-	}
-	async function openMemberPi(): Promise<MemberPi> {
-		const system32 = join(world.appEnv.SystemRoot ?? "C:\\Windows", "System32");
-		const cwd = homeBaseDir(loadStartConfig(world.layout, world.home));
-		const child = isWindows
-			? spawn(join(system32, "cmd.exe"), ["/d", "/c", "pi", "--mode", "rpc", "--no-session", "--offline"], { env: { ...childEnvOf(world, []), PATH: [world.layout.tools.shims, system32].join(";") }, cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
-			: spawn(binShim(world.layout, "pi"), ["--mode", "rpc", "--no-session", "--offline"], { env: childEnvOf(world, []), cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-		const lines: unknown[] = [];
-		let pending = "";
-		let stderr = "";
-		let exited: string | null = null;
-		child.on("exit", (code, signal) => void (exited = `code ${code} signal ${signal}`));
-		child.on("error", (error) => void (exited = `error ${error.message}`));
-		child.stdin?.on("error", () => {});
-		child.stderr?.on("data", (chunk: Buffer) => void (stderr += chunk.toString("utf8")));
-		child.stdout?.on("data", (chunk: Buffer) => {
-			pending += chunk.toString("utf8");
-			const parts = pending.split(/\r?\n/);
-			pending = parts.pop() ?? "";
-			for (const l of parts) {
-				try {
-					if (l.startsWith("{")) lines.push(JSON.parse(l));
-				} catch {
-					// Not a record.
-				}
-			}
-		});
-		const answerTo = (id: string) => lines.find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
-		const member: MemberPi = {
-			async call(command, waitMs) {
-				child.stdin?.write(`${JSON.stringify(command)}\n`);
-				return until(`pi's answer to ${command.id} (member)`, waitMs, () => {
-					if (exited !== null && !answerTo(command.id)) throw new Error(`the member pi ended (${exited})`);
-					return answerTo(command.id);
-				});
-			},
-			dump() {
-				const events = lines.slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
-				console.log(`--- member pi: ${lines.length} records, ${exited === null ? "running" : `ended (${exited})`}; the last ones ---\n${events.join("\n")}\n--- member pi: stderr ---\n${stderr.replace(/[^\x20-\x7e\n]/g, "?").slice(-1500)}`);
-			},
-			async close() {
-				child.stdin?.end();
-				const grace = Date.now() + 5000;
-				while (Date.now() < grace && exited === null) await sleep(200);
-				if (exited === null && child.pid !== undefined) {
-					if (isWindows) await run(join(system32, "taskkill.exe"), ["/T", "/F", "/PID", String(child.pid)], { env: {}, timeoutMs: 30_000 });
-					else child.kill("SIGKILL");
-				}
-			},
-		};
-		await member.call({ id: "ready-member", type: "get_state" }, 120_000).catch((error: Error) => {
-			member.dump();
-			void member.close();
-			throw error;
-		});
-		return member;
-	}
-
-	/** The member pi the `/boss` commands run in: opened by the first check that needs it, closed by `closeMember`. */
-	let member: MemberPi | undefined;
+	let member: RpcPi | undefined;
 	let bossSeq = 0;
 	async function boss(line: string): Promise<void> {
-		member ??= await openMemberPi();
-		const answer = await member.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch((error: Error) => {
-			member?.dump();
+		assert.ok(base, "the base was opened");
+		member ??= await openRpcPi("member", base.pane, join(workFolder, "e2e-repo"));
+		const open = member;
+		const seen = open.lines().length;
+		const answer = await open.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch(async (error: Error) => {
+			await open.dump();
 			throw error;
 		});
 		assert.equal(answer.success, true, `/boss ${line}: ${JSON.stringify(answer)}`);
+		// What pi-straw-boss told the user of this command (it answers "success" for a command that said it could not do its work).
+		const told = open
+			.lines()
+			.slice(seen)
+			.filter((l) => (l as { type?: string; method?: string }).type === "extension_ui_request" && (l as { method?: string }).method === "notify") as Array<{ message?: string; notifyType?: string }>;
+		for (const n of told) console.log(`/boss ${line} told (${n.notifyType ?? "info"}): ${String(n.message).replace(/[^\x20-\x7e]/g, "?").slice(0, 300)}`);
+		assert.deepEqual(told.filter((n) => n.notifyType === "error").map((n) => n.message), [], `/boss ${line} reported an error`);
 	}
 	async function closeMember(): Promise<void> {
 		const open = member;
@@ -503,6 +451,48 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		console.log(`the killed sb server was back after ${((Date.now() - began) / 1000).toFixed(1)} s`);
 	});
 
+	check("opens a base under the work folder from the folder hook, with the dialog stubbed", async () => {
+		const repo = join(workFolder, "e2e-repo");
+		mkdirSync(repo, { recursive: true });
+		writeFileSync(join(repo, "README.md"), "# e2e\n");
+		await app.evaluate(
+			({ dialog }, folder) => {
+				const g = globalThis as unknown as { __dialog: unknown[] };
+				g.__dialog = [];
+				(dialog as { showOpenDialog: unknown }).showOpenDialog = async (...args: unknown[]) => {
+					g.__dialog.push(args.slice(-1)[0]);
+					return { canceled: false, filePaths: [folder] };
+				};
+			},
+			repo,
+		);
+		const picked = await inPage("gui", `window.strawBossDesk.pickFolder({ defaultPath: '/somewhere/else', title: 'Choose a folder' })`);
+		assert.equal(picked, repo);
+		const options = (await app.evaluate(() => (globalThis as unknown as { __dialog: unknown[] }).__dialog)) as Array<{ title?: string; defaultPath?: string; properties?: string[] }>;
+		assert.equal(options.length, 1);
+		assert.equal(options[0]?.defaultPath, workFolder, "the dialog opens in the work folder, not where the page asks");
+		assert.equal(options[0]?.title, "Choose a folder");
+		assert.ok(options[0]?.properties?.includes("openDirectory"));
+
+		// A cancelled dialog reads as null.
+		await app.evaluate(({ dialog }) => void ((dialog as { showOpenDialog: unknown }).showOpenDialog = async () => ({ canceled: true, filePaths: [] as string[] })));
+		assert.equal(await inPage("gui", `window.strawBossDesk.pickFolder({})`), null);
+
+		// The picked folder opens as a base through the GUI's own route, as its picker does (the page carries the CSRF secret).
+		await inPage(
+			"gui",
+			`window.__open = undefined; (async () => { const csrf = document.querySelector('meta[name="sb-csrf"]').content;
+				const r = await fetch('api/open/base', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sb-csrf': csrf }, body: JSON.stringify({ dir: ${JSON.stringify(repo)}, label: 'e2e-repo' }) });
+				window.__open = { status: r.status, body: await r.json() }; })().catch((e) => { window.__open = { status: 0, body: String(e) }; }); true`,
+		);
+		const opened = (await until("the base to open", 180_000, () => inPage("gui", "window.__open"))) as { status: number; body: { workspace?: string; pane?: string } };
+		assert.equal(opened.status, 200, JSON.stringify(opened.body));
+		assert.ok(opened.body.workspace && opened.body.pane);
+		const list = await herdr(["workspace", "list"]);
+		assert.ok(list.stdout.includes("e2e-repo"), `the base is in Herdr's list: ${list.stdout.slice(0, 300)}`);
+		base = { workspace: opened.body.workspace as string, pane: opened.body.pane as string };
+	});
+
 	check("shows the shell screen after `/boss gui stop`, and Start brings the GUI back", async () => {
 		const since = Date.now();
 		await boss("gui stop");
@@ -570,48 +560,6 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			return u && (await statusOf(u)) === 200 && (await shellVisible()) === false ? u : undefined;
 		});
 		assert.match(url, GUI_URL);
-	});
-
-	check("opens a base under the work folder from the folder hook, with the dialog stubbed", async () => {
-		const repo = join(workFolder, "e2e-repo");
-		mkdirSync(repo, { recursive: true });
-		writeFileSync(join(repo, "README.md"), "# e2e\n");
-		await app.evaluate(
-			({ dialog }, folder) => {
-				const g = globalThis as unknown as { __dialog: unknown[] };
-				g.__dialog = [];
-				(dialog as { showOpenDialog: unknown }).showOpenDialog = async (...args: unknown[]) => {
-					g.__dialog.push(args.slice(-1)[0]);
-					return { canceled: false, filePaths: [folder] };
-				};
-			},
-			repo,
-		);
-		const picked = await inPage("gui", `window.strawBossDesk.pickFolder({ defaultPath: '/somewhere/else', title: 'Choose a folder' })`);
-		assert.equal(picked, repo);
-		const options = (await app.evaluate(() => (globalThis as unknown as { __dialog: unknown[] }).__dialog)) as Array<{ title?: string; defaultPath?: string; properties?: string[] }>;
-		assert.equal(options.length, 1);
-		assert.equal(options[0]?.defaultPath, workFolder, "the dialog opens in the work folder, not where the page asks");
-		assert.equal(options[0]?.title, "Choose a folder");
-		assert.ok(options[0]?.properties?.includes("openDirectory"));
-
-		// A cancelled dialog reads as null.
-		await app.evaluate(({ dialog }) => void ((dialog as { showOpenDialog: unknown }).showOpenDialog = async () => ({ canceled: true, filePaths: [] as string[] })));
-		assert.equal(await inPage("gui", `window.strawBossDesk.pickFolder({})`), null);
-
-		// The picked folder opens as a base through the GUI's own route, as its picker does (the page carries the CSRF secret).
-		await inPage(
-			"gui",
-			`window.__open = undefined; (async () => { const csrf = document.querySelector('meta[name="sb-csrf"]').content;
-				const r = await fetch('api/open/base', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sb-csrf': csrf }, body: JSON.stringify({ dir: ${JSON.stringify(repo)}, label: 'e2e-repo' }) });
-				window.__open = { status: r.status, body: await r.json() }; })().catch((e) => { window.__open = { status: 0, body: String(e) }; }); true`,
-		);
-		const opened = (await until("the base to open", 180_000, () => inPage("gui", "window.__open"))) as { status: number; body: { workspace?: string; pane?: string } };
-		assert.equal(opened.status, 200, JSON.stringify(opened.body));
-		assert.ok(opened.body.workspace && opened.body.pane);
-		const list = await herdr(["workspace", "list"]);
-		assert.ok(list.stdout.includes("e2e-repo"), `the base is in Herdr's list: ${list.stdout.slice(0, 300)}`);
-		base = { workspace: opened.body.workspace as string, pane: opened.body.pane as string };
 	});
 
 	check("has no folder hook on a page of another origin", async () => {
@@ -705,16 +653,29 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	});
 
 	check("quits with nothing left under <root>/tools and no answering Herdr", async () => {
-		// While the app quits, every program under the tools folder is noted with its parent and age, so a program that is still there when the stop looks is explained by who
-		// started it (macOS: `ps` with pid, parent pid and elapsed time only; Windows passes without it).
-		const seen = new Map<number, { what: string; first: number; last: number }>();
+		// While the app quits (macOS), every program under the tools folder is noted with its parent, working folder and birth, so a program that is still there when the stop looks is
+		// explained by who started it. Only `ps` (pid, parent pid, elapsed time) and `lsof` (the working folder) are read; no command line.
+		interface Seen {
+			ppid: number | null;
+			cwd: string | null;
+			/** When the program was born, from its age at the first look (to a second). */
+			bornAt: number;
+			file: string;
+			first: number;
+			last: number;
+		}
+		const seen = new Map<number, Seen>();
 		const began = Date.now();
 		let sampling = !isWindows;
-		const infoOf = async (pid: number): Promise<string> => {
+		const ageSeconds = (etime: string): number => {
+			const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime.trim());
+			return m ? Number(m[1] ?? 0) * 86_400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4]) : 0;
+		};
+		const look = async (pid: number, file: string, now: number): Promise<Seen> => {
 			const env = { PATH: "/bin:/usr/bin:/usr/sbin" };
-			const ps = await run("ps", ["-o", "ppid=,etime=", "-p", String(pid)], { env, timeoutMs: 5000 });
-			const cwd = await run("lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], { env, timeoutMs: 8000 });
-			return `ppid/etime ${ps.stdout.trim().replace(/\s+/g, " ") || "gone"}, cwd ${cwd.stdout.split("\n").find((l) => l.startsWith("n"))?.slice(1) ?? "?"}`;
+			const ps = (await run("ps", ["-o", "ppid=,etime=", "-p", String(pid)], { env, timeoutMs: 5000 })).stdout.trim().split(/\s+/);
+			const cwd = (await run("lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], { env, timeoutMs: 8000 })).stdout.split("\n").find((l) => l.startsWith("n"))?.slice(1) ?? null;
+			return { ppid: ps[0] ? Number(ps[0]) : null, cwd, bornAt: now - ageSeconds(ps[1] ?? "") * 1000, file, first: now, last: now };
 		};
 		const sampler = (async () => {
 			while (sampling) {
@@ -722,7 +683,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 				for (const p of await underTools().catch(() => [])) {
 					const known = seen.get(p.pid);
 					if (known) known.last = now;
-					else seen.set(p.pid, { what: `${basename(p.executable ?? "?")}, ${await infoOf(p.pid)}`, first: now, last: now });
+					else seen.set(p.pid, await look(p.pid, basename(p.executable ?? "?"), now));
 				}
 				await sleep(100);
 			}
@@ -740,13 +701,30 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			const stop = logLines().filter((l) => l.event === "stop-end").at(-1);
 			assert.ok(quit !== undefined && stop !== undefined, "the quit ran the stop sequence to its end");
 			assert.equal(stop.herdrAnswers, false, "the stop saw Herdr's socket go quiet");
-			// A pi that quits in a Herdr tab leaves pi-straw-boss's pane-balance helper (`balance.mjs after-close`, which waits up to 30 s for a pane that cannot close any more, upstream
-			// seam U13) under the tools folder, and the base the folder hook opened has such a pi. So the stop may report a program that is still ending, which the wait above has shown
-			// to leave by itself: what the quit must not leave is a program, or an answering Herdr, once that wait is over.
+			if (quit.ok !== true) {
+				// Upstream seam U13: a pi that quits in a Herdr tab starts pi-straw-boss's pane-balance helper (`balance.mjs after-close`), which waits up to 30 s for a pane that cannot close
+				// any more. The base the folder hook opened has such a pi, so the stop may report that helper and nothing else: no refusal of the kill rule, and every program it reports a
+				// detached one (parent 1) with a base's folder as its working folder, born after Herdr exited. Any other report fails.
+				assert.deepEqual(stop.refused, [], `the stop refused to kill something: ${JSON.stringify(stop)}`);
+				const reported = (stop.leftovers ?? []) as Array<{ pid: number; file: string }>;
+				assert.ok(reported.length > 0, `the stop was not ok and reported no program: ${JSON.stringify(stop)}`);
+				const exited = Date.parse(String(logLines().filter((l) => l.event === "herdr-exit" && Date.parse(String(l.t)) >= began).at(-1)?.t));
+				assert.ok(Number.isFinite(exited), "the log shows the Herdr server exit during the quit");
+				const home = realpathSync(world.home);
+				for (const l of reported) {
+					const v = seen.get(l.pid);
+					const why = `${l.pid} ${l.file}: ${JSON.stringify(v)}`;
+					assert.ok(v !== undefined && !isWindows, `a program the stop reported was never looked at (${why})`);
+					assert.equal(v.ppid, 1, `not detached (${why})`);
+					assert.ok(v.cwd !== null && realpathSync(v.cwd).startsWith(realpathSync(workFolder)) && realpathSync(v.cwd).startsWith(home), `its working folder is not a base's (${why})`);
+					assert.ok(v.bornAt >= exited - 1500, `born before Herdr exited (${why}; Herdr exited at ${exited})`);
+				}
+				console.log(`U13: the stop reported ${reported.length} pane-balance helper(s) (${reported.map((l) => l.pid).join(", ")}); each is detached, in a base's folder, and born after Herdr exited, and all had left when the wait ended`);
+			}
 		} finally {
 			sampling = false;
 			await sampler;
-			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit (ms after the quit began) ---\n${[...seen].map(([pid, v]) => `${pid} ${v.what}, seen from +${v.first - began} to +${v.last - began} ms`).join("\n")}\n${facts()}`);
+			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit (ms after the quit began) ---\n${[...seen].map(([pid, v]) => `${pid} ${v.file}, ppid ${v.ppid}, cwd ${v.cwd}, born +${v.bornAt - began} ms, seen from +${v.first - began} to +${v.last - began} ms`).join("\n")}\n${facts()}`);
 		}
 	});
 
