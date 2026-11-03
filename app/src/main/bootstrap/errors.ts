@@ -14,8 +14,8 @@ export interface FailureParams {
 	what?: string;
 	/** other: the stage that failed. */
 	stage?: string;
-	/** other: a failure with a sentence of its own. `short-names`: a tool cannot read the app's folder and short folder names are off (T5-F002). `package-may-load`: a package failed its check and could not be taken out of pi's package list (T7-F002). */
-	reason?: "short-names" | "package-may-load";
+	/** other: a failure with a sentence of its own. `short-names`: a tool cannot read the app's folder and short folder names are off (T5-F002). `package-may-load`: a package failed its check and could not be taken out of pi's package list (T7-F002). locked: `tools-running`: a program of the data root from an earlier run was still running after the wait, so a package install did not start (R9-F001). */
+	reason?: "short-names" | "package-may-load" | "tools-running";
 	/** other, `short-names`: the tool. other, `package-may-load`: the package. */
 	name?: string;
 	/** network: why the host cannot be reached, when the check could tell: `path` (a VPN, a proxy, a firewall on the way) or `tls` (a certificate this computer does not trust: a proxy or certificate inspection). */
@@ -31,6 +31,9 @@ export const RETRIED_ONCE: Readonly<Record<FailureCategory, boolean>> = {
 	locked: true,
 	other: false,
 };
+
+/** The sentence for a package stage that did not start because a program of an earlier install still runs (R9-F001). */
+export const TOOLS_RUNNING_SENTENCE = "A program from an earlier setup is still running, so this step could not start. Wait a minute, then choose Try again; if it keeps happening, restart the computer.";
 
 /** The sentence for a package that failed its check and is still on pi's package list: what the PM can do is Retry, and what the app does meanwhile is not start (T7-F002). */
 export const packageMayLoadSentence = (name: string | undefined): string =>
@@ -49,6 +52,7 @@ export function failureSentence(category: FailureCategory, params: FailureParams
 		case "disk":
 			return "There is not enough free space on the disk.";
 		case "locked":
+			if (params.reason === "tools-running") return TOOLS_RUNNING_SENTENCE;
 			return "A file was in use (often antivirus scanning it).";
 		case "other":
 			if (params.reason === "package-may-load") return packageMayLoadSentence(params.name);
@@ -63,13 +67,16 @@ export class StageError extends Error {
 	readonly params: FailureParams;
 	/** Set when the failure left a package that may still load code: the engine records it on the stage, and the supervisor refuses to start while it is there (T7-F002). */
 	readonly startBlock: StartBlock | undefined;
+	/** The engine does not try this failure again by itself, whatever its category says: the check that raised it already waited (R9-F001). */
+	readonly noRetry: boolean;
 
-	constructor(category: FailureCategory, params: FailureParams, detail: string, options?: { cause?: unknown; startBlock?: StartBlock }) {
+	constructor(category: FailureCategory, params: FailureParams, detail: string, options?: { cause?: unknown; startBlock?: StartBlock; noRetry?: boolean }) {
 		super(detail, options?.cause === undefined ? undefined : { cause: options.cause });
 		this.name = "StageError";
 		this.category = category;
 		this.params = params;
 		this.startBlock = options?.startBlock;
+		this.noRetry = options?.noRetry === true;
 	}
 
 	get sentence(): string {

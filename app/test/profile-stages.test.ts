@@ -5,6 +5,7 @@ import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { agentPackageDir, checkLockedIntegrity, installedVersion, piInvocation, piSource } from "../src/main/bootstrap/pi-cli.ts";
 import { engineRecipeOf } from "../src/main/bootstrap/recipe-config.ts";
+import type { EngineDeps } from "../src/main/bootstrap/engine.ts";
 import { packageMayLoadSentence } from "../src/main/bootstrap/errors.ts";
 import { assertRegistryIntegrity } from "../src/main/bootstrap/npm.ts";
 import { StackError, type NpmPin, type Stack } from "../src/main/bootstrap/stack.ts";
@@ -12,7 +13,8 @@ import type { Stage, StageContext, StageOutcome } from "../src/main/bootstrap/st
 import { allStages } from "../src/main/bootstrap/stages/index.ts";
 import { profilePin, profileStages, warningsOf } from "../src/main/bootstrap/stages/profile.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
-import { makeStack, scratchRoot, secretPatterns, testEngine, testLayout } from "./harness/engine-fixture.ts";
+import { makeStack, scratchRoot, secretPatterns, testEngine, testLayout, testPlatform } from "./harness/engine-fixture.ts";
+import { readStartGate } from "../src/main/runtime/readiness.ts";
 import { installFakeNode } from "./harness/fake-node.ts";
 import { installFakePi } from "./harness/fake-pi.ts";
 import { NpmRegistryFixture } from "./harness/npm-registry.ts";
@@ -123,14 +125,14 @@ interface RunOut {
 	error: string | null;
 }
 
-async function go(f: Fixture, stack: Stack, recipe: unknown, extraEnv: Record<string, string> = {}): Promise<RunOut> {
+async function go(f: Fixture, stack: Stack, recipe: unknown, extraEnv: Record<string, string> = {}, deps: Partial<EngineDeps> = {}): Promise<RunOut> {
 	const options = { npm: { env: envOf(f, extraEnv) } };
 	// `pi-settings` (Windows) merges `shellPath` and needs a PortableGit's bash.exe; its own tests are in pi-settings.test.ts. Here the stages after it stand on `profile`.
 	const stages = (): Stage[] => {
 		const all = profileStages(stack, engineRecipeOf(recipe, stack), platform, options);
 		return standalone(all.filter((s) => s.name !== "pi-settings").map((s) => ({ ...s, needs: s.needs.map((n) => (n === "pi-settings" ? "profile" : n)) })));
 	};
-	const engine = testEngine(f.root, stages, { appEnv: f.appEnv, layout: f.layout });
+	const engine = testEngine(f.root, stages, { appEnv: f.appEnv, layout: f.layout, ...deps });
 	await engine.engine.handle({ type: "run", config: { root: f.root, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}) } });
 	const done = engine.events.find((e) => e.type === "done");
 	const error = engine.events.find((e) => e.type === "error");
@@ -799,5 +801,74 @@ describe("running pi and reading what it left", () => {
 		assert.throws(() => piInvocation(ctx), /@earendil-works\/pi-coding-agent is not installed/);
 		installFakePi(layout);
 		assert.match(piInvocation(ctx).script, /dist[\\/]cli\.js$/);
+	});
+});
+
+describe("R9-F001: a package stage waits for a program of an earlier run that still runs under <root>/tools, and fails as locked when it never ends", () => {
+	/** A process table whose listing under the tools folder names an `npm`-sized leftover `busy(call)` says so, and that notes whether pi had run when it answered. */
+	const withLeftover = (f: Fixture, busy: (call: number) => boolean): { deps: Partial<EngineDeps>; answers: Array<{ busy: boolean; piCalls: number }> } => {
+		const answers: Array<{ busy: boolean; piCalls: number }> = [];
+		const base = testPlatform();
+		let call = 0;
+		return {
+			answers,
+			deps: {
+				platform: {
+					...base,
+					processes: {
+						...base.processes,
+						listUnder: async () => {
+							const hit = busy(++call);
+							answers.push({ busy: hit, piCalls: calls(f).length });
+							return hit ? [{ pid: 4242, startTime: "t", executable: join(f.layout.tools.root, "node", "24.0.0", isWindows ? "node.exe" : "node") }] : [];
+						},
+					},
+				},
+				toolsWaitMs: 5_000,
+				toolsPollMs: 10,
+			},
+		};
+	};
+
+	it("does not run pi until the listing is empty, and then installs", async () => {
+		const f = await fixture();
+		f.lock = lockOf(pin(published.profile));
+		const table = withLeftover(f, (call) => call <= 3);
+		const out = await go(f, stackFor(pin(published.profile)), { ...RECIPE, packages: [] }, {}, table.deps);
+		assert.equal(out.outcomes.profile?.status, "installed", JSON.stringify(out.outcomes.profile));
+		assert.deepEqual(table.answers.map((a) => a.busy), [true, true, true, false], "three listings named the leftover, the fourth was empty");
+		assert.ok(table.answers.every((a) => a.piCalls === 0), "pi had not been run when any of them answered");
+		assert.deepEqual(calls(f), [`install npm:${PROFILE}@0.1.0`]);
+	});
+
+	it("lists once for the whole run: a second package stage does not wait again", async () => {
+		const f = await fixture();
+		f.lock = lockOf(pin(published.profile), pin(published.one));
+		const table = withLeftover(f, () => false);
+		const out = await go(f, stackFor(pin(published.profile), [pin(published.one)]), { ...RECIPE, packages: [] }, {}, table.deps);
+		assert.equal(out.outcomes["pkg:pkg-one"]?.status, "installed");
+		assert.equal(table.answers.length, 1, "the profile stage listed, the package stage reused the answer");
+	});
+
+	it("fails the stage as locked (reason tools-running, one attempt, pi never run) when the leftover is still there after the wait, and keeps an old ok record", async () => {
+		const f = await fixture();
+		f.lock = lockOf(pin(published.profile));
+		const stack = stackFor(pin(published.profile));
+		assert.equal((await go(f, stack, { ...RECIPE, packages: [] })).outcomes.profile?.status, "installed");
+		const before = calls(f).length;
+		// A recipe update gives the installer work, so the stage installs again: now with a leftover that never goes.
+		const table = withLeftover(f, () => true);
+		table.deps.toolsWaitMs = 150;
+		const out = await go(f, stack, { ...RECIPE, packages: [], version: "1.1.0", instructions: "- two rules" }, {}, table.deps);
+		const outcome = out.outcomes.profile;
+		assert.equal(outcome?.status, "failed");
+		assert.equal(outcome?.failure?.category, "locked");
+		assert.equal(outcome?.failure?.params.reason, "tools-running");
+		assert.equal(outcome?.attempts, 1, "the wait was the retry");
+		assert.equal(calls(f).length, before, "pi was not run");
+		const record = new StateStore(f.layout).record("profile");
+		assert.equal(record?.status, "ok", "nothing in place was touched, so the old version stays the active one");
+		assert.equal(record?.lastFailure?.category, "locked");
+		assert.deepEqual(readStartGate(f.layout).interrupted, []);
 	});
 });

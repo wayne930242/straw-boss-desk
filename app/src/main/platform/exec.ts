@@ -10,6 +10,8 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 export function execRunner(base: Readonly<Record<string, string | undefined>> = process.env, signal?: AbortSignal): CommandRunner {
 	return (file, args, options) =>
 		new Promise((resolve) => {
+			// Node starts a child even when the signal has aborted already, and ends it on the next tick: a cancelled run starts nothing, not even for a moment (R9-F004 a).
+			if (signal?.aborted === true) return resolve({ code: null, stdout: "", stderr: "cancelled" });
 			const env: Record<string, string | undefined> = options?.replaceEnv && options.env ? { ...options.env } : { ...base, ...options?.env };
 			const child = execFile(
 				file,

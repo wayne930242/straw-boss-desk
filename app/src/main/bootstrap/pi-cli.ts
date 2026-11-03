@@ -55,6 +55,8 @@ const LOCKED_LINE = /\b(EBUSY|EPERM|EACCES|EMFILE|ENOTEMPTY)\b/;
 export async function piInstall(ctx: StageContext, pin: NpmPin, options: NpmRun = {}): Promise<void> {
 	const what = `${pin.name}@${pin.version}`;
 	const source = piSource(pin);
+	// No npm of an earlier run may still be writing the prefix (R9-F001); a stage that waits and gives up has changed nothing yet.
+	await ctx.waitForQuietTools();
 	// From here on npm changes the prefix in place: a failure can no longer promise that the old install is intact (T7-F003).
 	ctx.markInPlace();
 	const result = await runPi(ctx, ["install", source], options.timeoutMs ?? 1_800_000, options.env);
@@ -63,8 +65,9 @@ export async function piInstall(ctx: StageContext, pin: NpmPin, options: NpmRun 
 }
 
 /** `pi remove npm:<name>@<version>`: the result is the caller's to judge (a failed removal is reported, not thrown). */
-export function piRemove(ctx: StageContext, pin: Pick<NpmPin, "name" | "version">, options: NpmRun = {}): Promise<RunResult> {
+export async function piRemove(ctx: StageContext, pin: Pick<NpmPin, "name" | "version">, options: NpmRun = {}): Promise<RunResult> {
 	const source = piSource(pin);
+	await ctx.waitForQuietTools();
 	ctx.markInPlace();
 	return runPi(ctx, ["remove", source], options.timeoutMs ?? 300_000, options.env);
 }

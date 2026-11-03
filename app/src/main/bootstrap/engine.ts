@@ -10,6 +10,7 @@ import { engineRecipeOf, type EngineRecipe } from "./recipe-config.ts";
 import type { EnvLike } from "../env.ts";
 import { runStage, type Stage, type StageOutcome } from "./stage.ts";
 import { acquireEngineLock, StateStore } from "./state.ts";
+import { ToolsQuiet } from "./tools-quiet.ts";
 import { allStages } from "./stages/index.ts";
 
 // The bootstrap engine (spec: Decisions, Where the engine runs). It runs as an Electron `utilityProcess`, so a long install never blocks the window
@@ -78,6 +79,9 @@ export interface EngineDeps {
 	retryDelayMs?: number;
 	/** A download that receives no bytes for this long fails as a network failure (default 60 s). */
 	downloadIdleMs?: number;
+	/** How long a package stage waits for programs of the data root that an earlier run left running, and how often it looks (defaults 90 s and 1 s). */
+	toolsWaitMs?: number;
+	toolsPollMs?: number;
 	log?: RotationOptions;
 }
 
@@ -127,6 +131,10 @@ export function createEngine(deps: EngineDeps): Engine {
 	};
 
 	async function run(config: EngineConfig): Promise<void> {
+		// Before the first await: a cancel that arrives while the lock is being taken (a stale lock costs a PowerShell start on Windows) is recorded, and the run then ends its graph at once
+		// instead of running it (R9-F004 b).
+		abort = new AbortController();
+		const signal = abort.signal;
 		const platformName: AppPlatform = config.platform ?? (process.platform === "win32" ? "win32" : "darwin");
 		const live = seeded(loadSecretPatterns(config.secretPatterns));
 		redactor = live;
@@ -135,8 +143,6 @@ export function createEngine(deps: EngineDeps): Engine {
 		const logger = new Logger({ dir: layout.logs, redactor: live, ...deps.log });
 		const platform = deps.platform ?? createPlatform();
 		const lock = await acquireEngineLock(layout, platform.processes);
-		abort = new AbortController();
-		const signal = abort.signal;
 		try {
 			const stack = parseStack(config.stack);
 			const key = platformKey(process.platform, process.arch);
@@ -148,6 +154,7 @@ export function createEngine(deps: EngineDeps): Engine {
 			if (swept.removed.length > 0 || swept.restored.length > 0 || swept.kept.length > 0) logger.event({ event: "swept", removed: swept.removed, restored: swept.restored, kept: swept.kept });
 
 			const retryDelayMs = deps.retryDelayMs ?? 5000;
+			const quiet = new ToolsQuiet({ ...(deps.toolsWaitMs !== undefined ? { waitMs: deps.toolsWaitMs } : {}), ...(deps.toolsPollMs !== undefined ? { pollMs: deps.toolsPollMs } : {}) });
 			const result: GraphResult = await runGraph({
 				stages,
 				signal,
@@ -164,6 +171,7 @@ export function createEngine(deps: EngineDeps): Engine {
 						logFor: (name) => logger.stage(name),
 						redact: (text) => logger.redactor.redact(text),
 						retryDelayMs,
+						quiet,
 						recipe,
 						appEnv: deps.appEnv ?? process.env,
 						...(config.proxyEnv ? { proxy: { env: config.proxyEnv, log: [] } } : {}),
@@ -213,6 +221,7 @@ export function createEngine(deps: EngineDeps): Engine {
 						emitError(error);
 					} finally {
 						redactor = null;
+						abort = null;
 						running = false;
 					}
 					return;

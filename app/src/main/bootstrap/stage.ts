@@ -8,6 +8,7 @@ import { downloadVerified, type Downloaded, type Fetch } from "./download.ts";
 import { extractArchive, extractSelfExtractor, type Extracted } from "./extract.ts";
 import { asideName, dropAside, freeAside, REAL_FS, removeTree, sha256File, type FsOps } from "./fsutil.ts";
 import type { StageLog } from "./log.ts";
+import { ToolsQuiet } from "./tools-quiet.ts";
 import type { EngineRecipe } from "./recipe-config.ts";
 import type { Asset, PlatformKey, Stack } from "./stack.ts";
 import type { StageRecord, StateStore, StageWarning } from "./state.ts";
@@ -83,6 +84,11 @@ export interface StageContext {
 	 */
 	markInPlace(): void;
 	/**
+	 * Returns when no program under `<root>/tools` runs: waits a bounded time while one does (a pi or npm that an earlier quit or timeout left running), and fails the stage as `locked`
+	 * when one still does. A package stage calls it before it runs pi, ahead of `markInPlace`, so a stage that did not start leaves its old record as it was (R9-F001).
+	 */
+	waitForQuietTools(): Promise<void>;
+	/**
 	 * Runs a program by absolute path; the command and its output go to the stage's log. The child gets `options.env` and nothing of the app's own
 	 * environment; without it, only the system essentials (`systemEnv`).
 	 */
@@ -148,6 +154,8 @@ export interface RunDeps {
 	force?: boolean;
 	/** The active recipe's forges and optional tools. */
 	recipe: EngineRecipe;
+	/** What this run knows about programs left running under `<root>/tools`; the engine shares one across the run's stages. Without it a stage lists for itself. */
+	quiet?: ToolsQuiet;
 	/** The environment the constructed child environment starts from (the engine process's own). */
 	appEnv: EnvLike;
 	/** The OS proxy variables main resolved before this run; they go to every child. */
@@ -359,6 +367,7 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 
 function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[], inPlace: { touched: boolean }): StageContext {
 	const log = deps.logFor(stage.name);
+	const quiet = deps.quiet ?? new ToolsQuiet();
 	/** The scrubbed environment of the programs that unpack a download (`tar`, a self-extractor): the system essentials and nothing of the app's own (T5-F005). */
 	const unpackEnv = systemEnv(deps.layout.platform, deps.appEnv);
 	/**
@@ -392,11 +401,16 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 		markInPlace() {
 			inPlace.touched = true;
 		},
+		waitForQuietTools() {
+			return quiet.ensure({ layout: deps.layout, processes: deps.platform.processes, signal: deps.signal, stage: stage.name, log });
+		},
 		async exec(file, args, options) {
 			const started = Date.now();
 			log.event({ event: "exec", file, args: [...args] });
 			// The child never inherits the engine's own environment: what the stage gives it, or the system essentials.
 			const result = await deps.run(file, args, { ...options, env: options?.env ?? systemEnv(deps.layout.platform, deps.appEnv), replaceEnv: true });
+			// A child ended by the time limit or the abort was ended alone: whatever it had started may still run (R9-F001), so the next package stage lists again.
+			if (result.timedOut === true || deps.signal.aborted) quiet.markDirty();
 			log.raw(`$ ${file} ${args.join(" ")}\n${result.stdout}${result.stdout.endsWith("\n") || result.stdout === "" ? "" : "\n"}${result.stderr}\n`);
 			log.flush();
 			log.event({ event: "exec-result", file, code: result.code, timedOut: result.timedOut === true, ms: Date.now() - started });
@@ -566,8 +580,10 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			return done({ status: "installed", attempts: attempt, evidence: evidence.text, version: evidence.version, ...(evidence.warnings ? { warnings: evidence.warnings } : {}) });
 		} catch (thrown) {
 			cleanup(staging, fsErrors);
-			const error = deps.signal.aborted ? new StageError("other", { stage: stage.name }, "cancelled") : classifyError(thrown, stage.name);
-			if (!deps.signal.aborted && attempt === 1 && !stage.noRetry && RETRIED_ONCE[error.category]) {
+			// A cancel replaces whatever the stage threw, but not the start block of a rollback that failed on the way (`package-may-load`): that package may still load.
+			const cancelBlock = thrown instanceof StageError ? thrown.startBlock : undefined;
+			const error = deps.signal.aborted ? new StageError("other", { stage: stage.name }, "cancelled", cancelBlock ? { startBlock: cancelBlock } : undefined) : classifyError(thrown, stage.name);
+			if (!deps.signal.aborted && attempt === 1 && !stage.noRetry && !error.noRetry && RETRIED_ONCE[error.category]) {
 				log.event({ event: "retry", category: error.category, detail: error.message, afterMs: deps.retryDelayMs });
 				await sleep(deps.retryDelayMs, deps.signal);
 				continue;
@@ -579,11 +595,16 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			const keep = record !== null && record.status === "ok" && !inPlace.touched;
 			// A package left loadable by this failure, or by an earlier one that no run has cleared yet, keeps the start blocked.
 			const startBlock = error.startBlock ?? record?.startBlock;
+			// A cancel (a quit, a Repair that is stopped) after the stage changed a place with no staging copy leaves an install nobody finished, which is what `running` says to the
+			// start gate (R7-F001): `failed` would let a start go on over a half-installed package (R9-F002). The next run of the stage rewrites the record.
+			const interrupted = deps.signal.aborted && inPlace.touched;
 			await deps.state.setRecord(
 				stage.name,
-				keep
-					? { ...record, lastFailure: note, ...(startBlock ? { startBlock } : {}) }
-					: { status: "failed", version: planned ?? "", evidence: "", at: note.at, hashes: {}, dependsOn: {}, lastFailure: note, ...(startBlock ? { startBlock } : {}) },
+				interrupted
+					? { status: "running", version: planned ?? record?.version ?? "", evidence: record?.evidence ?? "", at: note.at, hashes: record?.hashes ?? {}, dependsOn: record?.dependsOn ?? {}, lastFailure: note, ...(startBlock ? { startBlock } : {}) }
+					: keep
+						? { ...record, lastFailure: note, ...(startBlock ? { startBlock } : {}) }
+						: { status: "failed", version: planned ?? "", evidence: "", at: note.at, hashes: {}, dependsOn: {}, lastFailure: note, ...(startBlock ? { startBlock } : {}) },
 			);
 			return done({
 				status: "failed",
