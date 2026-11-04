@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { AppUpdater } from "electron-updater";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
-import { CHECK_EVERY_MS, FIRST_CHECK_AFTER_MS, electronUpdaterDriver, ShellUpdater, type FoundUpdate, type ShellUpdaterDeps, type UpdaterDriver } from "../src/main/update/shell.ts";
+import { CHECK_EVERY_MS, FIRST_CHECK_AFTER_MS, electronUpdaterDriver, feedFileName, ShellUpdater, type FoundUpdate, type ShellUpdaterDeps, type UpdaterDriver } from "../src/main/update/shell.ts";
 import { UpdatesService } from "../src/main/update/service.ts";
 import { StackUpdater } from "../src/main/update/stack.ts";
-import { assetUrl, compareVersions, feedUrlProblem, MAX_KEYS, RELEASE_KEYS, updateConfig, verifyDetached } from "../src/main/update/verify.ts";
+import { assetUrl, compareVersions, feedUrlProblem, manifestText, MAX_KEYS, RELEASE_KEYS, sha512Of, updateConfig, verifyDetached } from "../src/main/update/verify.ts";
 import type { ShellUpdateState } from "../src/shared/updates.ts";
 
 // The shell channel (task 13): the installer or dmg is checked against the built-in key list before it is offered, a file that fails is deleted, and nothing unverified is installed or opened.
@@ -22,6 +22,8 @@ const A = pair();
 const B = pair();
 const OUTSIDER = pair();
 const sign = (bytes: Uint8Array, k: KeyObject = A.privateKey): Buffer => Buffer.from(`${cryptoSign(null, bytes, k).toString("base64")}\n`);
+/** The signed manifest of a shell file, as `sign-stack.mjs --shell-version` writes it. */
+const manifestOf = (bytes: Uint8Array, name: string, version = "0.0.2", kind: "shell" | "stack" = "shell"): Buffer => Buffer.from(manifestText({ kind, version, file: name, sha512: sha512Of(bytes) }));
 
 const scratch: string[] = [];
 after(() => {
@@ -42,8 +44,12 @@ const DMG_NAME = "Straw Boss Desk-0.0.2-arm64.dmg";
 interface Rig {
 	shell: ShellUpdater;
 	dir: string;
-	/** The signature the feed serves for a file name (status 404 when absent). */
+	/** The signature of the manifest the feed serves for a file name (status 404 when absent). */
 	sigs: Map<string, Buffer>;
+	/** The manifest the feed serves for a file name (status 404 when absent). */
+	manifests: Map<string, Buffer>;
+	/** What `quitAndInstall` answers; the default is that the installer started. */
+	install: { result: { ok: true } | { ok: false; detail: string }; throws?: Error };
 	calls: string[];
 	revealed: string[];
 	states: ShellUpdateState[];
@@ -61,6 +67,8 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 	const downloads = join(dir, "Downloads");
 	mkdirSync(downloads, { recursive: true });
 	const sigs = new Map<string, Buffer>();
+	const manifests = new Map<string, Buffer>();
+	const install: Rig["install"] = { result: { ok: true } };
 	const calls: string[] = [];
 	const revealed: string[] = [];
 	const states: ShellUpdateState[] = [];
@@ -69,7 +77,7 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 	const found: Rig["found"] = { value: { version: "0.0.2", files: [{ url: platform === "win32" ? INSTALLER_NAME : DMG_NAME }] } };
 	const payload = { bytes: platform === "win32" ? INSTALLER : DMG };
 	const driverMade = { n: 0 };
-	const rig = { dir, sigs, calls, revealed, states, found, payload, driverMade, fetched, logs } as unknown as Rig;
+	const rig = { dir, sigs, manifests, install, calls, revealed, states, found, payload, driverMade, fetched, logs } as unknown as Rig;
 	const driver: UpdaterDriver = {
 		check: options.check ?? (async () => found.value),
 		async download(onProgress) {
@@ -80,8 +88,10 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 			writeFileSync(file, payload.bytes);
 			return { file };
 		},
-		quitAndInstall() {
+		async quitAndInstall() {
 			calls.push("quitAndInstall");
+			if (install.throws !== undefined) throw install.throws;
+			return install.result;
 		},
 	};
 	rig.shell = new ShellUpdater({
@@ -95,9 +105,9 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 		},
 		fetchBytes: async (url) => {
 			fetched.push(url);
-			const name = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1, -".sig".length));
-			const sig = sigs.get(name);
-			return sig === undefined ? { status: 404, body: Buffer.alloc(0) } : { status: 200, body: sig };
+			const last = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+			const served = last.endsWith(".manifest.sig") ? sigs.get(last.slice(0, -".manifest.sig".length)) : last.endsWith(".manifest") ? manifests.get(last.slice(0, -".manifest".length)) : undefined;
+			return served === undefined ? { status: 404, body: Buffer.alloc(0) } : { status: 200, body: served };
 		},
 		downloadFile: async (url, file, onProgress) => {
 			calls.push(`downloadFile ${url.slice(url.lastIndexOf("/") + 1)}`);
@@ -109,6 +119,7 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 		downloadDir: () => downloads,
 		reveal: (file) => void revealed.push(file),
 		prepareQuit: async () => void calls.push("prepareQuit"),
+		resumeAfterFailedInstall: async () => void calls.push("resume"),
 		log: (fields) => void logs.push(fields as Record<string, unknown>),
 		now: () => new Date("2026-11-04T10:00:00Z"),
 	});
@@ -116,34 +127,48 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 	return rig;
 }
 
+/** The feed serves `bytes`' signed manifest under `name`: the genuine one, signed by `key`, for `version`. */
+function serve(rig: Rig, name: string, bytes: Uint8Array, key: KeyObject = A.privateKey, version = "0.0.2"): void {
+	const manifest = manifestOf(bytes, name, version);
+	rig.manifests.set(name, manifest);
+	rig.sigs.set(name, sign(manifest, key));
+}
+
 describe("the Windows installer", () => {
 	it("downloads it, checks its signature against the key list, and only then offers Restart to update", async () => {
 		const rig = makeRig();
-		rig.sigs.set(INSTALLER_NAME, sign(INSTALLER));
+		serve(rig, INSTALLER_NAME, INSTALLER);
 		await rig.shell.check();
 		assert.deepEqual(rig.shell.state, { phase: "ready", version: "0.0.2" });
 		assert.deepEqual(rig.states.map((s) => s.phase), ["checking", "downloading", "downloading", "downloading", "ready"]);
-		assert.deepEqual(rig.fetched, [`${FEED.url}${INSTALLER_NAME}.sig`]);
+		assert.deepEqual(rig.fetched, [`${FEED.url}${INSTALLER_NAME}.manifest`, `${FEED.url}${INSTALLER_NAME}.manifest.sig`]);
 		assert.equal(rig.calls.includes("quitAndInstall"), false, "nothing installs by itself");
 	});
 
 	it("accepts a file signed by the second key of the list", async () => {
 		const rig = makeRig();
-		rig.sigs.set(INSTALLER_NAME, sign(INSTALLER, B.privateKey));
+		serve(rig, INSTALLER_NAME, INSTALLER, B.privateKey);
 		await rig.shell.check();
 		assert.equal(rig.shell.state.phase, "ready");
 	});
 
-	for (const [name, sigFor, reason] of [
-		["a file with one byte changed after it was signed", () => sign(Buffer.from("the installer of 0.0.3")), "bad-signature"],
-		["a file signed by a key that is not in the list", () => sign(INSTALLER, OUTSIDER.privateKey), "bad-signature"],
-		["a file with no signature on the feed", () => undefined, "no-signature"],
-		["a file with an unreadable signature", () => Buffer.from("not a signature"), "malformed-signature"],
+	for (const [name, setup, reason] of [
+		// The manifest is genuine, but the file that was downloaded is not the one it signs.
+		["a file with one byte changed after it was signed", (rig: Rig) => (serve(rig, INSTALLER_NAME, INSTALLER), void (rig.payload.bytes = Buffer.from("the installer of 0.0.3"))), "hash-mismatch"],
+		["a manifest with one byte changed after it was signed", (rig: Rig) => (serve(rig, INSTALLER_NAME, INSTALLER), rig.manifests.set(INSTALLER_NAME, manifestOf(Buffer.from("other"), INSTALLER_NAME))), "bad-signature"],
+		["a file signed by a key that is not in the list", (rig: Rig) => serve(rig, INSTALLER_NAME, INSTALLER, OUTSIDER.privateKey), "bad-signature"],
+		["a file with no manifest on the feed", () => undefined, "no-signature"],
+		["a file with a manifest and no signature of it", (rig: Rig) => rig.manifests.set(INSTALLER_NAME, manifestOf(INSTALLER, INSTALLER_NAME)), "no-signature"],
+		["a file with an unreadable signature", (rig: Rig) => (rig.manifests.set(INSTALLER_NAME, manifestOf(INSTALLER, INSTALLER_NAME)), rig.sigs.set(INSTALLER_NAME, Buffer.from("not a signature"))), "malformed-signature"],
+		// R13-F002: a genuine, signed installer of an older release, served with a latest.yml that says it is 0.0.2.
+		["a genuine older installer announced as the newer version", (rig: Rig) => serve(rig, INSTALLER_NAME, INSTALLER, A.privateKey, "0.0.0"), "bad-manifest"],
+		["a signed manifest of another file name", (rig: Rig) => (rig.manifests.set(INSTALLER_NAME, manifestOf(INSTALLER, "other.exe")), rig.sigs.set(INSTALLER_NAME, sign(manifestOf(INSTALLER, "other.exe")))), "bad-manifest"],
+		["a signed manifest of another kind", (rig: Rig) => (rig.manifests.set(INSTALLER_NAME, manifestOf(INSTALLER, INSTALLER_NAME, "0.0.2", "stack")), rig.sigs.set(INSTALLER_NAME, sign(manifestOf(INSTALLER, INSTALLER_NAME, "0.0.2", "stack")))), "bad-manifest"],
+		["a signed stack.json served as the manifest", (rig: Rig) => (rig.manifests.set(INSTALLER_NAME, Buffer.from(`{"generation": 9}\n`)), rig.sigs.set(INSTALLER_NAME, sign(Buffer.from(`{"generation": 9}\n`)))), "bad-manifest"],
 	] as const) {
 		it(`deletes ${name}, never offers it, and says why`, async () => {
 			const rig = makeRig();
-			const sig = sigFor();
-			if (sig !== undefined) rig.sigs.set(INSTALLER_NAME, sig);
+			setup(rig);
 			await rig.shell.check();
 			assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason });
 			assert.equal(existsSync(join(rig.dir, "pending", INSTALLER_NAME)), false, "the downloaded file is deleted");
@@ -154,9 +179,23 @@ describe("the Windows installer", () => {
 		});
 	}
 
+	it("does not trust latest.yml for the version: the feed announcing 9.9.9 for an installer the key signed as 0.0.2 is refused, and a signature of the installer's bytes alone is not a manifest", async () => {
+		const rig = makeRig();
+		rig.found.value = { version: "9.9.9", files: [{ url: INSTALLER_NAME }] };
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		assert.deepEqual(rig.shell.state, { phase: "refused", version: "9.9.9", reason: "bad-manifest" });
+		// The signature the channel used to carry (over the installer's bytes) verifies nothing now.
+		const old = makeRig();
+		old.manifests.set(INSTALLER_NAME, INSTALLER);
+		old.sigs.set(INSTALLER_NAME, sign(INSTALLER));
+		await old.shell.check();
+		assert.deepEqual(old.shell.state, { phase: "refused", version: "0.0.2", reason: "bad-manifest" });
+	});
+
 	it("does not download a refused version again before the app restarts", async () => {
 		const rig = makeRig();
-		rig.sigs.set(INSTALLER_NAME, sign(INSTALLER, OUTSIDER.privateKey));
+		serve(rig, INSTALLER_NAME, INSTALLER, OUTSIDER.privateKey);
 		await rig.shell.check();
 		await rig.shell.check();
 		assert.equal(rig.calls.filter((c) => c === "download").length, 1);
@@ -166,7 +205,7 @@ describe("the Windows installer", () => {
 	it("refuses every file when this build has no key, or a list it cannot use", async () => {
 		for (const [keys, reason] of [[[], "no-keys"], [[A.publicKey, B.publicKey, OUTSIDER.publicKey], "bad-key-list"]] as const) {
 			const rig = makeRig({ keys: [...keys] });
-			rig.sigs.set(INSTALLER_NAME, sign(INSTALLER));
+			serve(rig, INSTALLER_NAME, INSTALLER);
 			await rig.shell.check();
 			assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason });
 		}
@@ -174,7 +213,7 @@ describe("the Windows installer", () => {
 
 	it("Restart to update stops the stack first, then hands the file to the installer silently", async () => {
 		const rig = makeRig();
-		rig.sigs.set(INSTALLER_NAME, sign(INSTALLER));
+		serve(rig, INSTALLER_NAME, INSTALLER);
 		await rig.shell.check();
 		rig.calls.length = 0;
 		await rig.shell.restart();
@@ -183,14 +222,41 @@ describe("the Windows installer", () => {
 
 	it("checks the file again right before the install: one swapped after the first check is refused, deleted, and never handed to the installer", async () => {
 		const rig = makeRig();
-		rig.sigs.set(INSTALLER_NAME, sign(INSTALLER));
+		serve(rig, INSTALLER_NAME, INSTALLER);
 		await rig.shell.check();
 		writeFileSync(join(rig.dir, "pending", INSTALLER_NAME), "a different installer");
 		rig.calls.length = 0;
 		await rig.shell.restart();
 		assert.deepEqual(rig.calls, []);
-		assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason: "bad-signature" });
+		assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason: "hash-mismatch" });
 		assert.equal(existsSync(join(rig.dir, "pending", INSTALLER_NAME)), false);
+	});
+
+	it("when the installer cannot start, starts the stack again and keeps the offer, with the reason (R13-F004)", async () => {
+		const rig = makeRig();
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		rig.calls.length = 0;
+		rig.install.result = { ok: false, detail: "No update filepath provided, can't quit and install\nsecond line" };
+		await rig.shell.restart();
+		assert.deepEqual(rig.calls, ["prepareQuit", "quitAndInstall", "resume"], "the stack was stopped for the install, so it is brought back");
+		assert.deepEqual(rig.shell.state, { phase: "ready", version: "0.0.2", installFailed: "No update filepath provided, can't quit and install" });
+		assert.ok(rig.logs.some((l) => l.event === "shell-update-install-failed"));
+		// The offer is armed again: a second click tries again, and this time the installer starts.
+		rig.install.result = { ok: true };
+		rig.calls.length = 0;
+		await rig.shell.restart();
+		assert.deepEqual(rig.calls, ["prepareQuit", "quitAndInstall"]);
+	});
+
+	it("takes a driver that throws for an installer that could not start", async () => {
+		const rig = makeRig();
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		rig.install.throws = new Error("EACCES: permission denied");
+		await rig.shell.restart();
+		assert.deepEqual(rig.shell.state, { phase: "ready", version: "0.0.2", installFailed: "EACCES: permission denied" });
+		assert.equal(rig.calls.at(-1), "resume");
 	});
 
 	it("ignores Restart to update when nothing is ready, and Download on Windows", async () => {
@@ -239,7 +305,7 @@ describe("the macOS dmg", () => {
 
 	it("only offers the newer version at a check, and downloads, verifies and reveals the dmg when asked", async () => {
 		const rig = mac();
-		rig.sigs.set(DMG_NAME, sign(DMG));
+		serve(rig, DMG_NAME, DMG);
 		await rig.shell.check();
 		assert.deepEqual(rig.shell.state, { phase: "available", version: "0.0.2" });
 		assert.deepEqual(rig.calls, [], "nothing was downloaded");
@@ -254,9 +320,9 @@ describe("the macOS dmg", () => {
 	});
 
 	it("deletes a dmg that fails the check and reveals nothing", async () => {
-		for (const sig of [sign(DMG, OUTSIDER.privateKey), undefined]) {
+		for (const setup of [(rig: Rig) => serve(rig, DMG_NAME, DMG, OUTSIDER.privateKey), () => undefined]) {
 			const rig = mac();
-			if (sig !== undefined) rig.sigs.set(DMG_NAME, sig);
+			setup(rig);
 			await rig.shell.check();
 			await rig.shell.download();
 			assert.equal(rig.shell.state.phase, "refused");
@@ -268,7 +334,7 @@ describe("the macOS dmg", () => {
 	it("also checks the SHA512 the feed lists, before the signature", async () => {
 		const rig = mac();
 		rig.found.value = { version: "0.0.2", files: [{ url: DMG_NAME, sha512: createHash("sha512").update("other bytes").digest("base64") }] };
-		rig.sigs.set(DMG_NAME, sign(DMG));
+		serve(rig, DMG_NAME, DMG);
 		await rig.shell.check();
 		await rig.shell.download();
 		assert.equal(rig.shell.state.phase, "error");
@@ -276,7 +342,7 @@ describe("the macOS dmg", () => {
 		assert.deepEqual(readdirSync(join(rig.dir, "Downloads")), []);
 		const good = mac();
 		good.found.value = { version: "0.0.2", files: [{ url: DMG_NAME, sha512: createHash("sha512").update(DMG).digest("base64") }] };
-		good.sigs.set(DMG_NAME, sign(DMG));
+		serve(good, DMG_NAME, DMG);
 		await good.shell.check();
 		await good.shell.download();
 		assert.equal(good.shell.state.phase, "downloaded");
@@ -284,7 +350,7 @@ describe("the macOS dmg", () => {
 
 	it("shows a download that fails as an error and leaves no partial file", async () => {
 		const rig = mac({ fail: (what) => (what === "downloadFile" ? new Error("ECONNRESET") : null) });
-		rig.sigs.set(DMG_NAME, sign(DMG));
+		serve(rig, DMG_NAME, DMG);
 		await rig.shell.check();
 		await rig.shell.download();
 		assert.equal(rig.shell.state.phase, "error");
@@ -292,9 +358,28 @@ describe("the macOS dmg", () => {
 		assert.deepEqual(readdirSync(join(rig.dir, "Downloads")), []);
 	});
 
+	it("names the file itself and writes only inside the Downloads folder: a feed name that decodes to a path is refused and nothing is written or deleted outside it (R13-F003)", async () => {
+		for (const hostile of ["..%2F..%2FLibrary%2FLaunchAgents%2Fx.dmg", "%2e%2e%2Fx.dmg", "..%5Cx.dmg", "a%2Fb.dmg", "x%00.dmg", "%2Fetc%2Fx.dmg"]) {
+			const rig = mac();
+			const outside = join(rig.dir, "Library");
+			mkdirSync(outside, { recursive: true });
+			rig.found.value = { version: "0.0.2", files: [{ url: `https://feed.test/${hostile}` }] };
+			await rig.shell.check();
+			await rig.shell.download();
+			assert.equal(rig.shell.state.phase, "error", hostile);
+			assert.deepEqual(rig.calls, [], `${hostile}: nothing was fetched`);
+			assert.deepEqual(readdirSync(join(rig.dir, "Downloads")), [], hostile);
+			assert.deepEqual(readdirSync(outside), [], hostile);
+			assert.deepEqual(readdirSync(rig.dir).sort(), ["Downloads", "Library"], `${hostile}: no file beside the Downloads folder either`);
+		}
+		assert.equal(feedFileName("https://feed.test/Straw%20Boss%20Desk-0.0.2-arm64.dmg"), "Straw Boss Desk-0.0.2-arm64.dmg", "an ordinary name still decodes");
+		assert.equal(feedFileName("https://feed.test/a/b/c.dmg"), "c.dmg", "a directory in the address is not part of the name");
+		assert.equal(feedFileName("https://feed.test/%2E%2E"), null);
+	});
+
 	it("never restarts into an installer (that is Windows)", async () => {
 		const rig = mac();
-		rig.sigs.set(DMG_NAME, sign(DMG));
+		serve(rig, DMG_NAME, DMG);
 		await rig.shell.check();
 		await rig.shell.restart();
 		assert.deepEqual(rig.calls, []);
@@ -303,7 +388,7 @@ describe("the macOS dmg", () => {
 
 describe("electronUpdaterDriver", () => {
 	function fakeUpdater() {
-		const state = { feed: undefined as unknown, listeners: [] as Array<(info: { percent: number }) => void>, quit: [] as unknown[][], downloads: 0 };
+		const state = { feed: undefined as unknown, listeners: [] as Array<(info: { percent: number }) => void>, errorListeners: [] as Array<(error: Error) => void>, quit: [] as unknown[][], downloads: 0, onQuit: null as null | (() => void) };
 		const updater = {
 			autoDownload: true,
 			autoInstallOnAppQuit: true,
@@ -320,9 +405,15 @@ describe("electronUpdaterDriver", () => {
 				for (const l of state.listeners) l({ percent: 41.6 });
 				return ["C:\\pending\\a.exe"];
 			},
-			on: (_event: string, l: (info: { percent: number }) => void) => void state.listeners.push(l),
-			off: (_event: string, l: (info: { percent: number }) => void) => void state.listeners.splice(state.listeners.indexOf(l), 1),
-			quitAndInstall: (...args: unknown[]) => void state.quit.push(args),
+			on: (event: string, l: (info: never) => void) => void (event === "error" ? state.errorListeners : state.listeners).push(l as never),
+			off: (event: string, l: (info: never) => void) => {
+				const list = (event === "error" ? state.errorListeners : state.listeners) as Array<unknown>;
+				list.splice(list.indexOf(l), 1);
+			},
+			quitAndInstall: (...args: unknown[]) => {
+				state.quit.push(args);
+				state.onQuit?.();
+			},
 		};
 		return { state, updater };
 	}
@@ -341,8 +432,24 @@ describe("electronUpdaterDriver", () => {
 		assert.deepEqual(await driver.download((p) => seen.push(p)), { file: "C:\\pending\\a.exe" });
 		assert.deepEqual(seen, [42]);
 		assert.equal(state.listeners.length, 0, "the progress listener is removed");
-		driver.quitAndInstall();
+		assert.deepEqual(await driver.quitAndInstall(), { ok: true });
 		assert.deepEqual(state.quit, [[true, true]]);
+		assert.equal(state.errorListeners.length, 0, "the error listener is removed");
+	});
+
+	it("reports an installer that cannot start: electron-updater raises an error event instead of returning a result (R13-F004)", async () => {
+		const { state, updater } = fakeUpdater();
+		const driver = electronUpdaterDriver(updater as unknown as AppUpdater, FEED, join(tmp(), "updater"));
+		state.onQuit = () => {
+			for (const l of state.errorListeners) l(new Error("No update filepath provided, can't quit and install"));
+		};
+		assert.deepEqual(await driver.quitAndInstall(), { ok: false, detail: "No update filepath provided, can't quit and install" });
+		assert.equal(state.errorListeners.length, 0);
+		state.onQuit = () => {
+			throw new Error("boom");
+		};
+		assert.deepEqual(await driver.quitAndInstall(), { ok: false, detail: "boom" });
+		assert.equal(state.errorListeners.length, 0, "removed after a throw too");
 	});
 
 	it("leaves a GitHub feed to the package's own update file, and reads no update as null", async () => {

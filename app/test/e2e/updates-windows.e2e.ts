@@ -120,15 +120,16 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 	};
 	const startRecord = () => JSON.parse(readFileSync(join(world.layout.state, "start.json"), "utf8")) as { herdr: { pid: number } | null; sb: { pid: number } | null };
 	const herdrAnswers = async (): Promise<boolean> => (await run(childEnvOf(world).HERDR_BIN_PATH as string, ["workspace", "list"], { env: childEnvOf(world), timeoutMs: 15_000 })).code === 0;
-	/** Signs `file` with `scripts/sign-stack.mjs` and the run's key (a JWK in the environment) and returns the signature text. */
-	const signWithScript = (file: string): Buffer => {
+	/** Signs the installer `file` as `version` with `scripts/sign-stack.mjs --shell-version` and the run's key (a JWK in the environment), and puts the manifest and its signature on the feed. */
+	const signWithScript = (file: string, version: string): void => {
 		const out = join(world.base, "signed");
-		const r = spawnSync(process.execPath, [join(appRoot, "..", "scripts", "sign-stack.mjs"), "--key-env", "SBD_TEST_SIGNING_KEY", "--out-dir", out, file], {
+		const r = spawnSync(process.execPath, [join(appRoot, "..", "scripts", "sign-stack.mjs"), "--key-env", "SBD_TEST_SIGNING_KEY", "--out-dir", out, "--shell-version", version, file], {
 			env: { ...process.env, SBD_TEST_SIGNING_KEY: JSON.stringify(key.privateKey.export({ format: "jwk" })) },
 			encoding: "utf8",
 		});
 		assert.equal(r.status, 0, r.stderr);
-		return readFileSync(join(out, `${file.slice(Math.max(file.lastIndexOf("\\"), file.lastIndexOf("/")) + 1)}.sig`));
+		const name = file.slice(Math.max(file.lastIndexOf("\\"), file.lastIndexOf("/")) + 1);
+		for (const suffix of [".manifest", ".manifest.sig"]) feed.put(`${name}${suffix}`, readFileSync(join(out, `${name}${suffix}`)));
 	};
 	const findFiles = (dir: string, name: string, found: string[] = []): string[] => {
 		if (!existsSync(dir)) return found;
@@ -209,8 +210,8 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		tampered[Math.floor(tampered.length / 2)] = (tampered[Math.floor(tampered.length / 2)] as number) ^ 0xff;
 		feed.put(SETUP_2, tampered);
 		feed.put("latest.yml", latestYml({ version: "0.0.2", file: SETUP_2, bytes: tampered }));
-		// The signature is the original file's, made by the script and the run's key.
-		feed.put(`${SETUP_2}.sig`, signWithScript(join(installers, SETUP_2)));
+		// The signed manifest is the original file's, made by the script and the run's key: the SHA512 it signs is not that of the file served.
+		signWithScript(join(installers, SETUP_2), "0.0.2");
 		await (app as ElectronApplication).evaluate(({ Menu }) => void Menu.getApplicationMenu()?.getMenuItemById("settings-updates")?.click());
 		settings = await until("the settings page", 60_000, () => (app as ElectronApplication).windows().find((w) => w.url().endsWith("settings.html")), 250);
 		await settings.waitForLoadState("domcontentloaded");
@@ -218,7 +219,7 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		await settings.locator("#update-cards").waitFor({ timeout: 10_000 });
 		await settings.locator("#update-check").click();
 		await until("the app card to refuse the installer", 300_000, async () => (await stateOf()) === "refused");
-		assert.equal(await settings.locator("#update-app-note").getAttribute("data-reason"), "bad-signature");
+		assert.equal(await settings.locator("#update-app-note").getAttribute("data-reason"), "hash-mismatch");
 		assert.equal(await settings.locator("#update-restart").count(), 0, "never offered");
 		assert.deepEqual(findFiles(world.home, SETUP_2).filter((f) => readFileSync(f).equals(tampered)), [], "the file that failed the check is deleted");
 		await shot(settings, "updates-windows-installer-refused");
@@ -228,7 +229,7 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		const original = readFileSync(join(installers, SETUP_2));
 		feed.put(SETUP_2, original);
 		feed.put("latest.yml", latestYml({ version: "0.0.2", file: SETUP_2, bytes: original }));
-		feed.put(`${SETUP_2}.sig`, signWithScript(join(installers, SETUP_2)));
+		signWithScript(join(installers, SETUP_2), "0.0.2");
 		// 0.0.2 is the version that was refused for the first file: a new file for the same version is checked again only by a new start, so this case restarts the app first.
 		await (app as ElectronApplication).close();
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });

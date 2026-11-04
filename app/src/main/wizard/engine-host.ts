@@ -111,6 +111,11 @@ export class UtilityEngineHost implements EngineHost {
 		this.#child?.postMessage({ type: "cancel" });
 	}
 
+	/** The app is not quitting after all (an update's installer could not start): runs are accepted again. */
+	resume(): void {
+		this.#disposed = false;
+	}
+
 	async dispose(): Promise<void> {
 		this.#disposed = true;
 		const child = this.#child;

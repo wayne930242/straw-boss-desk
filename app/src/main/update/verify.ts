@@ -1,7 +1,9 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 
-// What both update channels share (spec: Updater, The key): the one Ed25519 check against the built-in key list, and the version comparison `minShell` needs. The shell's installers and
-// dmgs, and `stack.json`, are signed with the same key as a detached signature over the exact bytes of the file (`<file>.sig`, the signature in base64 text).
+// What both update channels share (spec: Updater, The key): the one Ed25519 check against the built-in key list, and the version comparison `minShell` needs. `stack.json` is signed with the
+// key as a detached signature over the exact bytes of the file (`stack.json.sig`, the signature in base64 text); its `generation` sits inside the signed bytes. An installer or a dmg is
+// signed through a small manifest that names the kind, the version, the file name and the file's SHA512 (`<file>.manifest` and `<file>.manifest.sig`), so a genuine older installer cannot
+// be served as a newer version and a signature of one kind never verifies as the other.
 
 /** The most keys the list may hold: the current one and, during a rotation, the next (spec: Updater, The key). A longer list is refused whole, never trimmed. */
 export const MAX_KEYS = 2;
@@ -59,6 +61,76 @@ export function verifyDetached(bytes: Uint8Array, signature: string | Uint8Array
 		if (verify(null, bytes, key, sig)) return { ok: true, keyIndex };
 	}
 	return { ok: false, reason: "bad-signature" };
+}
+
+// ---- the shell's manifest ----------------------------------------------------------------------------------------------
+
+/** The first line of a manifest. `stack.json` is JSON and starts with `{`, so no stack file is ever a manifest, and no manifest parses as a stack. */
+export const MANIFEST_HEADER = "straw-boss-desk-update/1";
+
+/** The kinds of file a manifest may name; the shell channel accepts only `shell`. */
+export const MANIFEST_KINDS = ["shell", "stack"] as const;
+export type ManifestKind = (typeof MANIFEST_KINDS)[number];
+
+export interface UpdateManifest {
+	kind: ManifestKind;
+	version: string;
+	/** The file's own name, not a path. */
+	file: string;
+	/** The base64 of the file's SHA512, as `latest.yml` writes it. */
+	sha512: string;
+}
+
+const SHA512_BASE64 = /^[A-Za-z0-9+/]{86}==$/;
+
+/** True for a name that is one plain file name: no separator, no control character, not `.` or `..`, at most 255 characters. */
+export const isPlainFileName = (name: string): boolean => name.length > 0 && name.length <= 255 && !/[\\/\u0000-\u001f\u007f]/.test(name) && name !== "." && name !== "..";
+
+/** The exact text that is signed. `sign-stack.mjs` writes the same lines (`scripts/lib/sign.mjs`). */
+export const manifestText = (m: UpdateManifest): string => `${MANIFEST_HEADER}\nkind: ${m.kind}\nversion: ${m.version}\nfile: ${m.file}\nsha512: ${m.sha512}\n`;
+
+/** The SHA512 of `bytes` in the form a manifest and `latest.yml` carry. */
+export const sha512Of = (bytes: Uint8Array): string => createHash("sha512").update(bytes).digest("base64");
+
+/** A manifest parsed from signed bytes, or null when the text is anything but the exact form `manifestText` writes (extra lines, other spacing and a bad field are all refused). */
+export function parseManifest(bytes: Uint8Array): UpdateManifest | null {
+	const text = Buffer.from(bytes).toString("utf8");
+	const lines = text.split("\n");
+	if (lines.length !== 6 || lines[5] !== "" || lines[0] !== MANIFEST_HEADER) return null;
+	const field = (line: string | undefined, name: string): string | null => (line !== undefined && line.startsWith(`${name}: `) ? line.slice(name.length + 2) : null);
+	const kind = field(lines[1], "kind");
+	const version = field(lines[2], "version");
+	const file = field(lines[3], "file");
+	const sha512 = field(lines[4], "sha512");
+	if (kind === null || version === null || file === null || sha512 === null) return null;
+	if (!(MANIFEST_KINDS as readonly string[]).includes(kind) || !isVersion(version) || !isPlainFileName(file) || !SHA512_BASE64.test(sha512)) return null;
+	const manifest: UpdateManifest = { kind: kind as ManifestKind, version, file, sha512 };
+	return manifestText(manifest) === text ? manifest : null;
+}
+
+export type ShellFileFailure =
+	| SignatureFailure
+	/** The signed text is not a manifest, names another kind of file, another file name, or a version other than the one the feed announced. */
+	| "bad-manifest"
+	/** The signed version is not above the running app's. */
+	| "not-newer"
+	/** The file's SHA512 is not the signed one. */
+	| "hash-mismatch";
+
+export type ShellFileVerdict = { ok: true; keyIndex: number; version: string } | { ok: false; reason: ShellFileFailure };
+
+/**
+ * The decision about a downloaded installer or dmg, in the order that trusts nothing before the key has vouched for it: the manifest's signature, then its shape and kind, the file name, the
+ * version (above `appVersion`, and the one the feed announced), and last the SHA512 of the bytes. The version comes from the signed manifest, never from `latest.yml`.
+ */
+export function verifyShellFile(input: { manifest: Uint8Array; signature: string | Uint8Array; keys: readonly string[]; fileName: string; fileSha512: string; appVersion: string; announcedVersion: string }): ShellFileVerdict {
+	const signed = verifyDetached(input.manifest, input.signature, input.keys);
+	if (!signed.ok) return { ok: false, reason: signed.reason };
+	const manifest = parseManifest(input.manifest);
+	if (manifest === null || manifest.kind !== "shell" || manifest.file !== input.fileName || manifest.version !== input.announcedVersion) return { ok: false, reason: "bad-manifest" };
+	if (compareVersions(manifest.version, input.appVersion) <= 0) return { ok: false, reason: "not-newer" };
+	if (manifest.sha512 !== input.fileSha512) return { ok: false, reason: "hash-mismatch" };
+	return { ok: true, keyIndex: signed.keyIndex, version: manifest.version };
 }
 
 // ---- versions ----------------------------------------------------------------------------------------------------------

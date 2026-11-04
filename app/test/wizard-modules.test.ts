@@ -258,6 +258,20 @@ describe("the engine host", () => {
 		assert.equal(host.pid, null, "the first process's late exit does not touch the second run");
 	});
 
+	it("takes runs again after a dispose that was undone (the installer of an update could not start)", async () => {
+		const first = new FakeChild();
+		const second = new FakeChild();
+		const children = [first, second];
+		const host = new UtilityEngineHost({ fork: () => children.shift() as FakeChild });
+		await host.dispose();
+		await assert.rejects(host.run(config, () => undefined), /disposed/);
+		host.resume();
+		const run = host.run(config, () => undefined);
+		first.say({ type: "ready" });
+		first.say({ type: "done", ok: true, outcomes: [] });
+		assert.deepEqual(await run, { kind: "done", ok: true, outcomes: [] });
+	});
+
 	it("reports an error event, and a process that ends before it is done", async () => {
 		const a = new FakeChild();
 		const hostA = new UtilityEngineHost({ fork: () => a });

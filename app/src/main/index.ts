@@ -250,7 +250,7 @@ const stackUpdater = new StackUpdater({
 	fetchBytes,
 	runEngine: runEngineForUpdate,
 	withStackStopped: (work, options) => supervisor.withStackStopped(work, options),
-	recipeTools: () => wizard.recipe?.tools ?? [],
+	recipeTools: (stack) => wizard.recipeAgainst(stack)?.tools ?? [],
 	reloadStack: () => wizard.reloadStack(),
 	log: (fields) => runtimeLog.event(fields),
 });
@@ -267,6 +267,7 @@ const shellUpdater = new ShellUpdater({
 	reveal: (file) => shell.showItemInFolder(file),
 	// The stack stops the way a quit stops it, and the quit that electron-updater makes next finds nothing left to hold it.
 	prepareQuit: () => stopForUpdate(),
+	resumeAfterFailedInstall: () => resumeAfterFailedUpdate(),
 	log: (fields) => runtimeLog.event(fields),
 });
 
@@ -366,13 +367,14 @@ let stopping = false;
 let stopped = false;
 
 /** The stop sequence of a quit: the install in the engine ends, the stack stops. Resolves with whether everything stopped. */
-function stopAll(): Promise<boolean> {
+function stopAll(options: { forUpdate?: boolean } = {}): Promise<boolean> {
 	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
 	// A Repair job in the queue does not start the stack again once the engine is gone (T9-F002).
 	supervisor.beginQuit();
 	updates.dispose();
 	// A device-code login that waits ends with the app; one that is being finished (glab signing in, the entries being recorded) is waited for, so the login is recorded and never lost.
-	accounts.dispose();
+	// The stop for an update leaves the logins alone: the installer may still fail to start (`resumeAfterFailedUpdate`), and the app's end takes them when it does start.
+	if (options.forUpdate !== true) accounts.dispose();
 	return Promise.all([accounts.settled().catch(() => undefined), engineHost.dispose().catch(() => undefined)])
 		.then(() => supervisor.stop())
 		.then((report) => {
@@ -401,9 +403,21 @@ function stopThenExit(code: (ok: boolean) => number): void {
 async function stopForUpdate(): Promise<void> {
 	if (stopping) return;
 	stopping = true;
-	const ok = await stopAll();
+	const ok = await stopAll({ forUpdate: true });
 	stopped = true;
 	runtimeLog.event({ event: "update-stop", ok });
+}
+
+/** The installer could not start (spec: Updater): the app goes on as it was before the click. The stack starts again, the engine and the supervisor take work, and the checks run again. */
+async function resumeAfterFailedUpdate(): Promise<void> {
+	stopping = false;
+	stopped = false;
+	supervisor.cancelQuit();
+	engineHost.resume();
+	updates.start();
+	runtimeLog.event({ event: "update-resume" });
+	// A start that fails shows on the runtime page through the supervisor's `failure` event.
+	await supervisor.start().catch(() => undefined);
 }
 
 if (!app.requestSingleInstanceLock()) {
