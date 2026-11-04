@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 4,
+  "generation": 5,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -87,7 +87,7 @@
     "integrity": "sha512-wDsiOrkxIB1HNU8XmQ3jvjGQ1cKaqH6GarwEgsIq3eYVoN4SpEJ4i4UIPGUK2sdnb3pb26ULiJnAqBFTiClpBA=="
   },
   "piPackages": [
-    { "name": "pi-straw-boss", "version": "0.53.0", "integrity": "sha512-IARNU50aqP1vWj3qTxwcGUpv6pXVjhYmls/JCRkO1rbo9niEmoo2NZ4dnPN5g1Tyqz8lclQN9nd8nxQe0BP0xg==" },
+    { "name": "pi-straw-boss", "version": "0.56.0", "integrity": "sha512-hbgYoGc5UGTSrjM58AvgOEeqDfYC+2TtVaVvwHJCkbsDzTdegKSsWw8bQmDjqyU3X7JDOIDUOthg3WxXEBwu2g==" },
     { "name": "pi-intercom", "version": "0.18.1", "integrity": "sha512-hY3y+vF6CrkpV0N/55pEsl3DSVjGerlTCQDY2mt37o0jQj8SLW+GmQoKyAEgCyfcxrqJb+Tx4hp4eXqM2hLYgg==" },
     {
       "name": "pi-herdr-agents",

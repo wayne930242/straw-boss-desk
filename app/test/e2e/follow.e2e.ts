@@ -5,7 +5,7 @@
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -743,32 +743,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			const stop = logLines().filter((l) => l.event === "stop-end").at(-1);
 			assert.ok(quit !== undefined && stop !== undefined, "the quit ran the stop sequence to its end");
 			assert.equal(stop.herdrAnswers, false, "the stop saw Herdr's socket go quiet");
-			if (quit.ok !== true) {
-				// Upstream seam U13: a pi that quits in a Herdr tab starts pi-straw-boss's pane-balance helper (`balance.mjs after-close`), which waits up to 30 s for a pane that cannot close
-				// any more. The base the folder hook opened has such a pi, so the stop may report that helper and nothing else: no refusal of the kill rule, and every program it reports a
-				// detached one (parent 1, or the quitting pi that started it) with a base's folder as its working folder, born after Herdr exited, a `node` that lived about 30 s. Any other report fails.
-				assert.deepEqual(stop.refused, [], `the stop refused to kill something: ${JSON.stringify(stop)}`);
-				const reported = (stop.leftovers ?? []) as Array<{ pid: number; file: string }>;
-				assert.ok(reported.length > 0, `the stop was not ok and reported no program: ${JSON.stringify(stop)}`);
-				const exited = Date.parse(String(logLines().filter((l) => l.event === "herdr-exit" && Date.parse(String(l.t)) >= began).at(-1)?.t));
-				assert.ok(Number.isFinite(exited), "the log shows the Herdr server exit during the quit");
-				const home = realpathSync(world.home);
-				for (const l of reported) {
-					const v = seen.get(l.pid);
-					const why = `${l.pid} ${l.file}: ${JSON.stringify(v)}`;
-					assert.ok(v !== undefined && !isWindows, `a program the stop reported was never looked at (${why})`);
-					// Detached means the parent is gone or going: parent 1, or the quitting pi that started it, which the sampler saw leave within a second of the helper's birth (run 41593065968:
-					// `ps` read the helper while its parent pi still ended, so the parent pid was the pi's).
-					const parent = v.ppid === null ? undefined : seen.get(v.ppid);
-					assert.ok(v.ppid === 1 || (parent !== undefined && parent.last <= v.first + 1000), `not detached (${why}; parent ${JSON.stringify(parent)})`);
-					assert.ok(v.cwd !== null && realpathSync(v.cwd).startsWith(realpathSync(workFolder)) && realpathSync(v.cwd).startsWith(home), `its working folder is not a base's (${why})`);
-					assert.ok(v.bornAt >= exited - 1500, `born before Herdr exited (${why}; Herdr exited at ${exited})`);
-					// S53-F005: the helper is a `node` (told by its executable's path, never by a command line) that lives its 30 s and leaves; any other short-lived program of a quitting pi fails here.
-					assert.match(basename(v.file), /^node(\.exe)?$/i, `the reported program is not node (${why})`);
-					assert.ok(v.last - v.bornAt <= 36_000, `it lived longer than the helper's ~30 s (${why}: ${Math.round((v.last - v.bornAt) / 1000)} s)`);
-				}
-				console.log(`U13: the stop reported ${reported.length} pane-balance helper(s) (${reported.map((l) => l.pid).join(", ")}); each is detached (or was read while its quitting parent left), in a base's folder, and born after Herdr exited, and all had left when the wait ended`);
-			}
+			// Seam U13 shipped in pi-straw-boss 0.54.0 (`balance.mjs after-close` ends when Herdr is gone), so the stop is ok: no program is left to report, not even a pane-balance helper.
+			assert.equal(quit.ok, true, `the quit's stop was not ok: ${JSON.stringify(stop)}`);
 		} finally {
 			sampling = false;
 			await sampler;
