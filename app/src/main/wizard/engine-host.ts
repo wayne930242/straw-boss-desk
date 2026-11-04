@@ -72,6 +72,9 @@ export class UtilityEngineHost implements EngineHost {
 			const finish = (end: EngineEnd): void => {
 				if (ended) return;
 				ended = true;
+				// The run is over when it ends, not when its process has exited: a rollback run started at once (the update's) must not meet "already active" while a slow
+				// platform (Windows) still tears the process down.
+				if (this.#child === child) this.#child = null;
 				resolve(end);
 				// The engine process has done its work: it ends with its run.
 				child.kill();
