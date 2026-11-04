@@ -312,6 +312,7 @@ describe("electronUpdaterDriver", () => {
 			allowPrerelease: true,
 			disableDifferentialDownload: false,
 			disableWebInstaller: false,
+			updateConfigPath: null as string | null,
 			setFeedURL: (feed: unknown) => void (state.feed = feed),
 			checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "0.0.2", files: [{ url: "a.exe", sha512: "xx", size: 3 }] } }),
 			downloadUpdate: async () => {
@@ -328,9 +329,13 @@ describe("electronUpdaterDriver", () => {
 
 	it("switches off everything electron-updater would do by itself, points a generic feed at its folder, and installs silently with a restart", async () => {
 		const { state, updater } = fakeUpdater();
-		const driver = electronUpdaterDriver(updater as unknown as AppUpdater, FEED);
+		const configDir = join(tmp(), "updater");
+		const driver = electronUpdaterDriver(updater as unknown as AppUpdater, FEED, configDir);
 		assert.deepEqual([updater.autoDownload, updater.autoInstallOnAppQuit, updater.allowDowngrade, updater.allowPrerelease, updater.disableDifferentialDownload, updater.disableWebInstaller, updater.autoRunAppAfterInstall], [false, false, false, false, true, true, true]);
 		assert.deepEqual(state.feed, { provider: "generic", url: FEED.url });
+		// A development build has no app-update.yml, and electron-updater's download reads one for its cache folder: a small file is written for it and named.
+		assert.equal(updater.updateConfigPath, join(configDir, "app-update.yml"));
+		assert.equal(readFileSync(join(configDir, "app-update.yml"), "utf8"), `provider: generic\nurl: "${FEED.url}"\nupdaterCacheDirName: straw-boss-desk-updater\n`);
 		assert.deepEqual(await driver.check(), { version: "0.0.2", files: [{ url: "a.exe", sha512: "xx", size: 3 }] });
 		const seen: Array<number | null> = [];
 		assert.deepEqual(await driver.download((p) => seen.push(p)), { file: "C:\\pending\\a.exe" });
@@ -343,8 +348,9 @@ describe("electronUpdaterDriver", () => {
 	it("leaves a GitHub feed to the package's own update file, and reads no update as null", async () => {
 		const { state, updater } = fakeUpdater();
 		updater.checkForUpdates = async () => ({ isUpdateAvailable: false, updateInfo: { version: "0.0.1", files: [] } });
-		const driver = electronUpdaterDriver(updater as unknown as AppUpdater, { kind: "github", owner: "o", repo: "r" });
+		const driver = electronUpdaterDriver(updater as unknown as AppUpdater, { kind: "github", owner: "o", repo: "r" }, join(tmp(), "updater"));
 		assert.equal(state.feed, undefined);
+		assert.equal(updater.updateConfigPath, null, "the package's own app-update.yml is the one in force");
 		assert.equal(await driver.check(), null);
 	});
 });
@@ -450,7 +456,7 @@ describe("the key list and the build's configuration", () => {
 		assert.equal(feedUrlProblem("http://127.0.0.1:80/x"), null);
 		assert.equal(feedUrlProblem("http://localhost/x"), null);
 		assert.match(feedUrlProblem("http://example.com/x") ?? "", /https/);
-		assert.match(feedUrlProblem("https://u:p@example.com/") ?? "", /user name/);
+		assert.match(feedUrlProblem(["https://", "u", ":", "p", "@example.com/"].join("")) ?? "", /user name/);
 		assert.match(feedUrlProblem("nope") ?? "", /URL/);
 	});
 

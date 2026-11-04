@@ -25,10 +25,29 @@ const ALT_GIT_VERSION = isWindows ? ALT_GIT_VERSION_WIN : ALT_GIT_VERSION_MAC;
 const generationOf = realStack.generation as number;
 const PI_VERSION = (realStack.npmGlobal as Array<{ version: string }>)[0]?.version as string;
 
-/** What a new pane prints for the four tools: their versions, and where Git's own programs are (the one line that differs between two macOS Git builds of the same release). */
-function paneCommand(out: string): string {
-	if (isWindows) return `cmd /d /c "(gh --version & git --version & git --exec-path & node --version & pi --version) > ${out} 2>&1"`;
+/**
+ * What a new pane prints for the four tools: their versions, and where Git's own programs are (the one line that differs between two macOS Git builds of the same release).
+ * On Windows a pane's PATH is the registry's, machine entries first, and the hosted runner has its own Node, Git and gh there: the pane runs a small script that does what the shims and
+ * launchers do (`gh.cmd`, then `paths.cmd` and its `SBD_PATH` in front), so what it prints is what the app's files name. `pi` is found by name through `tools\shims`, as a PM's pane does.
+ */
+function paneCommand(world: World, script: string, out: string): string {
+	if (isWindows) return `cmd /d /c "${script} > ${out} 2>&1"`;
 	return `{ gh --version; git --version; git --exec-path; node --version; pi --version; } > '${out}' 2>&1`;
+}
+
+function windowsPaneScript(world: World): string {
+	return [
+		"@echo off",
+		`call "${join(world.layout.tools.bin, "gh.cmd")}" --version`,
+		`set "SBD_APP_ROOT=${world.root}"`,
+		`call "${join(world.layout.tools.bin, "paths.cmd")}"`,
+		'set "PATH=%SBD_PATH%;%PATH%"',
+		"node --version",
+		"git --version",
+		"git --exec-path",
+		"pi --version",
+		"",
+	].join("\r\n");
 }
 
 describe("a stack update against the real tools (e2e-light, task 13)", { skip: off }, () => {
@@ -46,7 +65,8 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 	};
 	const pathsText = (name: string): string => readFileSync(join(world.layout.tools.bin, name), "utf8");
 	const pathFiles = isWindows ? ["paths.sh", "paths.cmd"] : ["paths.sh"];
-	const pane = (label: string): Promise<string> => herdr.inPane(label, paneCommand, world.home, 90_000);
+	let paneScript = "";
+	const pane = (label: string): Promise<string> => herdr.inPane(label, (out) => paneCommand(world, paneScript, out), world.home, 90_000);
 
 	before(async () => {
 		world = createWorld("u");
@@ -58,6 +78,8 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 		writeFileSync(files.active, `${JSON.stringify(realStack, null, "\t")}\n`);
 		herdr = new WorldHerdr(world);
 		await herdr.start();
+		paneScript = join(world.base, "pane-tools.cmd");
+		if (isWindows) writeFileSync(paneScript, windowsPaneScript(world));
 		updater = new StackUpdater({
 			layout: world.layout,
 			shellVersion: "0.0.1",
@@ -71,7 +93,16 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 				const failed = Object.values(run.outcomes).find((o) => o.status === "failed");
 				return { ok: false, failed: { stage: failed?.stage ?? "engine", category: failed?.failure?.category ?? "other" } };
 			},
-			withStackStopped: (work) => work(),
+			// The stack stops the way the app's supervisor stops it: Herdr (whose environment the panes inherit) goes, the work runs, and a new Herdr starts with the environment built from the tools then in force.
+			withStackStopped: async (work) => {
+				await herdr.stop();
+				try {
+					return await work();
+				} finally {
+					herdr = new WorldHerdr(world);
+					await herdr.start();
+				}
+			},
 			recipeTools: () => [],
 			reloadStack: () => undefined,
 			log: () => undefined,
@@ -145,5 +176,6 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 		const text = await pane("after-rollback");
 		assert.match(text, new RegExp(`gh version ${ALT_GH_VERSION.replace(/\./g, "\\.")}`), text);
 		assert.match(text, new RegExp(`v${ALT_NODE_VERSION.replace(/\./g, "\\.")}`), text);
+		assert.match(text.replace(/\\/g, "/"), new RegExp(`git/${ALT_GIT_VERSION.replace(/\./g, "\\.")}/`), `git --exec-path names the Git folder in force: ${text}`);
 	});
 });

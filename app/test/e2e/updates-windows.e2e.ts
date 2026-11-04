@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it as nodeIt } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { stackFiles } from "../../src/main/update/stack.ts";
@@ -35,12 +35,24 @@ const skip = !enabled
 const screenshotDir = process.env.SBD_SCREENSHOT_DIR ?? join(appRoot, "test-results", "screenshots");
 
 if (enabled && process.platform === "win32" && !hosted.run && hosted.fail) {
-	it("runs on a hosted runner", () => {
+	nodeIt("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
+function logTails(dir: string, lines = 14, width = 360): string[] {
+	if (!existsSync(dir)) return [];
+	return readdirSync(dir).flatMap((name) => {
+		try {
+			return [`${name}: ${readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean).slice(-lines).map((l) => l.slice(0, width)).join(" | ")}`];
+		} catch {
+			return [];
+		}
+	});
+}
 
 async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 500): Promise<NonNullable<T>> {
 	const deadline = Date.now() + ms;
@@ -70,8 +82,32 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 	let world: World;
 	let feed: FeedServer;
 	let app: ElectronApplication | undefined;
+	let settings: Page;
 	const key = makeTestKey();
 	const platform = createPlatform();
+	/** Every case below runs through this: a failure carries the cards' text, the update record and the app's logs. */
+	const it = (name: string, body: () => Promise<void>) =>
+		nodeIt(name, async () => {
+			try {
+				await body();
+			} catch (error) {
+				const parts: string[] = [];
+				try {
+					parts.push(`cards: ${(await settings.locator("#update-cards").innerText({ timeout: 3000 })).replace(/\s+/g, " ")}`);
+				} catch {
+					parts.push("cards: (unreadable)");
+				}
+				try {
+					parts.push(`update.json: ${readFileSync(join(world.layout.state, "update.json"), "utf8").replace(/\s+/g, " ").slice(0, 500)}`);
+				} catch {
+					parts.push("update.json: (missing)");
+				}
+				parts.push(...logTails(world.layout.logs));
+				parts.push(`feed requests: ${feed.requests.slice(-12).join(", ")}`);
+				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`;
+				throw error;
+			}
+		});
 	let installDir = "";
 	let exe = "";
 	const RECIPE = { forges: [{ kind: "github", host: "github.com" }], tools: [] as string[], id: "ci-updates-win", name: "CI updates", version: "1.0.0", instructions: "- the CI rule" };
@@ -165,7 +201,6 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		assert.equal(await app.evaluate(({ app: electronApp }) => electronApp.getVersion()), "0.0.1");
 	});
 
-	let settings: Page;
 	const stateOf = async (): Promise<string | null> => settings.locator('li.update-card[data-role="app"]').getAttribute("data-state");
 
 	it("refuses a 0.0.2 installer with one byte changed and its latest.yml regenerated: deleted, never offered", async () => {
