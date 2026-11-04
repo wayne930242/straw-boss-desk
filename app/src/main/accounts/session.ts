@@ -47,12 +47,19 @@ export interface ForgeAccountsDeps {
 	loginWaitMs?: number;
 	/** The limit of a status or a logout call (default 60 s); the GitLab login has the same. */
 	callMs?: number;
+	/** How long a quit waits for a login that is being finished, and the deadline that bounds every call made after the quit began (default 75 s; T10RR-F002). */
+	settleMs?: number;
+	now?: () => number;
 	setTimer?: (fn: () => void, ms: number) => unknown;
 	clearTimer?: (timer: unknown) => void;
 }
 
 const LOGIN_WAIT_MS = 15 * 60_000;
 const CALL_MS = 60_000;
+/** How long a quit waits for a login that is being finished (spec: a quit waits for it, up to 75 s). */
+const SETTLE_MS = 75_000;
+/** The least a call gets once the quit's deadline is near: enough for a local CLI to answer, short enough to end the chain. */
+const MIN_CALL_MS = 2_000;
 
 const hostKey = (host: string): string => host.toLowerCase();
 const namesOf = (entries: readonly StoreEntry[]): EntryName[] => entries.map((e) => ({ name: e.name, account: e.account }));
@@ -89,6 +96,8 @@ export class ForgeAccounts {
 	/** The operations under way, so a quit can wait for a login that glab or gh is finishing (T10R-F001). */
 	readonly #inflight = new Set<Promise<unknown>>();
 	#disposed = false;
+	/** Set when the quit began: every CLI call made after it ends by then (T10RR-F002). */
+	#deadline: number | null = null;
 
 	constructor(deps: ForgeAccountsDeps) {
 		this.#d = deps;
@@ -159,6 +168,16 @@ export class ForgeAccounts {
 	}
 
 	// ---- the store, and the record -------------------------------------------------------------------------------------
+
+	/**
+	 * The limit of a CLI call now. Normally `callMs`; once the quit began, no call may run past the quit's deadline, so a login that was being finished when the quit began (the status, and on the
+	 * plain-text path a logout) ends within `settleMs` of it in all, and not 60 s per step (T10RR-F002).
+	 */
+	#callMs(): number {
+		const base = this.#d.callMs ?? CALL_MS;
+		if (this.#deadline === null) return base;
+		return Math.max(MIN_CALL_MS, Math.min(base, this.#deadline - (this.#d.now ?? Date.now)()));
+	}
 
 	#writeRecord(record: AccountsRecord): void {
 		writeAccountsRecord(this.#d.layout, record);
@@ -352,7 +371,7 @@ export class ForgeAccounts {
 		}
 		const args = ["auth", "login", "--hostname", host, "--git-protocol", "https", "--api-protocol", "https", "--stdin"];
 		this.#d.log({ event: "forge-login-start", cli: "glab", host, args });
-		const result = await this.#d.run(prepared.file, args, { stdin: `${secret}\n`, env: prepared.env, replaceEnv: true, timeoutMs: this.#d.callMs ?? CALL_MS });
+		const result = await this.#d.run(prepared.file, args, { stdin: `${secret}\n`, env: prepared.env, replaceEnv: true, timeoutMs: this.#callMs() });
 		if (slot.attempt !== attempt) return;
 		this.#d.log({ event: "forge-login-exit", cli: "glab", host, exit: result.code, ...(result.timedOut ? { timedOut: true } : {}) });
 		if (result.code !== 0) {
@@ -386,10 +405,19 @@ export class ForgeAccounts {
 		if (slot.attempt !== attempt) return;
 		this.#d.log({ event: "forge-verdict", cli: cliOf(kind), host, plain: verdict.plain, verified: verdict.verified, cliSaidPlain });
 		if (verdict.plain || cliSaidPlain) {
-			const removal = await this.#remove(kind, host, slot, "plain-text");
+			let removal = await this.#remove(kind, host, slot, "plain-text");
 			if (slot.attempt !== attempt) return;
 			// A removal that stopped before the logout (the store could not be listed, the logout failed) still takes the host out of the app's own file: that touches no store entry (T10R-F002).
-			if (removal.phase !== "signed-out" && removal.phase !== "left-alone") this.#removeFromOwnFile(kind, host);
+			if (removal.phase !== "signed-out" && removal.phase !== "left-alone") {
+				this.#removeFromOwnFile(kind, host);
+				// With the host gone from that file the CLI can no longer log out of it (gh: "not logged in to <host>"), so an entry the app owns that a failed logout left in the store is deleted by the app
+				// itself (T10RR-F003). Without a listing nothing is known about the store, so nothing is deleted.
+				if (removal.phase === "failed") {
+					const cleaned = await this.#deleteOwned(kind, host, slot);
+					if (slot.attempt !== attempt) return;
+					if (cleaned.ok) removal = { phase: "signed-out" };
+				}
+			}
 			// The files decide whether the screen may say no token stays: what the logout was supposed to remove is read again.
 			const stays = this.#plainFiles(kind, host);
 			const detail = stays.length === 0 ? verdict.reason : `${verdict.reason}; removing it ended as ${removal.phase}; a token still stays in ${stays.join(", ")}`;
@@ -418,12 +446,12 @@ export class ForgeAccounts {
 		const prepared = await this.#prepare(kind, host);
 		if (prepared === null) return { plain: false, verified: false, reason: `could not verify: ${cliOf(kind)} is not installed` };
 		if (kind === "github") {
-			const status = await this.#d.run(prepared.file, ["auth", "status", "--hostname", host, "--json", "hosts"], { env: prepared.env, replaceEnv: true, timeoutMs: this.#d.callMs ?? CALL_MS });
+			const status = await this.#d.run(prepared.file, ["auth", "status", "--hostname", host, "--json", "hosts"], { env: prepared.env, replaceEnv: true, timeoutMs: this.#callMs() });
 			const source = status.code === 0 ? ghTokenSource(status.stdout, host).source : null;
 			const files = ghFileFindings(forgeConfigDir(this.#d.layout, "github"), host);
 			return ghTokenVerdict({ source, hostsTokens: files.hosts.own, configTokens: files.config.own });
 		}
-		const status = await this.#d.run(prepared.file, ["auth", "status", "--hostname", host], { env: prepared.env, replaceEnv: true, timeoutMs: this.#d.callMs ?? CALL_MS });
+		const status = await this.#d.run(prepared.file, ["auth", "status", "--hostname", host], { env: prepared.env, replaceEnv: true, timeoutMs: this.#callMs() });
 		return glabTokenVerdict({ configTokens: glabFileFindings(forgeConfigDir(this.#d.layout, "gitlab"), host).own, statusExit: status.code });
 	}
 
@@ -462,10 +490,24 @@ export class ForgeAccounts {
 			return { phase: "left-alone", foreign: namesOf(split.foreign), left: marked.left.map((e) => ({ name: e.name, account: e.account })) };
 		}
 		if (prepared === null) return { phase: "failed", detail: `${cliOf(kind)} is not installed` };
-		const result = await this.#d.run(prepared.file, ["auth", "logout", "--hostname", host], { env: prepared.env, replaceEnv: true, timeoutMs: this.#d.callMs ?? CALL_MS });
+		const result = await this.#d.run(prepared.file, ["auth", "logout", "--hostname", host], { env: prepared.env, replaceEnv: true, timeoutMs: this.#callMs() });
 		this.#d.log({ event: "forge-logout", cli: cliOf(kind), host, why, exit: result.code });
-		if (result.code !== 0) return { phase: "failed", detail: hideSecrets(loginLine(`${result.stdout}\n${result.stderr}`)) };
-		// A logout that left an owned entry in the store did not finish it; the record keeps what the store still holds.
+		if (result.code !== 0) {
+			const said = hideSecrets(loginLine(`${result.stdout}\n${result.stderr}`));
+			// A host that is still in the CLI's file can be logged out again: the PM tries again.
+			if (this.#inOwnFile(kind, host)) return { phase: "failed", detail: said };
+			// A host that is not (the app took it out of the file when a login ended on a plain-text token) cannot: gh refuses `auth logout` for a host missing from its `hosts.yml` ("not logged in to
+			// <host>", gh 2.103.3 `logoutRun`), so the owned entry would stay in the store for good (T10RR-F003). glab deletes the keyring copy of a token even then (1.124.0 `syncKeyring`, outside
+			// CI, which the launcher's environment guarantees). So the entries the app owns, checked again right now, are deleted by the app itself.
+			const cleaned = await this.#deleteOwned(kind, host, slot);
+			return cleaned.ok ? { phase: "signed-out" } : { phase: "failed", detail: said === "" ? cleaned.detail : said };
+		}
+		await this.#recordRemoval(kind, host, slot);
+		return { phase: "signed-out" };
+	}
+
+	/** The record after a login left the store: the host's entries are dropped, except any the store still holds (a logout that left an owned entry did not finish; the record keeps what the store holds). */
+	async #recordRemoval(kind: ForgeKind, host: string, slot: HostState): Promise<void> {
 		const after = await listHostEntries(this.#d.credentials, kind, host);
 		const held = readAccountsRecord(this.#d.layout);
 		const dropped = dropHost(held, kind, host);
@@ -473,7 +515,30 @@ export class ForgeAccounts {
 		this.#writeRecord(record);
 		slot.state = after.ok ? stateOf(record, after.entries, kind, host) : "not-signed-in";
 		slot.entries = [];
-		return { phase: "signed-out" };
+	}
+
+	/**
+	 * Deletes the entries the app owns for the host through the store, after a logout that failed. The entries are listed again first and only those still owned (their name recorded, their modification
+	 * time unchanged) are deleted; one that is not the app's stops it. Says whether every owned entry is gone.
+	 */
+	async #deleteOwned(kind: ForgeKind, host: string, slot: HostState): Promise<{ ok: true; deleted: number } | { ok: false; detail: string }> {
+		const settled = await this.#settle(kind, host, slot);
+		if ("failed" in settled) return { ok: false, detail: settled.failed };
+		const split = classify(settled.entries, settled.record);
+		if (split.foreign.length > 0) return { ok: false, detail: "an entry the app does not own is in the store now, so nothing was deleted" };
+		let deleted = 0;
+		for (const entry of split.owned) {
+			try {
+				await this.#d.credentials.delete({ name: entry.name, account: entry.account });
+				deleted++;
+			} catch (error) {
+				this.#d.log({ event: "forge-owned-delete-failed", cli: cliOf(kind), host, name: entry.name, detail: loginLine(String((error as Error).message)) });
+				return { ok: false, detail: loginLine(String((error as Error).message)) };
+			}
+		}
+		this.#d.log({ event: "forge-owned-deleted", cli: cliOf(kind), host, deleted });
+		await this.#recordRemoval(kind, host, slot);
+		return { ok: true, deleted };
 	}
 
 	/** Entries still in the store after a logout stay in the record as they were (owned ones remain owned; it is not the app's to forget them). */
@@ -485,6 +550,16 @@ export class ForgeAccounts {
 			entries: [...dropped.entries, ...before.entries.filter((e) => mine(e) && stays.has(JSON.stringify([e.name, e.account])))],
 			left: [...dropped.left, ...before.left.filter((e) => mine(e) && stays.has(JSON.stringify([e.name, e.account])))],
 		};
+	}
+
+	/** True when the CLI's own file (gh `hosts.yml`, glab `config.yml`) in the app's configuration folder still has a block for the host: the CLI's logout can act on it. */
+	#inOwnFile(kind: ForgeKind, host: string): boolean {
+		const file = join(forgeConfigDir(this.#d.layout, kind), kind === "github" ? "hosts.yml" : "config.yml");
+		try {
+			return existsSync(file) && removeHostBlock(readFileSync(file, "utf8"), host, kind === "github" ? [] : ["hosts"]).removed;
+		} catch {
+			return false;
+		}
 	}
 
 	/** The host leaves the app's own `hosts.yml` (gh) or `config.yml` (glab). A file that is not there, or not readable, is left alone. */
@@ -517,14 +592,6 @@ export class ForgeAccounts {
 		child?.kill();
 		if (waiting) this.#set(slot, { phase: "ready" });
 		else if (checking) this.#set(slot, { phase: "idle" });
-	}
-
-	/** Back to the start of a host: the next `begin` runs the checks again. */
-	reset(host: string): void {
-		const slot = this.#hosts.get(hostKey(host));
-		if (slot === undefined) return;
-		this.cancel(host);
-		this.#set(slot, { phase: "idle" });
 	}
 
 	open(kind: ForgeKind, host: string): void {
@@ -561,6 +628,7 @@ export class ForgeAccounts {
 	/** The app is quitting: a login that waits for approval ends with it. One that is `working` is not cut off; `settled` waits for it. */
 	dispose(): void {
 		this.#disposed = true;
+		this.#deadline = (this.#d.now ?? Date.now)() + (this.#d.settleMs ?? SETTLE_MS);
 		for (const slot of this.#hosts.values()) {
 			if (slot.flow.phase === "working") continue;
 			slot.attempt++;
@@ -571,10 +639,13 @@ export class ForgeAccounts {
 	}
 
 	/**
-	 * Resolves when every operation under way has ended, or after `maxMs`: the quit waits for a login that glab or gh is finishing, so its entry is recorded with its time and its verdict runs
-	 * (T10R-F001). The limit of a CLI call is 60 s, so a login that hangs ends first.
+	 * Resolves when every operation under way has ended, or after `maxMs` (default 75 s): the quit waits for a login that glab or gh is finishing, so its entry is recorded with its time and its
+	 * verdict runs (T10R-F001). The whole chain is bounded by the same 75 s, measured from the quit (T10RR-F002): the glab login that was running has its own 60 s limit, and every call made after
+	 * the quit began (the status, a logout on the plain-text path) gets at most what is left of the 75 s, and at least 2 s. The store's listings between them have their own 10 s limits (spec: The
+	 * code-host screens), so the chain can end that much later; the stop that follows then reports a CLI that still runs as a leftover. A call cut off by its limit leaves the verdict "could not
+	 * verify", which fails the step and keeps the login.
 	 */
-	settled(maxMs: number = (this.#d.callMs ?? CALL_MS) + 15_000): Promise<void> {
+	settled(maxMs: number = this.#d.settleMs ?? SETTLE_MS): Promise<void> {
 		if (this.#inflight.size === 0) return Promise.resolve();
 		return new Promise((resolve) => {
 			const timer = this.#setTimer(resolve, maxMs);

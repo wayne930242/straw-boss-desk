@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CredentialStoreError, type CommandRunner, type CredentialStore, type ProbeResult, type RunOptions, type RunResult, type StoreEntry } from "../../src/main/platform/types.ts";
 import type { LoginChild, SpawnLogin } from "../../src/main/accounts/cli.ts";
@@ -70,6 +70,7 @@ export interface CliCall {
 	args: string[];
 	stdin?: string;
 	env?: Record<string, string>;
+	timeoutMs?: number;
 }
 
 export interface FakeCliOptions {
@@ -96,13 +97,20 @@ export function fakeRun(store: FakeStore, options: FakeCliOptions = {}): { run: 
 	const calls: CliCall[] = [];
 	const run: CommandRunner = async (file, args, runOptions?: RunOptions): Promise<RunResult> => {
 		const cli = /glab(\.exe)?$/.test(file) ? "glab" : "gh";
-		calls.push({ cli, args: [...args], ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}), ...(runOptions?.env !== undefined ? { env: runOptions.env } : {}) });
+		calls.push({ cli, args: [...args], ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}), ...(runOptions?.env !== undefined ? { env: runOptions.env } : {}), ...(runOptions?.timeoutMs !== undefined ? { timeoutMs: runOptions.timeoutMs } : {}) });
 		const host = hostArg(args);
 		const verb = args.slice(0, 2).join(" ");
 		if (verb === "auth login" && cli === "glab") {
 			const login = options.glabLogin ?? { code: 0, stderr: "" };
 			if (login.code === 0) {
 				store.write(`glab:${host}:token`, "");
+				// What glab leaves in its own file after a keyring login: the host, with no token in it.
+				const dir = runOptions?.env?.GLAB_CONFIG_DIR;
+				if (dir !== undefined) {
+					mkdirSync(dir, { recursive: true });
+					const file = join(dir, "config.yml");
+					if (!existsSync(file)) writeFileSync(file, `hosts:\n  ${host}:\n    use_keyring: true\n    api_protocol: https\n`);
+				}
 				options.onGlabLogin?.(host);
 				if (options.holdGlabLogin !== undefined) await options.holdGlabLogin;
 			}
