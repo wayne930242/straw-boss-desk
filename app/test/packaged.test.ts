@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BUILD_KINDS, locatePackaged, readAsarFile, readFuses } from "./harness/packaged.ts";
@@ -31,7 +32,21 @@ for (const kind of BUILD_KINDS) {
 			assert.equal(meta.productName, kind === "release" ? "Straw Boss Desk" : "Straw Boss Desk Dev");
 			assert.equal(packaged.productName, meta.productName);
 			assert.equal(meta.main, "dist/main/index.js");
-			assert.equal(meta.dependencies, undefined);
+			// The one runtime dependency is the shell updater (task 13); it ships inside the asar with its own dependencies.
+			assert.deepEqual(meta.dependencies, { "electron-updater": (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { dependencies: Record<string, string> }).dependencies["electron-updater"] });
+			assert.ok(readAsarFile(join(packaged.resources, "app.asar"), "node_modules/electron-updater/package.json").length > 0, "electron-updater is in the package");
+		});
+
+		// electron-builder writes resources/app-update.yml only for the dmg, zip and NSIS targets, never for a `--dir` pack; the publish arguments themselves are asserted in build.test.ts,
+		// and the guarded Windows install fixture proves the installed copy. Here a file that is present must be the GitHub feed, and the development build must have none.
+		it(kind === "release" ? "has no update feed other than GitHub's" : "carries no update feed of its own: the tests set one at run time", () => {
+			const file = join(packaged.resources, "app-update.yml");
+			if (kind === "dev") return assert.equal(existsSync(file), false);
+			if (!existsSync(file)) return;
+			const text = readFileSync(file, "utf8");
+			assert.match(text, /^provider: github$/m);
+			assert.match(text, /^owner: wayne930242$/m);
+			assert.match(text, /^repo: straw-boss-desk$/m);
 		});
 
 		it("ships the compiled app and its shell page", () => {
