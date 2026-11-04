@@ -788,6 +788,22 @@ describe("the CLI's logout after a plain-text logout took the host out of the ap
 		assert.equal(readAccountsRecord(r.layout).entries.length, 0);
 	});
 
+	it("a plain-text login whose logout fails while the host is still in the CLI's file: the app takes the token out of the file and deletes its own store entry, and says no token stays", async () => {
+		const plainGlab = (r: ReturnType<typeof rig>): void => {
+			mkdirSync(r.layout.glabConfig, { recursive: true });
+			writeFileSync(join(r.layout.glabConfig, "config.yml"), "hosts:\n  gitlab.com:\n    token: fake_token_value_z\n");
+		};
+		const r = rig({ logoutExit: 1, onGlabLogin: () => plainGlab(r) });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		const f = flow(r, "gitlab.com", "plain-text");
+		assert.equal(logouts(r).length, 1, "glab's own logout was tried first");
+		assert.equal(r.store.get("glab:gitlab.com:token"), undefined, "no token of the app's stays in the store");
+		assert.ok(!readFileSync(join(r.layout.glabConfig, "config.yml"), "utf8").includes("fake_token_value_z"), "and none in the file");
+		assert.equal(f.removed, true);
+		assert.equal(readAccountsRecord(r.layout).entries.length, 0);
+	});
+
 	it("a logout that fails while the host is still in the CLI's file is a failure the PM can try again", async () => {
 		const r = rig({ logoutExit: 1 });
 		await r.accounts.begin("gitlab", "gitlab.com");
