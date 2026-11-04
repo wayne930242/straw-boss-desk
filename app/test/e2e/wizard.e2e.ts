@@ -11,9 +11,13 @@
 //   - the code-host sign-ins (task 10): a seeded foreign gh:github.com entry stops the GitHub step before any device code, a seeded foreign glab entry stops the GitLab step before the token field
 //     (each unchanged afterwards); with SBD_GITLAB_TEST_TOKEN the GitLab token login (verdict, record, token search, a git push through the stored token), settings' Sign out for an owned login and for
 //     a foreign one, a foreign write over the app's own entry, and Sign in again; on macOS, a relaunch with a HOME that has no keychain stops at the store probe.
+//   - Claude and Linear (task 11): step 7 against a stand-in `claude` (SBD_TEST_CLAUDE_CMD): the code field, a planted code that reaches the stand-in's standard input and is in no log, no command line, no file
+//     and no page storage, a refused code; step 9 with a dummy key: saved encrypted, `ttt` installed, the restart offer, **Restart now**, `LINEAR_API_KEY` in a new pane after it and not before, in no file under the
+//     root; a relaunch with SBD_TEST_NO_ENCRYPTION=1 (`isEncryptionAvailable()` false) refuses the key at step 9; the Claude and Linear cards of settings; the shipped product's Safe Storage item unchanged.
 //   SBD_E2E=1 SBD_E2E_KIND=dev node --test test/e2e/wizard.e2e.ts        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +35,9 @@ import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { statusSummary } from "../harness/status-summary.ts";
 import { relaunchNotice } from "../harness/relaunch-time.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
-import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, seedDownloads, type World } from "../harness/e2e-light.ts";
+import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, seedDownloads, WorldHerdr, type World } from "../harness/e2e-light.ts";
+import { tttCommand } from "../../src/main/accounts/linear.ts";
+import { parseStack } from "../../src/main/bootstrap/stack.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { developerToolsAsideScope } from "../harness/devtools-aside.ts";
 import { hostedCase, type FixtureIO } from "../harness/hosted.ts";
@@ -70,6 +76,12 @@ async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, e
 const exampleDir = fileURLToPath(new URL("../../../recipe/examples/invalid/", import.meta.url));
 const ciRecipe = fileURLToPath(new URL("../fixtures/ci.strawboss.json", import.meta.url));
 const PLANTED = "LEAKCHECK123";
+/** The stand-in `claude` (task 11) and the code planted in the Claude screen's field. */
+const FAKE_CLAUDE = fileURLToPath(new URL("../harness/fake-claude.mjs", import.meta.url));
+const CLAUDE_CODE = `planted-code-${randomBytes(6).toString("hex")}`;
+/** A dummy Linear key, of the shape Linear's are; it is no account's. */
+const LINEAR_KEY = `lin_api_${randomBytes(20).toString("hex")}`;
+const STACK_JSON = fileURLToPath(new URL("../../../stack.json", import.meta.url));
 // The CI GitLab account (boss decision 2026-11-04): a PAT with `api` scope in the Actions secret SBD_GITLAB_TEST_TOKEN, on push and workflow_dispatch only. It is never printed, never put in a message,
 // and kept out of the environment of the app and of every child (the launch below removes it); the test process alone holds it.
 const GITLAB_TOKEN = (process.env.SBD_GITLAB_TEST_TOKEN ?? "").trim();
@@ -123,7 +135,9 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const base: Record<string, string> = {};
 		for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !EXCLUDED_FROM_APP_ENV.test(k)) base[k] = v;
 		// macOS: no STRAW_BOSS_DESK_ROOT, so the app takes its default root, `<home>/Library/Application Support/straw-boss-desk`, under the scratch home. Windows: the root named in the spec.
-		return { ...base, ...world.appEnv, ...(isWindows ? { STRAW_BOSS_DESK_ROOT: world.root } : {}), ...extra };
+		// The stand-in `claude` answers in a development build only; its notes go to a folder beside the root, never into it.
+		const claude = { SBD_TEST_CLAUDE_CMD: JSON.stringify([process.execPath, FAKE_CLAUDE, "--out", join(world.base, "claude-standin")]) };
+		return { ...base, ...world.appEnv, ...claude, ...(isWindows ? { STRAW_BOSS_DESK_ROOT: world.root } : {}), ...extra };
 	};
 	const launch = async (lang: string, extra: Record<string, string> = {}): Promise<ElectronApplication> => {
 		const app = await electron.launch({ executablePath: packaged?.executable, args: [`--lang=${lang}`], env: env(extra), timeout: 60_000 });
@@ -197,6 +211,46 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		return { git, env };
 	};
 
+	// ---- Claude and Linear (task 11) ---------------------------------------------------------------------------------------------------------------------------------------------------
+	const standIn = (): string => join(world.base, "claude-standin");
+	const standInCalls = (): Array<{ argv: string[]; config: string; secureStorageDir: string | null }> => {
+		const file = join(standIn(), "calls.jsonl");
+		return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { argv: string[]; config: string; secureStorageDir: string | null }) : [];
+	};
+	/** Everything a search for a planted value must cover: the whole home (the data root lies in it on macOS) and the temp folder beside it, and the root itself where it does not. */
+	const searchRoots = (): string[] => [world.home, join(world.base, "tmp"), ...(under(world.home, world.root) ? [] : [world.root])];
+	/** The page, its storage, its cookies and its databases hold no `needle`, and no field holds a value. */
+	const pageHolds = (p: Page, needle: string): Promise<boolean> =>
+		p.evaluate(async (n) => {
+			const dbs = typeof indexedDB.databases === "function" ? JSON.stringify(await indexedDB.databases()) : "";
+			return [document.documentElement.outerHTML, JSON.stringify({ ...localStorage }), JSON.stringify({ ...sessionStorage }), document.cookie, dbs].some((part) => part.includes(n));
+		}, needle);
+	const fieldsEmpty = (p: Page): Promise<boolean> => p.evaluate(() => [...document.querySelectorAll("input")].every((i) => i.value === ""));
+	/** `shell.openExternal` of the app records what it was asked to open (a runner must not open a browser). */
+	const recordExternal = (app: ElectronApplication) =>
+		app.evaluate(({ shell }) => {
+			const g = globalThis as unknown as { __opened?: string[] };
+			g.__opened = [];
+			shell.openExternal = (async (url: string) => void g.__opened?.push(url)) as unknown as typeof shell.openExternal;
+		});
+	const openedExternal = (app: ElectronApplication): Promise<string[]> => app.evaluate(() => (globalThis as unknown as { __opened?: string[] }).__opened ?? []);
+	/** What a new pane of the stack sees of `LINEAR_API_KEY`, in brackets (an unset variable is `[]`). */
+	const paneLinearKey = async (): Promise<string> => {
+		const h = new WorldHerdr(world);
+		const text = await h.inPane(
+			"linear-env",
+			(out) => (isWindows ? `[IO.File]::WriteAllText('${out}', '[' + $env:LINEAR_API_KEY + ']')` : `printf '[%s]' "$LINEAR_API_KEY" > '${out}'`),
+			world.home,
+			120_000,
+		);
+		return text.trim();
+	};
+	const workFolderNow = (): string => readWizard().workFolder ?? join(world.home, "StrawBoss");
+	/** The Safe Storage items of the shipped product and of this development build in the scratch keychain (macOS; Windows keeps the key in Local State). */
+	const safeStorageItems = async (): Promise<{ shipped: unknown[]; dev: unknown[] }> =>
+		isWindows ? { shipped: [], dev: [] } : { shipped: await rig.list(["Straw Boss Desk Safe Storage"]), dev: await rig.list(["Straw Boss Desk Dev Safe Storage"]) };
+	let shippedSafeStorage: unknown[] = [];
+
 	before(async () => {
 		assertElevatedRunner();
 		if (aside.state === "refused") throw new Error(aside.reason);
@@ -211,6 +265,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await rig.seeder.write(GH_FOREIGN.name, GH_FOREIGN.account, rig.dummy("gh-foreign"));
 		foreignGh = await rig.snapshot(GH_FOREIGN.name, GH_FOREIGN.account);
 		assert.ok(foreignGh.secret !== null && foreignGh.modified !== null, "the foreign gh entry is in the store");
+		// The shipped product's Safe Storage item, if the scratch keychain holds one, must keep its modification time through the whole run (a local run never has the shipped name; the CI keychain starts empty).
+		shippedSafeStorage = (await safeStorageItems()).shipped;
 	});
 
 	after(async () => {
@@ -383,10 +439,74 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await shotBoth(page, "wizard-claude");
 	});
 
-	it("GitHub step: a foreign gh:github.com entry stops it before any device code, and stays as it was", async () => {
+	it("Claude step: a refused code, then a planted code that reaches the stand-in's standard input and nowhere else, and the CLI's status says signed in (task 11)", async () => {
 		assert.equal(await stepOf(page), "claude");
-		await page.locator("#later").click();
+		// The status is read when the step opens: not signed in, Sign in first, and Later stays a choice.
+		await page.locator("#claude-sign-in").waitFor({ timeout: 60_000 });
+		assert.equal(await page.locator("#later").isVisible(), true, "Later is a choice");
+		assert.equal(await page.locator("#step-next").count(), 0, "Next waits for a sign-in");
+		assert.equal(await page.locator("#claude-sign-in").evaluate((el) => el.classList.contains("primary")), true);
+		assert.equal(await page.locator('#claude-storage, [data-role="storage"]').count(), isWindows ? 1 : 0, "Windows says the sign-in is a plain-text file; macOS says nothing");
+		await shotBoth(page, "claude-not-signed-in");
+		await recordExternal(first);
+
+		await page.locator("#claude-sign-in").click();
+		await page.locator("#claude-code").waitFor({ timeout: 60_000 });
+		const field = page.locator("#claude-code");
+		assert.equal(await field.getAttribute("type"), "password", "the code field is masked");
+		assert.equal(await field.getAttribute("autocomplete"), "off");
+		assert.equal(await page.locator("form").count(), 0, "the field sits outside any form");
+		const address = (await page.locator("#claude-url").innerText()).trim();
+		assert.match(address, /^https:\/\/claude\.ai\/oauth\/authorize\?/, "the page shows the address the CLI printed");
+		await shotBoth(page, "claude-code-field");
+		// Open hands the CLI's own address to the OS; the page never opens one itself.
+		await page.locator("#claude-open").click();
+		await until("the address to be opened", 10_000, async () => (await openedExternal(first)).length === 1 || undefined, 100);
+		assert.deepEqual(await openedExternal(first), [address]);
+
+		// A code the stand-in refuses: the screen says so, with the CLI's line in Details, and Try again starts a new login.
+		await field.fill("WRONG-CODE");
+		await page.locator("#claude-send-code").click();
+		await page.locator('[data-role="failed"]').waitFor({ timeout: 30_000 });
+		assert.equal(await fieldsEmpty(page), true, "the field was cleared when the code was sent");
+		await page.locator('[data-role="details"] summary').click();
+		assert.match(await page.locator('[data-role="details"] pre').innerText(), /Invalid code/);
+		assert.equal(await page.locator("#claude-retry").evaluate((el) => el.classList.contains("primary")), true);
+		await shotBoth(page, "claude-refused");
+
+		// The planted code.
+		await page.locator("#claude-retry").click();
+		await field.waitFor({ timeout: 60_000 });
+		await field.fill(CLAUDE_CODE);
+		assert.equal(await pageHolds(page, CLAUDE_CODE), false, "a typed value is not in the markup, storage or cookies");
+		await page.locator("#claude-send-code").click();
+		await page.locator("#step-next").waitFor({ timeout: 60_000 });
+		assert.equal(await page.locator("#later").count(), 0, "Next replaces Later");
+		assert.equal(await page.locator('[data-role="done"]').count(), 1);
+		assert.equal(await fieldsEmpty(page), true);
+		await shotBoth(page, "claude-signed-in");
+
+		// The code went to the stand-in's standard input, once, and to nothing else.
+		assert.equal(readFileSync(join(standIn(), "code.txt"), "utf8"), CLAUDE_CODE, "the stand-in read the planted code from its standard input");
+		const calls = standInCalls();
+		assert.ok(calls.some((c) => c.argv.join(" ") === "auth login"), "the login ran as `auth login`");
+		assert.ok(calls.some((c) => c.argv.join(" ") === "auth status --json"), "and the status was read");
+		for (const c of calls) {
+			assert.equal(JSON.stringify(c).includes(CLAUDE_CODE), false, "no command line carries the code");
+			assert.equal(c.config, world.layout.claude, "the app's own CLAUDE_CONFIG_DIR");
+			assert.equal(c.secureStorageDir, null, "the variable that would move the Keychain item is never set");
+		}
+		assert.equal(logText().includes(CLAUDE_CODE), false, "no log holds the code");
+		const found = scan(searchRoots(), CLAUDE_CODE, { skipDirs: [join(world.home, "Library", "Keychains")] });
+		assert.equal(found.hits.length, 0, `the code is in ${found.hits.length} file(s) under the home or the temp folder`);
+		assert.equal(await pageHolds(page, CLAUDE_CODE), false, "and not in the page, its storage or its cookies");
+		assert.equal(eventsNamed("claude-code-sent").length, 2, "main logged that two codes were sent, never what they were");
+		await page.locator("#step-next").click();
 		await waitStep(page, "hosts");
+	});
+
+	it("GitHub step: a foreign gh:github.com entry stops it before any device code, and stays as it was", async () => {
+		assert.equal(await stepOf(page), "hosts");
 		await waitPhase(page, "github.com", "foreign");
 		assert.equal((await page.locator('[data-role="foreign"]').innerText()).trim(), tr("zh-TW", "forge.foreign", { host: "github.com", tool: t("zh-TW", "forge.tool.github") }));
 		for (const id of ['[data-role="device-code"]', '[data-role="sign-in"]', '[data-role="token"]']) assert.equal(await page.locator(id).count(), 0, `${id} is not on the refused step`);
@@ -489,19 +609,99 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await finishHosts();
 	});
 
-	it("puts off what is left and ends on the done step naming it", async () => {
+	it("Linear step with isEncryptionAvailable() false: the key is refused before it can be typed, nothing is written, and Later is still a choice (task 11)", async () => {
 		if (!hasToken) {
 			await page.locator("#later").click();
 			await waitStep(page, "linear");
 		}
 		assert.equal(await stepOf(page), "linear");
-		await shotBoth(page, "wizard-linear");
-		await page.locator("#later").click();
+		// The OS can encrypt here; a development build is told it cannot (SBD_TEST_NO_ENCRYPTION=1), as it is told the WSL bash.
+		await close(first);
+		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH, SBD_TEST_NO_ENCRYPTION: "1" });
+		page = await pageOf(first, "wizard.html");
+		await waitStep(page, "linear", 25 * 60_000);
+		await page.locator("#linear-refusal").waitFor({ timeout: 30_000 });
+		assert.equal((await page.locator("#linear-refusal p").innerText()).trim(), t("zh-TW", "linear.refused"));
+		assert.equal(await page.locator("#linear-key").count(), 0, "there is no field to type a key into");
+		assert.equal(await page.locator("#linear-save").count(), 0);
+		assert.equal(await page.locator("#later").isVisible(), true, "Later is a choice");
+		assert.equal(existsSync(join(world.layout.secrets, "linear.bin")), false, "nothing was written");
+		await shotBoth(page, "linear-encryption-unavailable");
+		assert.equal(eventsNamed("linear-key-saved").length, 0);
+		// Back to a normal launch for the rest of the run.
+		await close(first);
+		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
+		page = await pageOf(first, "wizard.html");
+		await waitStep(page, "linear", 25 * 60_000);
+	});
+
+	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", async () => {
+		await page.locator("#linear-key").waitFor({ timeout: 60_000 });
+		const field = page.locator("#linear-key");
+		assert.equal(await field.getAttribute("type"), "password");
+		assert.equal(await page.locator("form").count(), 0);
+		assert.equal(await page.locator("#later").isVisible(), true, "Later is a choice");
+		await shotBoth(page, "linear-not-saved");
+		await field.fill("short");
+		await page.locator("#linear-save").click();
+		await page.locator('[data-role="invalid"]').waitFor({ timeout: 10_000 });
+		await shotBoth(page, "linear-invalid");
+		assert.equal(existsSync(join(world.layout.secrets, "linear.bin")), false, "an invalid key writes nothing");
+
+		// A work folder that holds a `ttt` setup already is kept as it is, so `ttt init` makes no call to Linear (there is no Linear account here); `ttt` itself is installed for real.
+		const work = workFolderNow();
+		mkdirSync(join(work, ".ttt"), { recursive: true });
+		writeFileSync(join(work, ".ttt", "config.toon"), "team: ci-stand-in\n");
+		await page.locator("#linear-key").fill(LINEAR_KEY);
+		assert.equal(await pageHolds(page, LINEAR_KEY), false, "a typed key is not in the markup, storage or cookies");
+		await page.locator("#linear-save").click();
+		await page.locator('[data-role="restart-offer"]').waitFor({ timeout: 300_000 });
+		assert.equal(await fieldsEmpty(page), true, "the field was cleared when the key was sent");
+		assert.equal(await page.locator('#linear-restart').evaluate((el) => el.classList.contains("primary")), true, "Restart now is the primary action");
+		assert.equal(await page.locator("#linear-restart-later").isVisible(), true);
+		assert.equal(await page.locator('[data-role="done"]').count(), 1);
+		await shotBoth(page, "linear-restart-offered");
+
+		// The key is encrypted on disk and nowhere else; ttt is installed and runs.
+		const blob = readFileSync(join(world.layout.secrets, "linear.bin"));
+		assert.equal(blob.includes(Buffer.from(LINEAR_KEY)), false, "linear.bin is encrypted");
+		assert.ok(blob.length > LINEAR_KEY.length, "and holds something");
+		const installed = readInstalled(world.layout);
+		assert.ok(isInstalled(installed));
+		const ttt = tttCommand(world.layout, installed.current, parseStack(JSON.parse(readFileSync(STACK_JSON, "utf8")) as unknown));
+		assert.ok(ttt, "ttt is installed under the app's prefix");
+		const version = await run((ttt as { file: string }).file, [...(ttt as { args: readonly string[] }).args, "--version"], { env: childEnvOf(world), timeoutMs: 120_000 });
+		assert.equal(version.code, 0, `ttt --version: ${version.stderr.slice(0, 200)}`);
+		assert.equal(eventsNamed("linear-init-kept").length, 1);
+		assert.equal(logText().includes(LINEAR_KEY), false, "no log holds the key");
+
+		// Herdr's environment is fixed for its lifetime: a pane opened now does not have the key; after Restart now it does.
+		assert.equal(await paneLinearKey(), "[]", "a pane opened before the restart has no key");
+		await page.locator("#linear-restart").click();
+		await page.locator('#linear-restarted, [data-restart="restarted"]').first().waitFor({ timeout: 300_000 });
+		await shotBoth(page, "linear-restarted");
+		assert.equal(await paneLinearKey(), `[${LINEAR_KEY}]`, "a pane opened after the restart has LINEAR_API_KEY");
+		const found = scan(searchRoots(), LINEAR_KEY, { skipDirs: [join(world.home, "Library", "Keychains")] });
+		assert.equal(found.hits.length, 0, `the key is in ${found.hits.length} file(s) under the home or the temp folder`);
+		assert.equal(logText().includes(LINEAR_KEY), false);
+		assert.equal(await pageHolds(page, LINEAR_KEY), false);
+
+		// The Safe Storage item of this development build exists on macOS; the shipped product's item is as it was.
+		const items = await safeStorageItems();
+		if (!isWindows) assert.ok(items.dev.length >= 1, "this build's Safe Storage item is in the scratch keychain");
+		assert.deepEqual(items.shipped, shippedSafeStorage, "the shipped product's Safe Storage item, if any, has the same modification time");
+
+		await page.locator("#step-next").click();
 		await waitStep(page, "done");
-		assert.deepEqual(readWizard().later.map((l) => l.item), hasToken ? ["claude", "github", "linear"] : ["claude", "github", "gitlab", "linear"]);
+	});
+
+	it("puts off what is left and ends on the done step naming it", async () => {
+		assert.equal(await stepOf(page), "done");
+		assert.deepEqual(readWizard().later.map((l) => l.item), hasToken ? ["github"] : ["github", "gitlab"], "Claude and Linear are signed in, so only the code hosts are left");
 		const pending = await page.locator("#done-pending").innerText();
 		assert.ok(pending.includes("github.com"), pending);
 		assert.equal(pending.includes("gitlab.com"), !hasToken, "GitLab is named only when it was put off");
+		assert.equal(pending.includes("Claude") || pending.includes("Linear"), false, pending);
 		await shotBoth(page, "wizard-done");
 	});
 
@@ -520,7 +720,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await notices.locator('[data-notice="wsl"] .notice-text').innerText(), en.welcome.wsl);
 		const later = await notices.locator('[data-notice="later"] .notice-text').innerText();
 		assert.ok(later.includes("github.com") && later.includes("gitlab.com") === !hasToken, later);
-		assert.match(later, /, and Linear\.$/, "the list is joined the way English joins it");
+		assert.match(later, hasToken ? /GitHub \(github\.com\)\.$/ : /GitHub \(github\.com\) and GitLab \(gitlab\.com\)\.$/, "the list is joined the way English joins it");
 		await shot(notices, "wizard-banner-en");
 		// Settings, from the banner's own button, in English and then in zh-TW; the language is changed in the Computer section.
 		await notices.locator("#open-settings").click();
@@ -531,14 +731,14 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await settings.locator('.language-button[data-locale="zh-TW"]').click();
 		await until("zh-TW in settings", 10_000, async () => (await settings.evaluate(() => document.documentElement.lang)) === "zh-TW", 100);
 		await settings.locator('button.nav-item[data-section="accounts"]').click();
-		await settings.locator('#accounts-later').waitFor({ timeout: 10_000 });
+		await settings.locator('#accounts-claude').waitFor({ timeout: 10_000 });
 		await shot(settings, "wizard-settings-zh-TW");
 		await settings.locator("#settings-back").click();
 		// Back over the GUI: the notices follow the language chosen meanwhile.
 		const again = await pageOf(first, "screen.html");
 		await until("the zh-TW banner", 30_000, async () => (await again.locator('[data-notice="wsl"] .notice-text').innerText()) === zhTW.welcome.wsl, 250);
 		const laterZh = await again.locator('[data-notice="later"] .notice-text').innerText();
-		assert.match(laterZh, hasToken ? /Claude、GitHub（github\.com）和 Linear。$/ : /Claude、GitHub（github\.com）、GitLab（gitlab\.com）和 Linear。$/, laterZh);
+		assert.match(laterZh, hasToken ? /GitHub（github\.com）。$/ : /GitHub（github\.com）和 GitLab（gitlab\.com）。$/, laterZh);
 		await shot(again, "wizard-banner-zh-TW");
 		const installed = readInstalled(world.layout);
 		assert.ok(isInstalled(installed), "the install is complete");
@@ -669,6 +869,67 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.deepEqual(recordOf(), { schema: 1, entries: [], left: [] });
 		await shotSettingsBoth(settings, "accounts-gitlab-after-removal");
 		console.log("accounts e2e: foreign write over the owned entry: Sign out ran no logout, row said changed, record has it left, Sign in again stopped at the check and passed after the entry was deleted");
+	});
+
+	const claudeCard = (p: Page, state?: string) => p.locator(`li.account-card[data-account="claude"]${state === undefined ? "" : `[data-state="${state}"]`}`);
+	const linearCard = (p: Page, state?: string) => p.locator(`li.account-card[data-account="linear"]${state === undefined ? "" : `[data-state="${state}"]`}`);
+
+	it("settings' Claude card: signed in, Sign out through the CLI, Sign in again with the code field inside the card (task 11)", async () => {
+		await settingsIn(settings, "zh-TW");
+		await claudeCard(settings, "signed-in").waitFor({ timeout: 60_000 });
+		assert.equal(await claudeCard(settings).locator(".claude-sign-out").count(), 1);
+		assert.equal(await settings.evaluate(() => { const ids = [...document.querySelectorAll("[id]")].map((e) => e.id); return ids.length === new Set(ids).size; }), true, "no id repeats on the page");
+		await shotSettingsBoth(settings, "claude-card-signed-in");
+
+		await claudeCard(settings).locator(".claude-sign-out").click();
+		await claudeCard(settings, "not-signed-in").waitFor({ timeout: 60_000 });
+		assert.ok(standInCalls().some((c) => c.argv.join(" ") === "auth logout"), "the CLI's own logout ran");
+		assert.equal(await claudeCard(settings).locator(".claude-sign-out").count(), 0, "Sign out is offered only while signed in");
+		await shotSettingsBoth(settings, "claude-card-not-signed-in");
+
+		await claudeCard(settings).locator(".claude-sign-in").click();
+		await claudeCard(settings).locator("#claude-code").waitFor({ timeout: 60_000 });
+		await shotSettingsBoth(settings, "claude-card-code-field");
+		const code = `${CLAUDE_CODE}-again`;
+		await claudeCard(settings).locator("#claude-code").fill(code);
+		await claudeCard(settings).locator("#claude-send-code").click();
+		await claudeCard(settings, "signed-in").waitFor({ timeout: 60_000 });
+		assert.equal(readFileSync(join(standIn(), "code.txt"), "utf8"), code);
+		assert.equal(logText().includes(code), false);
+		assert.equal(scan(searchRoots(), code, { skipDirs: [join(world.home, "Library", "Keychains")] }).hits.length, 0);
+		assert.equal(await pageHolds(settings, code), false);
+		assert.equal(await fieldsEmpty(settings), true);
+	});
+
+	it("settings' Linear card: saved, Sign out deletes the key and offers a restart, Sign in saves a new one (task 11)", async () => {
+		await settingsIn(settings, "zh-TW");
+		await linearCard(settings, "saved").waitFor({ timeout: 60_000 });
+		await shotSettingsBoth(settings, "linear-card-saved");
+
+		await linearCard(settings).locator(".linear-sign-out").click();
+		await linearCard(settings, "not-saved").waitFor({ timeout: 60_000 });
+		assert.equal(existsSync(join(world.layout.secrets, "linear.bin")), false, "the key file is gone");
+		await settings.locator('[data-role="restart-offer"]').waitFor({ timeout: 30_000 });
+		await shotSettingsBoth(settings, "linear-card-removed-restart-offered");
+		await settings.locator("#linear-restart-later").click();
+		await settings.locator('[data-role="restart-later-note"]').waitFor({ timeout: 10_000 });
+
+		await linearCard(settings).locator(".linear-sign-in").click();
+		await settings.locator("#linear-key").waitFor({ timeout: 30_000 });
+		await shotSettingsBoth(settings, "linear-card-key-field");
+		const second = `lin_api_${randomBytes(20).toString("hex")}`;
+		await settings.locator("#linear-key").fill(second);
+		await settings.locator("#linear-save").click();
+		await linearCard(settings, "saved").waitFor({ timeout: 300_000 });
+		await settings.locator('[data-role="restart-offer"]').waitFor({ timeout: 300_000 });
+		await shotSettingsBoth(settings, "linear-card-saved-restart-offered");
+		await settings.locator("#linear-restart-later").click();
+		assert.equal(readFileSync(join(world.layout.secrets, "linear.bin")).includes(Buffer.from(second)), false, "encrypted");
+		assert.equal(logText().includes(second), false);
+		assert.equal(scan(searchRoots(), second, { skipDirs: [join(world.home, "Library", "Keychains")] }).hits.length, 0);
+		assert.equal(await pageHolds(settings, second), false);
+		const items = await safeStorageItems();
+		assert.deepEqual(items.shipped, shippedSafeStorage, "the shipped product's Safe Storage item is as it was");
 	});
 
 	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false }, async () => {

@@ -2,7 +2,7 @@ name: wizard-from-zero
 
 # The anchor of the wizard (spec: Workflows, task 9): the packaged
 # development build, from an empty data root to the GUI, every sign-in put
-# off (task 10: the code-host steps sign in, or stop at a foreign entry). On macOS the root is the app's default one under the test's scratch home (not the
+# off (task 10: the code-host steps sign in, or stop at a foreign entry; task 11: Claude against a stand-in CLI, and a dummy Linear key). On macOS the root is the app's default one under the test's scratch home (not the
 # runner's) and
 # the Xcode tools are moved aside; on Windows it is under AppData\Local in a
 # folder named "sbd 測試" under that scratch home (spec: Build notes, task 9). The runners are ephemeral, so the guarded fixtures
@@ -32,7 +32,7 @@ jobs:
       matrix:
         os: [windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       SBD_REQUIRE_HOSTED_FIXTURES: "1"
     steps:
@@ -71,7 +71,7 @@ jobs:
         run: |
           if [ -n "$SBD_GITLAB_TEST_TOKEN" ]; then echo "::add-mask::$SBD_GITLAB_TEST_TOKEN"; fi
           set -o pipefail
-          node --test --test-concurrency=1 --test-timeout=2100000 test/e2e/wizard.e2e.ts 2>&1 | tee "$RUNNER_TEMP/wizard-e2e.log"
+          node --test --test-concurrency=1 --test-timeout=3000000 test/e2e/wizard.e2e.ts 2>&1 | tee "$RUNNER_TEMP/wizard-e2e.log"
 
       - name: What the accounts e2e did
         if: always()
