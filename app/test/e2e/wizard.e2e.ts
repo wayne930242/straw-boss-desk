@@ -203,7 +203,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	const shotSettingsBoth = async (s: Page, name: string, focus?: string): Promise<void> => {
 		const framed = async (locale: "en" | "zh-TW"): Promise<void> => {
 			await settingsIn(s, locale);
-			if (focus !== undefined) await s.locator(focus).scrollIntoViewIfNeeded();
+			// Not `scrollIntoViewIfNeeded`: it waits for the element to hold still, and a card that is drawn again while its row answers never does.
+			if (focus !== undefined) await s.evaluate((selector) => document.querySelector(selector)?.scrollIntoView({ block: "center" }), focus);
 			await shot(s, `${name}-${locale}`);
 		};
 		await framed("zh-TW");
