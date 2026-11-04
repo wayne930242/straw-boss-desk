@@ -162,6 +162,17 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 		assert.equal(firstLine(await viaLauncher(world, "bunx", ["--version"])), BUN_VERSION);
 	});
 
+	// Task 10 anchor. The GitHub step logs in with `--expiring=false`, so gh writes no refreshable token that gh itself would rewrite on routine use (the entry would then turn foreign,
+	// spec: Ownership). The pinned gh must have the flag; when it does not, the task stops and reports. `auth login --help` reads no login and no store.
+	it("the pinned gh lists --expiring in `auth login --help`, and the GitHub step's command carries --expiring=false", async () => {
+		const help = await viaLauncher(world, "gh", ["auth", "login", "--help"]);
+		assert.equal(help.code, 0, help.stderr);
+		assert.match(`${help.stdout}\n${help.stderr}`, /--expiring\b/, "the pinned gh has no --expiring flag: the GitHub step cannot keep its token from being refreshed");
+		// The command the step starts is the one the unit tests pin (accounts-session.test.ts): the flag is in it.
+		const source = readFileSync(join(import.meta.dirname, "..", "src", "main", "accounts", "session.ts"), "utf8");
+		assert.match(source, /"--web", "--expiring=false"/);
+	});
+
 	it("shows GH_TELEMETRY=disabled, DO_NOT_TRACK=1 and glab's switch to the child, with the caller's values replaced", async () => {
 		const env = { ...systemEnv(platform, world.appEnv), ...(isWindows ? {} : { PATH: "/usr/bin:/bin" }), GH_TELEMETRY: "enabled", DO_NOT_TRACK: "0", GLAB_SEND_TELEMETRY: "1", GITHUB_TOKEN: "leak", CI: "true" };
 		const sh = isWindows ? 'echo "$GH_TELEMETRY $DO_NOT_TRACK $GITHUB_TOKEN$CI"' : 'echo "$GH_TELEMETRY $DO_NOT_TRACK $GITHUB_TOKEN$CI"';

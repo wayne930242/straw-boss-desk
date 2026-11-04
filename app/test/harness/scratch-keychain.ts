@@ -31,10 +31,16 @@ export interface ScratchKeychain {
 export interface ScratchOptions {
 	parent?: string;
 	makeIO?: (env: Record<string, string>) => FixtureIO;
+	/**
+	 * An existing folder to use as the scratch HOME instead of a new one (the e2e world's own home, which the app is launched with). The folder is the caller's: `dispose` deletes the
+	 * keychain and leaves the folder.
+	 */
+	home?: string;
 }
 
-export async function createScratchKeychain({ parent = tmpdir(), makeIO = processIO }: ScratchOptions = {}): Promise<ScratchKeychain> {
-	const home = realpathSync(mkdtempSync(join(parent, "sbd-kc-")));
+export async function createScratchKeychain({ parent = tmpdir(), makeIO = processIO, home: given }: ScratchOptions = {}): Promise<ScratchKeychain> {
+	const home = given !== undefined ? realpathSync(given) : realpathSync(mkdtempSync(join(parent, "sbd-kc-")));
+	const owned = given === undefined;
 	mkdirSync(join(home, "Library", "Keychains"), { recursive: true, mode: 0o700 });
 	mkdirSync(join(home, "tmp"), { recursive: true, mode: 0o700 });
 	const keychain = join(home, "Library", "Keychains", "login.keychain-db");
@@ -82,7 +88,7 @@ export async function createScratchKeychain({ parent = tmpdir(), makeIO = proces
 		if (made.code !== 0) throw new Error(`scratch keychain: security -i exited ${made.code}: ${made.stderr.trim().slice(0, 200)}`);
 		await guard(true);
 	} catch (error) {
-		rmSync(home, { recursive: true, force: true });
+		if (owned) rmSync(home, { recursive: true, force: true });
 		throw error;
 	}
 
@@ -97,7 +103,7 @@ export async function createScratchKeychain({ parent = tmpdir(), makeIO = proces
 				const gone = await io.run(SECURITY, ["delete-keychain", keychain], LIMIT);
 				if (gone.code !== 0) throw new Error(`scratch keychain: delete-keychain exited ${gone.code}: ${gone.stderr.trim().slice(0, 200)}`);
 			} finally {
-				rmSync(home, { recursive: true, force: true });
+				if (owned) rmSync(home, { recursive: true, force: true });
 			}
 		},
 	};

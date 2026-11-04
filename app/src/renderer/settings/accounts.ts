@@ -22,6 +22,8 @@ function forgeRow(ctx: SettingsCtx, view: ForgeView): HTMLElement {
 	const busy = BUSY.includes(view.flow.phase);
 	const tool = ctx.tr(`forge.tool.${view.kind}`);
 	const signedIn = view.state === "signed-in" || view.state === "left";
+	// Sign out is offered whenever something may be there to remove: it removes what the app owns and, beside a sign-in it does not own, says that one was left alone (Removing a login).
+	const canSignOut = view.state !== "not-signed-in";
 	const note = view.state === "left" ? ctx.tr("forge.changed", { host: view.host, tool }) : view.state === "foreign" ? ctx.tr("forge.foreign", { host: view.host, tool }) : null;
 	return h(
 		"li",
@@ -35,7 +37,7 @@ function forgeRow(ctx: SettingsCtx, view: ForgeView): HTMLElement {
 				"span",
 				{ class: "forge-buttons" },
 				h("button", { type: "button", class: "forge-sign-in-again", disabled: busy, onclick: () => ctx.act({ type: "forge-begin", kind: view.kind, host: view.host }) }, ctx.tr(signedIn ? "settings.accounts.signInAgain" : "settings.accounts.signIn")),
-				signedIn ? h("button", { type: "button", class: "forge-sign-out", disabled: busy, onclick: () => ctx.act({ type: "forge-sign-out", kind: view.kind, host: view.host }) }, ctx.tr("settings.accounts.signOut")) : null,
+				canSignOut ? h("button", { type: "button", class: "forge-sign-out", disabled: busy, onclick: () => ctx.act({ type: "forge-sign-out", kind: view.kind, host: view.host }) }, ctx.tr("settings.accounts.signOut")) : null,
 			),
 		),
 		note === null ? null : h("p", { class: "note forge-note" }, note),

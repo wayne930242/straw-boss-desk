@@ -15,6 +15,8 @@ const b64 = (text: string): string => Buffer.from(text, "utf8").toString("base64
 export interface Seeder {
 	write(name: string, account: string, secret: string): Promise<void>;
 	remove(name: string, account: string): Promise<void>;
+	/** The secret of an entry, for a test that seeded it with a known dummy and wants to see it unchanged. Null when there is no such entry. Never use it on a real login. */
+	read(name: string, account: string): Promise<string | null>;
 }
 
 const WIN_SEED_SCRIPT = String.raw`
@@ -48,11 +50,26 @@ public static class SbdSeed {
         } finally { Marshal.FreeHGlobal(blob); }
     }
     public static int Delete(string target) { return CredDeleteW(target, 1, 0) ? 0 : Marshal.GetLastWin32Error(); }
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
+    [DllImport("advapi32.dll")]
+    private static extern void CredFree(IntPtr buffer);
+    public static string Read(string target) {
+        IntPtr p;
+        if (!CredReadW(target, 1, 0, out p)) return "";
+        try {
+            CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+            byte[] bytes = new byte[c.CredentialBlobSize];
+            Marshal.Copy(c.CredentialBlob, bytes, 0, bytes.Length);
+            return "=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(Encoding.Unicode.GetString(bytes)));
+        } finally { CredFree(p); }
+    }
 }
 '@
 function Decode([string]$v) { return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($v)) }
 $target = Decode $env:SBD_TARGET
 if ($env:SBD_OP -eq 'write') { [Console]::Out.Write([string][SbdSeed]::Write($target, (Decode $env:SBD_USER), (Decode $env:SBD_SECRET))) }
+elseif ($env:SBD_OP -eq 'read') { [Console]::Out.Write([SbdSeed]::Read($target)) }
 else { [Console]::Out.Write([string][SbdSeed]::Delete($target)) }
 `;
 
@@ -77,6 +94,10 @@ export function seederFor(platform: NodeJS.Platform, io: FixtureIO): Seeder {
 			async remove(name, account) {
 				await io.run("security", ["delete-generic-password", "-a", account, "-s", name], { timeoutMs: 10_000 });
 			},
+			async read(name, account) {
+				const r = await io.run("security", ["find-generic-password", "-a", account, "-s", name, "-w"], { timeoutMs: 10_000 });
+				return r.code === 0 ? r.stdout.replace(/\r?\n$/, "") : null;
+			},
 		};
 	}
 	if (platform === "win32") {
@@ -88,9 +109,24 @@ export function seederFor(platform: NodeJS.Platform, io: FixtureIO): Seeder {
 			async remove(name, account) {
 				await winPowerShell(io, { SBD_OP: "delete", SBD_TARGET: b64(`${name}:${account}`) });
 			},
+			async read(name, account) {
+				const answer = await winPowerShell(io, { SBD_OP: "read", SBD_TARGET: b64(`${name}:${account}`) });
+				return answer.startsWith("=") ? Buffer.from(answer.slice(1), "base64").toString("utf8") : null;
+			},
 		};
 	}
 	throw new Error(`no credential store seeder for ${platform}`);
+}
+
+/** The credential store of `platform`, run through `io` (a scratch HOME's, or the hosted runner's own). */
+export function storeFor(io: FixtureIO, platform: NodeJS.Platform, captured: string[] = []): CredentialStore {
+	const run: CommandRunner = async (file, args, options) => {
+		const r = await io.run(file, args, options);
+		captured.push(r.stdout, r.stderr);
+		return r;
+	};
+	const log = (line: string) => { captured.push(line); };
+	return platform === "darwin" ? createMacCredentialStore({ run, locate: createMacLocate(), log }) : createWinCredentialStore({ run, locate: createWinLocate(), log });
 }
 
 interface Rig {
