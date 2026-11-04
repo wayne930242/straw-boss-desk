@@ -187,6 +187,12 @@ export class WizardController {
 		}
 	}
 
+	/** `stack/active.json` changed under the wizard (an update applied or undone, task 13): the next read takes the file again, so Repair and the views work to the stack in force. */
+	reloadStack(): void {
+		this.#stack = null;
+		this.#emit();
+	}
+
 	#stackNow(): ActiveStack {
 		if (this.#stack === null) this.#stack = loadActiveStack(this.#d.layout, this.#d.bundledStack);
 		return this.#stack;

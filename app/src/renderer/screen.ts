@@ -42,7 +42,7 @@ function failureSentence(kind: string, pid: number | undefined): string {
 
 const LATER_KEY = { claude: "later.claude", github: "later.github", gitlab: "later.gitlab", linear: "later.linear" } as const;
 
-/** One row per notice: the WSL sentence with its Details and Dismiss, and one row for every sign-in put off with a Settings button. */
+/** One row per notice: the WSL sentence with its Details and Dismiss, one row for every sign-in put off with a Settings button, and the new version of the app with Restart to update (or Updates). */
 function noticeRow(notice: ShellNotice): HTMLElement {
 	if (notice.id === "wsl") {
 		const detail = h("pre", { hidden: true }, format(t(locale, "welcome.wslPath"), { path: notice.path }));
@@ -53,6 +53,17 @@ function noticeRow(notice: ShellNotice): HTMLElement {
 			h("button", { type: "button", id: "wsl-details", onclick: () => (detail.hidden = !detail.hidden) }, t(locale, "later.wslDetails")),
 			h("button", { type: "button", id: "wsl-dismiss", onclick: () => shell?.act({ type: "dismiss-notice", id: "wsl" }) }, t(locale, "later.dismiss")),
 			detail,
+		);
+	}
+	if (notice.id === "update") {
+		const restart = notice.action === "restart";
+		return h(
+			"div",
+			{ class: "notice", "data-notice": "update", role: "status" },
+			h("span", { class: "notice-text" }, format(t(locale, restart ? "updateNotice.ready" : "updateNotice.available"), { version: notice.version })),
+			restart
+				? h("button", { type: "button", id: "update-banner-restart", class: "primary", onclick: () => shell?.act({ type: "update-restart" }) }, t(locale, "updateNotice.restart"))
+				: h("button", { type: "button", id: "update-banner-open", onclick: () => shell?.act({ type: "open-settings", section: "updates" }) }, t(locale, "updateNotice.open")),
 		);
 	}
 	const items = listOf(locale, notice.items.map((i) => format(t(locale, LATER_KEY[i.item]), "host" in i ? { host: i.host } : {})));

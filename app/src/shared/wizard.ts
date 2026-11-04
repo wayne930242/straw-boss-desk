@@ -1,6 +1,7 @@
 import type { ForgeAction, ForgeView } from "./accounts.ts";
 import type { Locale } from "./locale.ts";
 import type { ShellFailure } from "./shell-state.ts";
+import type { UpdateAction, UpdatesView } from "./updates.ts";
 
 // What the wizard (`renderer/wizard.ts`) and the settings page (`renderer/settings.ts`) are told by main, and what they may ask for (spec: The wizard). Plain data, so it crosses the IPC
 // boundary and the renderer imports only this file. The words are the catalog's: main sends kinds, ids and values, and the pages word them, so a PM reads one language whatever a tool printed.
@@ -144,7 +145,11 @@ export const SETTINGS_SECTIONS = ["accounts", "recipe", "guidance", "updates", "
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** A notice over the GUI that stays until it is dealt with: the WSL sentence at every start, and the sign-ins put off. */
-export type ShellNotice = { id: "wsl"; path: string } | { id: "later"; items: LaterItem[] };
+export type ShellNotice =
+	| { id: "wsl"; path: string }
+	| { id: "later"; items: LaterItem[] }
+	/** A new version of the app is ready (Windows: **Restart to update**) or available (macOS: opens Updates). */
+	| { id: "update"; version: string; action: "restart" | "open" };
 
 export interface SettingsView {
 	locale: Locale;
@@ -155,6 +160,8 @@ export interface SettingsView {
 	recipe: RecipeSummary | null;
 	appVersion: string;
 	dev: boolean;
+	/** Both update channels' state (Updates). Absent before main has built it. */
+	updates?: UpdatesView;
 }
 
-export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | ForgeAction;
+export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | ForgeAction | UpdateAction;

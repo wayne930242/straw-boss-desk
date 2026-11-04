@@ -30,7 +30,7 @@ export type ShellState =
  * What a button of the runtime page asks for: **Start** (the GUI or the server was stopped) and **Try again** are the same request (`retry`); **Repair** (`repair`); a notice's buttons;
  * and the height the notice strip needs, which only the page can measure.
  */
-export type ShellAction = "retry" | "repair" | { type: "dismiss-notice"; id: "wsl" } | { type: "open-settings"; section: SettingsSection } | { type: "strip-height"; height: number };
+export type ShellAction = "retry" | "repair" | { type: "dismiss-notice"; id: "wsl" } | { type: "update-restart" } | { type: "open-settings"; section: SettingsSection } | { type: "strip-height"; height: number };
 
 /** The IPC channels between main and the pages; the preloads repeat the names as literals (a test keeps the two lists equal). */
 export const CHANNELS = {
