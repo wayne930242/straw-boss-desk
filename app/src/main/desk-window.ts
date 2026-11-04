@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CHANNELS, type ShellAction, type ShellState } from "../shared/shell-state.ts";
 import type { Locale } from "../shared/locale.ts";
 import { isAccountAction, type AccountAction } from "../shared/accounts.ts";
+import { isUpdateAction, type UpdateAction } from "../shared/updates.ts";
 import { SETTINGS_SECTIONS, type SettingsAction, type SettingsSection, type SettingsView, type ShellNotice, type WizardAction, type WizardView } from "../shared/wizard.ts";
 import { dialogTitle, externalLink, guiOriginOf, guiPortOf, isGuiUrl, permissionAllowed } from "./page-security.ts";
 import { closeWindowViews, type GuiSurface } from "./gui-presenter.ts";
@@ -38,6 +39,8 @@ export interface DeskWindowDeps {
 	onSettingsShown?(section: SettingsSection): void;
 	/** A request of settings' Accounts section (sign in again, sign out, the token, Claude's code, Linear's key); the wizard's own go through `onWizardAction`. */
 	onAccountAction(action: AccountAction): Promise<void>;
+	/** A request of settings' Updates section (check now, apply, restart to update, download, show) and the banner's **Restart to update**. */
+	onUpdateAction(action: UpdateAction): Promise<void>;
 	/** Windows log off or shutdown (`session-end`): the stop that fits in the time Windows gives. */
 	onSessionEnd(): void;
 	log: RuntimeEvent;
@@ -386,6 +389,8 @@ export class DeskWindow {
 				this.setNotices(this.#notices.filter((n) => n.id !== "wsl"));
 			} else if (a.type === "open-settings" && (SETTINGS_SECTIONS as readonly unknown[]).includes(a.section)) {
 				this.openSettings(a.section as SettingsSection);
+			} else if (a.type === "update-restart") {
+				void this.#d.onUpdateAction({ type: "update-restart" });
 			} else if (a.type === "strip-height" && typeof a.height === "number" && Number.isFinite(a.height)) {
 				// The page measures its own rows; the window clamps the answer so a page cannot take the GUI's room.
 				const height = Math.min(Math.max(Math.round(a.height), BANNER_HEIGHT), MAX_STRIP_HEIGHT);
@@ -418,6 +423,7 @@ export class DeskWindow {
 			else if (a.type === "section" && (SETTINGS_SECTIONS as readonly unknown[]).includes(a.section)) this.openSettings(a.section);
 			else if (a.type === "set-locale" && (a.locale === "en" || a.locale === "zh-TW")) await this.#d.onWizardAction({ type: "set-locale", locale: a.locale });
 			else if (isAccountAction(a)) await this.#d.onAccountAction(a);
+			else if (isUpdateAction(a)) await this.#d.onUpdateAction(a);
 		});
 	}
 }

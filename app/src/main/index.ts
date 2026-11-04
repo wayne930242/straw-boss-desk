@@ -1,6 +1,7 @@
-import { app, clipboard, dialog, Menu, powerMonitor, safeStorage, session, shell, utilityProcess } from "electron";
+import { app, clipboard, dialog, Menu, net, powerMonitor, safeStorage, session, shell, utilityProcess } from "electron";
+import electronUpdater from "electron-updater";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,10 +32,16 @@ import { spawnLogin } from "./accounts/cli.ts";
 import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
 import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
+import { stopSequence } from "./stop-sequence.ts";
 import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
 import { loadActiveStack } from "./wizard/stack-source.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
+import type { EngineConfig } from "./bootstrap/engine.ts";
+import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
+import { StackUpdater, type EngineRunResult, type FetchedBytes } from "./update/stack.ts";
+import { UpdatesService } from "./update/service.ts";
+import { feedUrlProblem, updateConfig } from "./update/verify.ts";
 
 // The lifecycle: single instance, Chromium's profile inside the app data root, one window holding the two views the design needs, the GUI view (pi-straw-boss) and the shell
 // view (welcome, the runtime page for notices and screens; wizard and settings later) above it (`desk-window.ts`), and the runtime supervisor that starts the stack at launch,
@@ -229,18 +236,140 @@ const wizard = new WizardController({
 	log: (fields) => runtimeLog.event(fields),
 });
 
+
+// ---- the updaters (task 13) ----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** The update settings of this build: the built-in key list and feeds of a release build; a development build also takes `SBD_UPDATE_KEYS` and `SBD_UPDATE_FEED` from its environment (the tests' local feed). */
+const updateCfg = updateConfig(identity.kind, process.env);
+
+/** One GET through Chromium's network stack (the OS proxy and certificate store). Only an https address, or a loopback one in a development build, is fetched; the body is read up to `maxBytes`. */
+async function fetchBytes(url: string, maxBytes: number): Promise<FetchedBytes> {
+	const problem = feedUrlProblem(url);
+	if (problem !== null || (identity.kind === "release" && !url.startsWith("https:"))) throw new Error(`the update address ${problem ?? "must be https"}`);
+	const response = await net.fetch(url);
+	const reader = response.body?.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	if (reader !== undefined) {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.length;
+			if (size > maxBytes) {
+				await reader.cancel();
+				throw new Error(`${new URL(url).pathname} is larger than ${maxBytes} bytes`);
+			}
+			chunks.push(value);
+		}
+	}
+	return { status: response.status, body: Buffer.concat(chunks) };
+}
+
+/** Streams `url` into `file` (the macOS dmg). Throws for any status but 200, a body over the installer limit, or a network failure; a partial file is left to the caller to delete. */
+async function downloadFile(url: string, file: string, onProgress: (percent: number | null) => void): Promise<void> {
+	const problem = feedUrlProblem(url);
+	if (problem !== null || (identity.kind === "release" && !url.startsWith("https:"))) throw new Error(`the update address ${problem ?? "must be https"}`);
+	const response = await net.fetch(url);
+	if (response.status !== 200 || response.body === null) throw new Error(`${new URL(url).pathname} answered ${response.status}`);
+	const total = Number(response.headers.get("content-length"));
+	const out = createWriteStream(file);
+	let size = 0;
+	try {
+		const reader = response.body.getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.length;
+			if (size > MAX_INSTALLER_BYTES) throw new Error("the download is larger than an installer should be");
+			if (!out.write(value)) await new Promise<void>((resolve) => out.once("drain", resolve));
+			onProgress(Number.isFinite(total) && total > 0 ? Math.min(100, Math.round((size / total) * 100)) : null);
+		}
+	} finally {
+		await new Promise<void>((resolve) => out.end(resolve));
+	}
+}
+
+/** The active recipe as the engine takes it: the recipe, or the forges of "I have no recipe", or nothing. */
+function engineRecipe(): unknown {
+	const recipe = wizard.recipe;
+	if (recipe !== null) return recipe;
+	const forges = wizard.forges;
+	return forges.length === 0 ? undefined : { forges: forges.map((f) => ({ kind: f.kind, host: f.host })), tools: [] };
+}
+
+/** One engine run for an update (the candidate's, or the old stack's after a failure), in the same utilityProcess the wizard's runs use. */
+async function runEngineForUpdate(stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult> {
+	const recipe = engineRecipe();
+	const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
+	const config: EngineConfig = { root: layout.root, home, platform: layout.platform, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}), ...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}) };
+	let current: string | null = null;
+	const failures: Array<{ stage: string; category: string }> = [];
+	const end = await engineHost.run(config, (event) => {
+		if (event.type === "stage-start") {
+			current = event.stage;
+			onStage({ type: "start", stage: event.stage });
+		} else if (event.type === "stage") {
+			onStage({ type: "end", stage: event.outcome.stage });
+			if (event.outcome.status === "failed") failures.push({ stage: event.outcome.stage, category: event.outcome.failure?.category ?? "other" });
+		}
+	});
+	switch (end.kind) {
+		case "done":
+			return end.ok ? { ok: true } : { ok: false, failed: failures[0] ?? { stage: "engine", category: "other" } };
+		case "error":
+			runtimeLog.event({ event: "update-engine-error", name: end.name, detail: end.message.slice(0, 300) });
+			return { ok: false, failed: { stage: "engine", category: "other" } };
+		case "crashed":
+			return { ok: false, failed: { stage: current ?? "engine", category: "other" } };
+		case "disposed":
+			return { ok: false, interrupted: true };
+	}
+}
+
+const stackUpdater = new StackUpdater({
+	layout,
+	shellVersion: app.getVersion(),
+	key: platformKey(process.platform, process.arch),
+	keys: updateCfg.keys,
+	base: updateCfg.stackBase,
+	fetchBytes,
+	runEngine: runEngineForUpdate,
+	withStackStopped: (work, options) => supervisor.withStackStopped(work, options),
+	recipeTools: () => wizard.recipe?.tools ?? [],
+	reloadStack: () => wizard.reloadStack(),
+	log: (fields) => runtimeLog.event(fields),
+});
+
+const shellUpdater = new ShellUpdater({
+	platform: layout.platform,
+	version: app.getVersion(),
+	feed: updateCfg.shell,
+	keys: updateCfg.keys,
+	driver: () => electronUpdaterDriver(electronUpdater.autoUpdater, updateCfg.shell),
+	fetchBytes,
+	downloadFile,
+	downloadDir: () => app.getPath("downloads"),
+	reveal: (file) => shell.showItemInFolder(file),
+	// The stack stops the way a quit stops it, and the quit that electron-updater makes next finds nothing left to hold it.
+	prepareQuit: () => stopForUpdate(),
+	log: (fields) => runtimeLog.event(fields),
+});
+
+const updates = new UpdatesService({ shell: shellUpdater, stack: stackUpdater, appVersion: app.getVersion(), platform: layout.platform, enabled: () => wizard.done, log: (fields) => runtimeLog.event(fields) });
+
 /** The WSL sentence, until dismissed for this start. */
 let wslNotice: ShellNotice | null = null;
 
 /** Notices over the GUI: the WSL sentence, and the sign-ins put off once the wizard is over. */
 function refreshNotices(): void {
 	const later = wizard.done && wizard.later.length > 0 ? [{ id: "later" as const, items: wizard.later }] : [];
-	desk?.setNotices([...(wslNotice === null ? [] : [wslNotice]), ...later]);
+	const update = updates.notice();
+	desk?.setNotices([...(wslNotice === null ? [] : [wslNotice]), ...later, ...(update === null ? [] : [{ id: "update" as const, ...update }])]);
 }
 
 function settingsView(section: SettingsSection): SettingsView {
 	const recipe = wizard.recipe;
-	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
+	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev", updates: updates.view() };
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
@@ -321,30 +450,30 @@ function buildMenu(): void {
 let stopping = false;
 let stopped = false;
 
+/** The stop sequence of a quit and of an update's stop (`stop-sequence.ts`). */
+function stopAll(): Promise<boolean> {
+	return stopSequence({ supervisor, updates, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) });
+}
+
 function stopThenExit(code: (ok: boolean) => number): void {
 	if (stopping) return;
 	stopping = true;
-	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
-	// A Repair job in the queue does not start the stack again once the engine is gone (T9-F002).
-	supervisor.beginQuit();
-	// A device-code login that waits ends with the app; one that is being finished (glab signing in, the entries being recorded) is waited for, so the login is recorded and never lost.
-	accounts.dispose();
-	claude.dispose();
-	linear.dispose();
-	Promise.all([accounts.settled().catch(() => undefined), claude.settled().catch(() => undefined), linear.settled().catch(() => undefined), engineHost.dispose().catch(() => undefined)])
-		.then(() => supervisor.stop())
-		.then((report) => {
-			runtimeLog.event({ event: "quit-stop", ok: report.ok, leftovers: report.leftovers.length });
-			return report.ok;
-		})
-		.catch((error: Error) => {
-			runtimeLog.event({ event: "quit-stop-failed", detail: error.message.slice(0, 300) });
-			return false;
-		})
-		.then((ok) => {
-			stopped = true;
-			app.exit(code(ok));
-		});
+	void stopAll().then((ok) => {
+		stopped = true;
+		app.exit(code(ok));
+	});
+}
+
+/**
+ * Restart to update (spec: Updater): the stop sequence runs, then electron-updater starts the installer and quits the app. The quit it makes is not held again, since the stack is stopped
+ * already; the installer replaces the program files only, never the data root.
+ */
+async function stopForUpdate(): Promise<void> {
+	if (stopping) return;
+	stopping = true;
+	const ok = await stopAll();
+	stopped = true;
+	runtimeLog.event({ event: "update-stop", ok });
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -378,6 +507,9 @@ if (!app.requestSingleInstanceLock()) {
 	app.on("activate", () => openWindow());
 	void app.whenReady().then(() => {
 		const mode = wizard.launchMode();
+		// A new app whose bundled stack is newer than the one in force, or an update cut short, is dealt with before the stack starts (spec: Updater, Precedence). The old file is kept
+		// before anything reads the stack, because the wizard seeds `stack/active.json` from the bundled one as soon as it does.
+		const updatePlan = mode === "stack" ? stackUpdater.prepare(join(assetsDir, "stack.json")) : null;
 		buildMenu();
 		desk = new DeskWindow({
 			productName: identity.productName,
@@ -391,6 +523,7 @@ if (!app.requestSingleInstanceLock()) {
 			onWizardAction: (action) => wizard.act(action),
 			settingsView,
 			onAccountAction: (action) => wizard.accountAction(action),
+			onUpdateAction: (action) => updates.act(action).catch((error: Error) => runtimeLog.event({ event: "update-action-failed", detail: error.message.slice(0, 300) })),
 			// Settings' Accounts rows show what the store and the CLIs hold now, not what they held when the app started.
 			onSettingsShown: (section) => {
 				if (section !== "accounts") return;
@@ -417,12 +550,23 @@ if (!app.requestSingleInstanceLock()) {
 			buildMenu();
 			refreshNotices();
 		});
+		updates.onChange(() => {
+			desk?.pushSettings();
+			refreshNotices();
+		});
 		desk.setWizardActive(mode === "wizard");
 		refreshNotices();
 		attachPower(powerMonitor, supervisor, (fields) => runtimeLog.event(fields));
 		openWindow();
 		if (mode === "wizard") void wizard.resume().catch((error: Error) => runtimeLog.event({ event: "wizard-resume-failed", detail: error.message.slice(0, 300) }));
 		// Failures reach the runtime page through the supervisor's `failure` event; they are in logs/start.jsonl too.
-		else void supervisor.start().catch(() => undefined);
+		else {
+			void stackUpdater
+				.finish(updatePlan)
+				.catch((error: Error) => runtimeLog.event({ event: "stack-reconcile-failed", detail: error.message.slice(0, 300) }))
+				.then(() => supervisor.start())
+				.catch(() => undefined);
+		}
+		updates.start();
 	});
 }

@@ -16,5 +16,15 @@ html, body { height: 100%; }
 .forge-buttons { display: inline-flex; gap: 8px; }
 .forge-note { margin: 8px 0 0; }
 
+/* Updates: three cards in the accounts list's frame, each with one row of actions (layout only; the colours are the list's and the badge's). */
+.accounts > li.update-card { display: block; }
+.update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.update-name { font-weight: 700; }
+.update-version { flex: 1; min-width: 120px; }
+.update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
+.update-note { margin: 8px 0 0; }
+.update-changes-box { margin: 8px 0 0; }
+.update-changes { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+
 .language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
 .language-label { color: var(--dim); margin-right: 4px; }

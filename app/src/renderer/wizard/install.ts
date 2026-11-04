@@ -5,7 +5,7 @@ import type { Ctx } from "./common.ts";
 let detailsOpen = false;
 
 /** The plain label of an engine stage; a name the catalog does not know reads as "Step <name>". Package names show only under Details. */
-export function stageLabel(ctx: Ctx, name: string): string {
+export function stageLabel(ctx: Pick<Ctx, "tr">, name: string): string {
 	const [head, rest] = name.split(":", 2);
 	switch (head) {
 		case "opt":

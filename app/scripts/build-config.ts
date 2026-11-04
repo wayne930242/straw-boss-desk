@@ -20,6 +20,9 @@ export function packPlan(env: Readonly<Record<string, string | undefined>>): Pac
 			// The running app reads its own product name from the package.json inside the asar.
 			`-c.extraMetadata.productName=${identity.productName}`,
 			`-c.directories.output=${outputDir}`,
+			// The shipped product updates from GitHub Releases (spec: Updater: the provider is generic for tests and GitHub for releases, chosen at build time): electron-builder writes
+			// `resources/app-update.yml` from this. A development build writes none; its tests set the feed at run time (`SBD_UPDATE_FEED`).
+			...(identity.kind === "release" ? ["-c.publish.provider=github", "-c.publish.owner=wayne930242", "-c.publish.repo=straw-boss-desk"] : []),
 		],
 	};
 }
