@@ -41,12 +41,12 @@ if (group === "auth" && verb === "status") {
 		const code = buffer.slice(0, end).trim();
 		if (out !== null) writeFileSync(join(out, "code.txt"), code);
 		if (code === "WRONG-CODE") {
-			process.stderr.write("Invalid code. Please try again.\n");
-			process.exit(1);
+			// Exit after the write has been flushed: a pipe on Windows is written asynchronously.
+			process.stderr.write("Invalid code. Please try again.\n", () => process.exit(1));
+			return;
 		}
 		setSignedIn(true);
-		process.stdout.write("\nLogin successful.\n");
-		process.exit(0);
+		process.stdout.write("\nLogin successful.\n", () => process.exit(0));
 	});
 	// A login nobody completes ends by itself, so a test that forgot it leaves nothing behind.
 	setTimeout(() => process.exit(2), 10 * 60_000).unref?.();
