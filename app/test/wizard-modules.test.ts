@@ -234,6 +234,30 @@ describe("the engine host", () => {
 		assert.equal(host.pid, null);
 	});
 
+	it("starts the next run as soon as a run is done, before its process has exited (the update's rollback run follows the failed one at once)", async () => {
+		const first = new FakeChild();
+		// Killed, but exiting later than the next run starts.
+		first.kill = () => {
+			first.killed++;
+			return true;
+		};
+		const second = new FakeChild();
+		const children = [first, second];
+		const host = new UtilityEngineHost({ fork: () => children.shift() as FakeChild });
+		const runA = host.run(config, () => undefined);
+		first.say({ type: "ready" });
+		first.say({ type: "done", ok: false, outcomes: [] });
+		assert.equal((await runA).kind, "done");
+		// `first` has not emitted its exit: a slow platform is still tearing the process down.
+		const runB = host.run(config, () => undefined);
+		second.say({ type: "ready" });
+		assert.deepEqual(second.posted, [{ type: "run", config }]);
+		second.say({ type: "done", ok: true, outcomes: [] });
+		assert.deepEqual(await runB, { kind: "done", ok: true, outcomes: [] });
+		first.end(0);
+		assert.equal(host.pid, null, "the first process's late exit does not touch the second run");
+	});
+
 	it("reports an error event, and a process that ends before it is done", async () => {
 		const a = new FakeChild();
 		const hostA = new UtilityEngineHost({ fork: () => a });

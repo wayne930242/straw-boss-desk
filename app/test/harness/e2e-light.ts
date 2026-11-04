@@ -422,7 +422,7 @@ export class WorldHerdr {
 				}
 				await new Promise((resolve) => setTimeout(resolve, 400));
 			}
-			throw new Error(`the pane wrote nothing to ${out} within ${waitMs / 1000} s`);
+			throw new Error(`the pane wrote ${existsSync(out) ? `only ${JSON.stringify(readFileSync(out, "utf8").slice(0, 600))}` : "nothing"} to ${out} within ${waitMs / 1000} s`);
 		} finally {
 			await this.close(workspace);
 		}

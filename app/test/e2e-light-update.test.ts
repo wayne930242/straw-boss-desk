@@ -51,7 +51,8 @@ function windowsPaneScript(): string {
 		"node --version",
 		"git --version",
 		"git --exec-path",
-		"pi --version",
+		// `call`: a batch file run by name from a batch file never returns to it (pi is `pi.cmd` in tools\\shims).
+		"call pi --version",
 		`echo ${PANE_DONE}`,
 		"",
 	].join("\r\n");
