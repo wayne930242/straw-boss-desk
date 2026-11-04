@@ -739,9 +739,10 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		const answerOf = async (args: string[]): Promise<string> => {
 			const r = await herdr(args, 15_000);
 			const stderr = r.stderr ?? "";
-			const line = (stderr.trim() || r.stdout.trim()).split(/\r?\n/)[0]?.replace(/\s+/g, " ").replace(/\/[^\s"']*/g, "<path>").slice(0, 240) ?? "";
+			const first = (text: string): string => text.trim().split(/\r?\n/)[0]?.replace(/\s+/g, " ").replace(/\/[^\s"']*/g, "<path>").slice(0, 300) ?? "";
+			// balance.mjs reads only the stderr of the failed call (`error.stderr`), so the two streams are shown apart.
 			const gone = r.code !== 0 && (stderr.includes("pane_not_found") || HERDR_GONE.test(stderr));
-			return `\`herdr ${args.slice(0, 2).join(" ")}\`: exit ${r.code}${r.timedOut ? " (timed out)" : ""}, balance.mjs would call it ${gone ? "gone" : "NOT gone"}: ${line}`;
+			return `\`herdr ${args.slice(0, 2).join(" ")}\`: exit ${r.code}${r.timedOut ? " (timed out)" : ""}, balance.mjs would call it ${gone ? "gone" : "NOT gone"}\n  stdout: ${first(r.stdout) || "(empty)"}\n  stderr: ${first(stderr) || "(empty)"}`;
 		};
 		let goneAnswers = "(the stack did not go down within the wait)";
 		const brokerFile = join(world.layout.agent, "intercom", "broker.pid");

@@ -458,9 +458,13 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		// beside the home). The keychain file of the scratch HOME is the store itself. Seven forms are looked for (UTF-8, UTF-16LE, go-keyring's, base64, and HTTP Basic's base64 of oauth2:token).
 		const found = scan([world.home, join(world.base, "tmp")], GITLAB_TOKEN, { skipDirs: [join(world.home, "Library", "Keychains")] });
 		console.log(`token search: ${found.files} files, ${Math.round(found.bytes / 1_000_000)} MB, ${found.hits.length} hits, ${found.unread.length} listed as not read (links, files in use)`);
-		// The files that could not be read, by path and the error code alone (never a content), so a reviewer sees what the search did not cover.
-		for (const u of found.unread.slice(0, 40)) console.log(`token search: not read: ${u.path} (${(/\b(E[A-Z]+|EPERM|EBUSY)\b/.exec(u.reason)?.[0]) ?? u.reason.split(":")[0]})`);
-		if (found.unread.length > 40) console.log(`token search: not read: ... and ${found.unread.length - 40} more`);
+		// The files that could not be read, by path and the error code alone (never a content), so a reviewer sees what the search did not cover. Links are not followed by design (the tools folders
+		// are full of them), so they are counted; every other unread path is listed.
+		const links = found.unread.filter((u) => u.reason.startsWith("link:"));
+		const others = found.unread.filter((u) => !u.reason.startsWith("link:"));
+		console.log(`token search: ${links.length} links were not followed; ${others.length} other path(s) could not be read`);
+		for (const u of others.slice(0, 40)) console.log(`token search: not read: ${u.path} (${/\b(EPERM|EBUSY|EACCES|ENOENT|EISDIR|EMFILE)\b/.exec(u.reason)?.[0] ?? u.reason.split(":")[0]})`);
+		if (others.length > 40) console.log(`token search: not read: ... and ${others.length - 40} more`);
 		assert.equal(found.hits.length, 0, `the token is in ${found.hits.length} file(s) under the home or the temp folder`);
 		assert.deepEqual(found.unread.filter((u) => ownFolders().some((d) => under(d, u.path))).map((u) => u.reason), [], "every file of the app's own folders was read");
 		assert.equal(logText().includes(GITLAB_TOKEN), false, "no log holds the token");
