@@ -5,6 +5,7 @@ import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { forgeEnv, loginLine, parseDeviceCode } from "../src/main/accounts/cli.ts";
 import { readAccountsRecord } from "../src/main/accounts/existing.ts";
+import { CredentialStoreError } from "../src/main/platform/types.ts";
 import { ForgeAccounts, githubDeviceUrl, gitlabTokenUrl } from "../src/main/accounts/session.ts";
 import { scan } from "../src/main/accounts/token-search.ts";
 import type { ForgeFlow } from "../src/shared/accounts.ts";
@@ -22,7 +23,7 @@ after(() => {
 const CURRENT = { node: "1", git: "1", herdr: "1", gh: "2.103.3", glab: "1.124.0" };
 const TOKEN = "glpat-TESTTOKEN-0123456789abcdef";
 
-function rig(cli: FakeCliOptions = {}, extra: { appEnv?: Record<string, string>; loginWaitMs?: number } = {}) {
+function rig(cli: FakeCliOptions = {}, extra: { appEnv?: Record<string, string>; loginWaitMs?: number; proxyEnv?: (hosts: readonly string[]) => Promise<Record<string, string>> } = {}) {
 	const made = scratchRoot("sbd-acct-");
 	scratch.push(made.base);
 	const layout = testLayout(made.root);
@@ -40,6 +41,7 @@ function rig(cli: FakeCliOptions = {}, extra: { appEnv?: Record<string, string>;
 		spawn: sp.spawn,
 		appEnv: extra.appEnv ?? {},
 		current: () => CURRENT,
+		...(extra.proxyEnv !== undefined ? { proxyEnv: extra.proxyEnv } : {}),
 		log: (f) => log.push(f as Record<string, unknown>),
 		openExternal: (u) => opened.push(u),
 		writeClipboard: (t) => clipboard.push(t),
@@ -501,5 +503,233 @@ describe("how gh and glab are run", () => {
 		assert.equal(parseDeviceCode("no code here, 12-34"), null);
 		assert.match(loginLine("a\n✓ Logged in as someone\nb"), /Logged in/);
 		assert.equal(loginLine(""), "");
+	});
+});
+
+// ---- the fix round of task 10 (T10R) ------------------------------------------------------------------------------------
+
+/** A promise a test settles by hand. */
+function gate(): { promise: Promise<void>; open: () => void } {
+	let open = (): void => undefined;
+	const promise = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	return { promise, open };
+}
+
+describe("Later and a quit while a login runs (T10R-F001)", () => {
+	it("Later while glab signs in does not drop the login: it is recorded with its time, the verdict runs, and the host reaches done", async () => {
+		const g = gate();
+		const r = rig({ holdGlabLogin: g.promise });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		await until("glab to run", () => logins(r).length === 1);
+		assert.equal(phase(r, "gitlab.com"), "working");
+		r.accounts.cancel("gitlab.com");
+		assert.equal(phase(r, "gitlab.com"), "working", "Later does not interrupt the login");
+		g.open();
+		await signing;
+		flow(r, "gitlab.com", "done");
+		const record = readAccountsRecord(r.layout);
+		assert.deepEqual(record.entries.map((e) => [e.name, e.modified]), [["glab:gitlab.com:token", r.store.get("glab:gitlab.com:token")?.modified]]);
+		assert.equal(r.accounts.views([{ kind: "gitlab", host: "gitlab.com" }])[0]?.state, "signed-in");
+		// The settings row can sign out again: it is not stuck, and the app's own entry is not another program's.
+		await r.accounts.signOut("gitlab", "gitlab.com");
+		flow(r, "gitlab.com", "signed-out");
+		assert.equal(r.store.entries.length, 0);
+	});
+
+	it("Later after gh exited, while its entries are being recorded, still records them and runs the verdict", async () => {
+		const r = rig();
+		const signedIn: string[] = [];
+		r.accounts.onSignedIn((k, h) => signedIn.push(`${k}:${h}`));
+		await r.accounts.begin("github", "github.com");
+		await r.accounts.startGithub("github.com");
+		const started = r.spawned[0] as (typeof r.spawned)[number];
+		started.child.say("! First copy your one-time code: WXYZ-9876\n");
+		r.store.write("gh:github.com", "");
+		const g = gate();
+		r.store.holdList = g.promise;
+		started.child.finish(0);
+		await until("the listing after the login", () => r.store.calls.filter((c) => c === "list").length >= 3);
+		assert.equal(phase(r, "github.com"), "working");
+		r.accounts.cancel("github.com");
+		g.open();
+		await until("the sign-in to finish", () => phase(r, "github.com") === "done");
+		assert.equal(readAccountsRecord(r.layout).entries.length, 1);
+		assert.deepEqual(signedIn, ["github:github.com"]);
+	});
+
+	it("a quit while glab signs in waits for it: the login is recorded, and no new login starts after the quit began", async () => {
+		const g = gate();
+		const r = rig({ holdGlabLogin: g.promise });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		await until("glab to run", () => logins(r).length === 1);
+		r.accounts.dispose();
+		let settled = false;
+		const waiting = r.accounts.settled().then(() => {
+			settled = true;
+		});
+		await new Promise((r2) => setImmediate(r2));
+		assert.equal(settled, false, "the quit holds while the login finishes");
+		g.open();
+		await waiting;
+		await signing;
+		flow(r, "gitlab.com", "done");
+		assert.equal(readAccountsRecord(r.layout).entries.length, 1, "recorded before the app leaves");
+		assert.equal(r.accounts.views([{ kind: "gitlab", host: "gitlab.com" }])[0]?.state, "signed-in");
+		// With nothing under way, the quit has nothing to wait for.
+		await r.accounts.settled();
+	});
+
+	it("a quit that began before glab was started starts no login at all", async () => {
+		const g = gate();
+		const r = rig();
+		await r.accounts.begin("gitlab", "gitlab.com");
+		r.store.holdList = g.promise;
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		r.accounts.dispose();
+		g.open();
+		await signing;
+		await r.accounts.settled();
+		assert.equal(logins(r).length, 0, "glab never ran, so nothing was written");
+		assert.deepEqual(r.store.entries, []);
+		flow(r, "gitlab.com", "ready");
+	});
+
+	it("Later while the checks run puts the host back to idle instead of leaving it stuck, and the next begin works", async () => {
+		const g = gate();
+		const r = rig();
+		r.store.holdProbe = g.promise;
+		const begun = r.accounts.begin("gitlab", "gitlab.com");
+		await until("the probe", () => r.store.calls.includes("probe"));
+		assert.equal(phase(r, "gitlab.com"), "checking");
+		r.accounts.cancel("gitlab.com");
+		assert.equal(phase(r, "gitlab.com"), "idle");
+		g.open();
+		await begun;
+		assert.equal(phase(r, "gitlab.com"), "idle", "the abandoned checks change nothing");
+		await r.accounts.begin("gitlab", "gitlab.com");
+		flow(r, "gitlab.com", "ready");
+	});
+});
+
+describe("a plain-text token whose removal failed is not reported as removed (T10R-F002)", () => {
+	const plainGlab = (r: ReturnType<typeof rig>): void => {
+		mkdirSync(r.layout.glabConfig, { recursive: true });
+		writeFileSync(join(r.layout.glabConfig, "config.yml"), "hosts:\n  gitlab.com:\n    token: fake_token_value_y\n");
+	};
+
+	it("a logout that took the token out of the file reports it removed", async () => {
+		const r = rig({ onGlabLogin: () => plainGlab(r) });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		const f = flow(r, "gitlab.com", "plain-text");
+		assert.equal(f.removed, true);
+		assert.ok(!readFileSync(join(r.layout.glabConfig, "config.yml"), "utf8").includes("fake_token_value_y"));
+	});
+
+	it("a store that cannot be listed after the login still takes the host out of the app's own file, and the screen is told the token is gone", async () => {
+		const r = rig({
+			onGlabLogin: () => {
+				plainGlab(r);
+				// The listing right after the login works; the one in front of the removal fails.
+				const real = r.store.list.bind(r.store);
+				let afterLogin = 0;
+				r.store.list = async (names) => {
+					if (++afterLogin >= 2) throw new CredentialStoreError("security dump-keychain exited 1");
+					return real(names);
+				};
+			},
+		});
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		const f = flow(r, "gitlab.com", "plain-text");
+		assert.equal(logouts(r).length, 0, "no logout on a store nobody could read");
+		assert.ok(!readFileSync(join(r.layout.glabConfig, "config.yml"), "utf8").includes("fake_token_value_y"), "the plain-text token left the file");
+		assert.equal(f.removed, true);
+	});
+
+	it("a token that stays in a file after a failed logout is reported as still there, with the file in Details", async () => {
+		// gh's legacy config.yml is a file the app's own removal does not rewrite; the logout is the only thing that would have cleaned it.
+		const r = rig({ logoutExit: 1 });
+		await r.accounts.begin("github", "github.com");
+		await r.accounts.startGithub("github.com");
+		const started = r.spawned[0] as (typeof r.spawned)[number];
+		started.child.say("! First copy your one-time code: WXYZ-9876\n");
+		mkdirSync(r.layout.ghConfig, { recursive: true });
+		writeFileSync(join(r.layout.ghConfig, "config.yml"), "hosts:\n  github.com:\n    oauth_token: fake_token_value_x\n");
+		r.store.write("gh:github.com", "");
+		started.child.finish(0);
+		await until("the refusal", () => phase(r, "github.com") === "plain-text");
+		const f = flow(r, "github.com", "plain-text");
+		assert.equal(logouts(r).length, 1);
+		assert.equal(f.removed, false, "the screen must not say no token stays");
+		assert.match(f.detail, /still stays in .*config\.yml/);
+		assert.match(f.detail, /removing it ended as failed/);
+		assert.ok(r.log.some((l) => l.event === "forge-plain-removal" && l.stays === 1));
+	});
+});
+
+describe("settings' refresh and a login do not straddle (T10R-F006)", () => {
+	it("a refresh whose listing was taken before the login waits for the login, which then stays signed in and recorded", async () => {
+		const g = gate();
+		const r = rig();
+		const forges = [{ kind: "gitlab" as const, host: "gitlab.com" }];
+		await r.accounts.begin("gitlab", "gitlab.com");
+		r.store.holdList = g.promise;
+		const refreshing = r.accounts.refresh(forges);
+		await until("the refresh's listing", () => r.store.holdList === null);
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		await new Promise((r2) => setImmediate(r2));
+		assert.equal(logins(r).length, 0, "the login waits for the refresh that is reading the store");
+		g.open();
+		await Promise.all([refreshing, signing]);
+		flow(r, "gitlab.com", "done");
+		assert.equal(readAccountsRecord(r.layout).entries.length, 1, "the login stays recorded");
+		assert.equal(readAccountsRecord(r.layout).left.length, 0);
+		await r.accounts.refresh(forges);
+		assert.equal(r.accounts.views(forges)[0]?.state, "signed-in");
+	});
+
+	it("a refresh leaves a host alone while its login is being finished", async () => {
+		const g = gate();
+		const r = rig({ holdGlabLogin: g.promise });
+		const forges = [{ kind: "gitlab" as const, host: "gitlab.com" }];
+		await r.accounts.begin("gitlab", "gitlab.com");
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		await until("glab to run", () => logins(r).length === 1);
+		const listings = r.store.calls.filter((c) => c === "list").length;
+		await r.accounts.refresh(forges);
+		assert.equal(r.store.calls.filter((c) => c === "list").length, listings, "no listing while the login runs");
+		g.open();
+		await signing;
+		flow(r, "gitlab.com", "done");
+	});
+});
+
+describe("nothing but the listing lies between the ownership check and the logout (T10R-F007)", () => {
+	it("looks the CLI and its proxy up before the listing", async () => {
+		const order: string[] = [];
+		const r = rig({}, {
+			proxyEnv: async () => {
+				order.push("proxy");
+				return {};
+			},
+		});
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		const realList = r.store.list.bind(r.store);
+		r.store.list = async (names) => {
+			order.push("list");
+			return realList(names);
+		};
+		order.length = 0;
+		await r.accounts.signOut("gitlab", "gitlab.com");
+		flow(r, "gitlab.com", "signed-out");
+		assert.ok(order.includes("proxy") && order.includes("list"));
+		assert.ok(order.indexOf("proxy") < order.indexOf("list"), `the proxy lookup comes before the ownership listing: ${order.join(" ")}`);
+		assert.ok(!order.slice(order.indexOf("list")).includes("proxy"), "no proxy lookup after the ownership listing");
 	});
 });

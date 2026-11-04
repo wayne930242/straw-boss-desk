@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { CredentialStoreError, type CommandRunner, type CredentialStore, type ProbeResult, type RunOptions, type RunResult, type StoreEntry } from "../../src/main/platform/types.ts";
 import type { LoginChild, SpawnLogin } from "../../src/main/accounts/cli.ts";
+import { removeHostBlock } from "../../src/main/accounts/forge.ts";
 
 // Stand-ins for the OS credential store and for gh and glab, for the code-host tests. The store keeps entries with a time that moves on every write, as a keychain's `mdat` and Credential Manager's
 // `LastWritten` do; the CLIs write and delete entries in it the way the real ones name them. Test code only: nothing here touches a real store or a real login.
@@ -13,6 +16,10 @@ export class FakeStore implements CredentialStore {
 	/** A message makes `list` throw it, as a keychain that did not answer does. */
 	listError: string | null = null;
 	calls: string[] = [];
+	/** The next `list` answers what the store held when it was called, but only after this settles (a listing that takes its time). Cleared once used. */
+	holdList: Promise<void> | null = null;
+	/** The next `probe` waits for this. Cleared once used. */
+	holdProbe: Promise<void> | null = null;
 	#tick = 0;
 
 	/** A new time on every call, two seconds apart, so a second write always differs (macOS keeps `mdat` to the second). */
@@ -34,13 +41,20 @@ export class FakeStore implements CredentialStore {
 
 	async probe(): Promise<ProbeResult> {
 		this.calls.push("probe");
+		const hold = this.holdProbe;
+		this.holdProbe = null;
+		if (hold !== null) await hold;
 		return this.probeResult;
 	}
 
 	async list(names: readonly string[]): Promise<StoreEntry[]> {
 		this.calls.push("list");
 		if (this.listError !== null) throw new CredentialStoreError(this.listError);
-		return this.entries.filter((e) => names.includes(e.name)).map((e) => ({ ...e }));
+		const snapshot = this.entries.filter((e) => names.includes(e.name)).map((e) => ({ ...e }));
+		const hold = this.holdList;
+		this.holdList = null;
+		if (hold !== null) await hold;
+		return snapshot;
 	}
 
 	async delete({ name, account }: { name: string; account: string }): Promise<void> {
@@ -71,6 +85,8 @@ export interface FakeCliOptions {
 	logoutExit?: number;
 	/** The logout leaves the entries in the store (a logout that did not finish). */
 	logoutKeepsEntries?: boolean;
+	/** glab's login waits for this after it wrote its entry (a login that takes its time). */
+	holdGlabLogin?: Promise<void>;
 }
 
 const hostArg = (args: readonly string[]): string => args[args.indexOf("--hostname") + 1] ?? "";
@@ -88,6 +104,7 @@ export function fakeRun(store: FakeStore, options: FakeCliOptions = {}): { run: 
 			if (login.code === 0) {
 				store.write(`glab:${host}:token`, "");
 				options.onGlabLogin?.(host);
+				if (options.holdGlabLogin !== undefined) await options.holdGlabLogin;
 			}
 			return { code: login.code, stdout: login.code === 0 ? "Logged in\n" : "", stderr: login.stderr };
 		}
@@ -100,6 +117,12 @@ export function fakeRun(store: FakeStore, options: FakeCliOptions = {}): { run: 
 		if (verb === "auth logout") {
 			const code = options.logoutExit ?? 0;
 			if (code === 0 && options.logoutKeepsEntries !== true) store.entries = store.entries.filter((e) => !(cli === "glab" ? e.name === `glab:${host}:token` || e.name === `glab:${host}` : e.name === `gh:${host}` || e.name === `gh:_refreshable:${host}`));
+			// What the real CLIs do besides the store: the host leaves their own file, a plain-text token with it.
+			const dir = runOptions?.env?.[cli === "glab" ? "GLAB_CONFIG_DIR" : "GH_CONFIG_DIR"];
+			if (code === 0 && dir !== undefined) {
+				const file = join(dir, cli === "glab" ? "config.yml" : "hosts.yml");
+				if (existsSync(file)) writeFileSync(file, removeHostBlock(readFileSync(file, "utf8"), host, cli === "glab" ? ["hosts"] : []).text);
+			}
 			return { code, stdout: "", stderr: code === 0 ? "" : "logout failed" };
 		}
 		return { code: 1, stdout: "", stderr: `unexpected call ${verb}` };

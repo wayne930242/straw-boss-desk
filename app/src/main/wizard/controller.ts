@@ -360,6 +360,8 @@ export class WizardController {
 		if (!isForgeAction(action)) return;
 		const forge = this.forges.find((f) => f.host === action.host);
 		if (forge === undefined || ("kind" in action && action.kind !== forge.kind)) return;
+		// A token is for GitLab only: for a GitHub host it would replace that host's sign-in state (T10R-F009).
+		if (action.type === "forge-token" && forge.kind !== "gitlab") return;
 		await this.#d.accounts.act(action);
 	}
 
@@ -674,6 +676,8 @@ export class WizardController {
 			this.#save({ later: addLater(file.later, { item: "claude" }), step: forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : "done", hostsIndex: 0 });
 		} else if (file.step === "hosts") {
 			const forge = forges[file.hostsIndex];
+			// A login that is being finished (glab signing in, the entries being recorded) is not interrupted: Later waits for it (T10R-F001).
+			if (forge !== undefined && this.#d.accounts.flowOf(forge.host).phase === "working") return;
 			// A sign-in that waits (the device code, the token field) ends with the PM's choice.
 			if (forge !== undefined) this.#d.accounts.cancel(forge.host);
 			this.#advanceHosts(forge === undefined ? null : { item: forge.kind, host: forge.host });

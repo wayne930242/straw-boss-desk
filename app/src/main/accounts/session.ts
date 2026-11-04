@@ -68,7 +68,12 @@ interface HostState {
 	code: string | null;
 	/** Counts the attempts: a continuation of an abandoned one finds a newer number and stops. */
 	attempt: number;
+	/** The operations on this host that list the store and write the record run one after another (T10R-F006). */
+	lock: Promise<void>;
 }
+
+/** The phases in which an attempt is under way and nothing else may start on the host. */
+const BUSY = ["checking", "waiting-code", "code", "working"];
 
 /** The GitLab page where a personal access token is made, with the name and the scope filled in. */
 export const gitlabTokenUrl = (host: string): string => `https://${host}/-/user_settings/personal_access_tokens?name=Straw%20Boss&scopes=api`;
@@ -81,6 +86,9 @@ export class ForgeAccounts {
 	readonly #signedIn = new Set<(kind: ForgeKind, host: string) => void>();
 	readonly #setTimer: (fn: () => void, ms: number) => unknown;
 	readonly #clearTimer: (timer: unknown) => void;
+	/** The operations under way, so a quit can wait for a login that glab or gh is finishing (T10R-F001). */
+	readonly #inflight = new Set<Promise<unknown>>();
+	#disposed = false;
 
 	constructor(deps: ForgeAccountsDeps) {
 		this.#d = deps;
@@ -111,7 +119,7 @@ export class ForgeAccounts {
 			const record = readAccountsRecord(this.#d.layout);
 			const mine = (e: { kind: ForgeKind; host: string }): boolean => e.kind === kind && e.host === host;
 			const state: ForgeState = record.left.some(mine) ? "left" : record.entries.some(mine) ? "signed-in" : "not-signed-in";
-			slot = { kind, flow: { phase: "idle" }, state, entries: record.left.filter(mine).map((e) => ({ name: e.name, account: e.account })), child: null, timer: null, code: null, attempt: 0 };
+			slot = { kind, flow: { phase: "idle" }, state, entries: record.left.filter(mine).map((e) => ({ name: e.name, account: e.account })), child: null, timer: null, code: null, attempt: 0, lock: Promise.resolve() };
 			this.#hosts.set(key, slot);
 		}
 		return slot;
@@ -120,6 +128,22 @@ export class ForgeAccounts {
 	#set(slot: HostState, flow: ForgeFlow): void {
 		slot.flow = flow;
 		this.#emit();
+	}
+
+	/**
+	 * Runs `fn` after every earlier operation on the host has ended. A listing and the record it is reconciled against must not straddle a login (T10R-F006): a refresh that listed the store before
+	 * the login and reconciled after it would turn the fresh login `left`, or drop it. Nothing inside `fn` takes the lock again.
+	 */
+	#exclusive<T>(slot: HostState, fn: () => Promise<T>): Promise<T> {
+		const run = slot.lock.then(fn, fn);
+		slot.lock = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#inflight.add(run);
+		const done = (): void => void this.#inflight.delete(run);
+		run.then(done, done);
+		return run;
 	}
 
 	/** What the pages show for these forges. */
@@ -165,8 +189,12 @@ export class ForgeAccounts {
 	async refresh(forges: readonly Forge[]): Promise<void> {
 		for (const f of forges) {
 			const slot = this.#slot(f.kind, f.host);
-			if (slot.child !== null || slot.flow.phase === "checking") continue;
-			await this.#settle(f.kind, f.host, slot);
+			if (slot.child !== null || BUSY.includes(slot.flow.phase)) continue;
+			await this.#exclusive(slot, async () => {
+				// Asked again once it is the host's turn: a login may have begun while this waited.
+				if (slot.child !== null || BUSY.includes(slot.flow.phase)) return;
+				await this.#settle(f.kind, f.host, slot);
+			});
 		}
 		this.#emit();
 	}
@@ -178,20 +206,22 @@ export class ForgeAccounts {
 	 */
 	async begin(kind: ForgeKind, host: string): Promise<void> {
 		const slot = this.#slot(kind, host);
-		if (slot.child !== null || ["checking", "waiting-code", "code", "working"].includes(slot.flow.phase)) return;
+		if (slot.child !== null || BUSY.includes(slot.flow.phase)) return;
 		const attempt = ++slot.attempt;
 		this.#set(slot, { phase: "checking" });
-		const probe = await probeStore(this.#d.credentials);
-		if (slot.attempt !== attempt) return;
-		this.#d.log({ event: "forge-probe", cli: cliOf(kind), host, ok: probe.ok, ...(probe.ok ? {} : { detail: probe.detail }) });
-		if (!probe.ok) {
-			slot.state = "unknown";
-			this.#set(slot, { phase: "store-unavailable", detail: probe.detail });
-			return;
-		}
-		const checked = await this.#check(kind, host, slot);
-		if (slot.attempt !== attempt) return;
-		this.#set(slot, "stop" in checked ? checked.stop : { phase: "ready" });
+		await this.#exclusive(slot, async () => {
+			const probe = await probeStore(this.#d.credentials);
+			if (slot.attempt !== attempt) return;
+			this.#d.log({ event: "forge-probe", cli: cliOf(kind), host, ok: probe.ok, ...(probe.ok ? {} : { detail: probe.detail }) });
+			if (!probe.ok) {
+				slot.state = "unknown";
+				this.#set(slot, { phase: "store-unavailable", detail: probe.detail });
+				return;
+			}
+			const checked = await this.#check(kind, host, slot);
+			if (slot.attempt !== attempt) return;
+			this.#set(slot, "stop" in checked ? checked.stop : { phase: "ready" });
+		});
 	}
 
 	/** The listing and the ownership check, right before a login. Either the flow that stops it, or the entries listed (all of them owned, or none). */
@@ -211,7 +241,7 @@ export class ForgeAccounts {
 		if (slot.flow.phase !== "ready" || slot.child !== null) return;
 		const attempt = ++slot.attempt;
 		this.#set(slot, { phase: "waiting-code" });
-		const checked = await this.#check("github", host, slot);
+		const checked = await this.#exclusive(slot, () => this.#check("github", host, slot));
 		if (slot.attempt !== attempt) return;
 		if ("stop" in checked) {
 			this.#set(slot, checked.stop);
@@ -273,7 +303,8 @@ export class ForgeAccounts {
 				return;
 			}
 			this.#set(slot, { phase: "working" });
-			this.#afterLogin("github", host, slot, attempt, before, /saved in plain text/i.test(output)).catch((error: Error) => this.#failed(slot, attempt, error));
+			const cliSaidPlain = /saved in plain text/i.test(output);
+			this.#exclusive(slot, () => this.#afterLogin("github", host, slot, attempt, before, cliSaidPlain)).catch((error: Error) => this.#failed(slot, attempt, error));
 		});
 	}
 
@@ -297,6 +328,10 @@ export class ForgeAccounts {
 		if (slot.flow.phase !== "ready" || secret === "") return;
 		const attempt = ++slot.attempt;
 		this.#set(slot, { phase: "working" });
+		await this.#exclusive(slot, () => this.#signInGitlab(host, secret, slot, attempt));
+	}
+
+	async #signInGitlab(host: string, secret: string, slot: HostState, attempt: number): Promise<void> {
 		const checked = await this.#check("gitlab", host, slot);
 		if (slot.attempt !== attempt) return;
 		if ("stop" in checked) {
@@ -308,6 +343,11 @@ export class ForgeAccounts {
 		if (slot.attempt !== attempt) return;
 		if (prepared === null) {
 			this.#set(slot, { phase: "failed", detail: "glab is not installed" });
+			return;
+		}
+		// A quit that began while the checks ran starts no login: one that glab already runs is waited for and recorded (`settled`).
+		if (this.#disposed) {
+			this.#set(slot, { phase: "ready" });
 			return;
 		}
 		const args = ["auth", "login", "--hostname", host, "--git-protocol", "https", "--api-protocol", "https", "--stdin"];
@@ -348,7 +388,13 @@ export class ForgeAccounts {
 		if (verdict.plain || cliSaidPlain) {
 			const removal = await this.#remove(kind, host, slot, "plain-text");
 			if (slot.attempt !== attempt) return;
-			this.#set(slot, { phase: "plain-text", detail: removal.phase === "signed-out" ? verdict.reason : `${verdict.reason}; removing it ended as ${removal.phase}` });
+			// A removal that stopped before the logout (the store could not be listed, the logout failed) still takes the host out of the app's own file: that touches no store entry (T10R-F002).
+			if (removal.phase !== "signed-out" && removal.phase !== "left-alone") this.#removeFromOwnFile(kind, host);
+			// The files decide whether the screen may say no token stays: what the logout was supposed to remove is read again.
+			const stays = this.#plainFiles(kind, host);
+			const detail = stays.length === 0 ? verdict.reason : `${verdict.reason}; removing it ended as ${removal.phase}; a token still stays in ${stays.join(", ")}`;
+			this.#d.log({ event: "forge-plain-removal", cli: cliOf(kind), host, ended: removal.phase, stays: stays.length });
+			this.#set(slot, { phase: "plain-text", detail, removed: stays.length === 0 });
 			return;
 		}
 		if (!verdict.verified || !after.ok) {
@@ -357,6 +403,14 @@ export class ForgeAccounts {
 		}
 		this.#set(slot, { phase: "done" });
 		for (const l of this.#signedIn) l(kind, host);
+	}
+
+	/** The files of the app's own configuration folder that hold a non-empty token line for the host: gh's `hosts.yml` and `config.yml`, glab's `config.yml`. */
+	#plainFiles(kind: ForgeKind, host: string): string[] {
+		const dir = forgeConfigDir(this.#d.layout, kind);
+		if (kind === "gitlab") return glabFileFindings(dir, host).own > 0 ? [join(dir, "config.yml")] : [];
+		const files = ghFileFindings(dir, host);
+		return [...(files.hosts.own > 0 ? [join(dir, "hosts.yml")] : []), ...(files.config.own > 0 ? [join(dir, "config.yml")] : [])];
 	}
 
 	/** After either login: gh's `tokenSource` must be `keyring` and neither of gh's files may hold a token for the host; glab's `config.yml` may hold none. */
@@ -377,12 +431,14 @@ export class ForgeAccounts {
 
 	async signOut(kind: ForgeKind, host: string): Promise<void> {
 		const slot = this.#slot(kind, host);
-		if (slot.child !== null || ["checking", "waiting-code", "code", "working"].includes(slot.flow.phase)) return;
+		if (slot.child !== null || BUSY.includes(slot.flow.phase)) return;
 		const attempt = ++slot.attempt;
 		this.#set(slot, { phase: "working" });
-		const outcome = await this.#remove(kind, host, slot, "sign-out");
-		if (slot.attempt !== attempt) return;
-		this.#set(slot, outcome);
+		await this.#exclusive(slot, async () => {
+			const outcome = await this.#remove(kind, host, slot, "sign-out");
+			if (slot.attempt !== attempt) return;
+			this.#set(slot, outcome);
+		});
 	}
 
 	/**
@@ -391,6 +447,8 @@ export class ForgeAccounts {
 	 * (they stay in the store beside the foreign one), and the outcome names what stays.
 	 */
 	async #remove(kind: ForgeKind, host: string, slot: HostState, why: "sign-out" | "plain-text"): Promise<ForgeFlow> {
+		// The CLI and its proxy are looked up first, so nothing but the listing lies between the ownership check and the logout (T10R-F007).
+		const prepared = await this.#prepare(kind, host);
 		const settled = await this.#settle(kind, host, slot);
 		if ("failed" in settled) return { phase: "store-unavailable", detail: settled.failed };
 		const split = classify(settled.entries, settled.record);
@@ -403,7 +461,6 @@ export class ForgeAccounts {
 			this.#d.log({ event: "forge-logout-skipped", cli: cliOf(kind), host, why, foreign: split.foreign.length, left: marked.left.length });
 			return { phase: "left-alone", foreign: namesOf(split.foreign), left: marked.left.map((e) => ({ name: e.name, account: e.account })) };
 		}
-		const prepared = await this.#prepare(kind, host);
 		if (prepared === null) return { phase: "failed", detail: `${cliOf(kind)} is not installed` };
 		const result = await this.#d.run(prepared.file, ["auth", "logout", "--hostname", host], { env: prepared.env, replaceEnv: true, timeoutMs: this.#d.callMs ?? CALL_MS });
 		this.#d.log({ event: "forge-logout", cli: cliOf(kind), host, why, exit: result.code });
@@ -444,16 +501,22 @@ export class ForgeAccounts {
 
 	// ---- the rest of the actions -----------------------------------------------------------------------------------------
 
-	/** Stops a login that waits and goes back to `ready`; the checks ran already, and every login checks again before it writes. */
+	/**
+	 * Stops a login that waits and goes back to `ready`; the checks ran already, and every login checks again before it writes. A host whose checks are running goes back to `idle`. A login that is
+	 * `working` (glab is signing in, gh has exited and the entries are being recorded) is left alone: it ends in a recorded login and its verdict, never in an entry the app made and does not know
+	 * (T10R-F001).
+	 */
 	cancel(host: string): void {
 		const slot = this.#hosts.get(hostKey(host));
-		if (slot === undefined) return;
+		if (slot === undefined || slot.flow.phase === "working") return;
 		const waiting = slot.child !== null || ["waiting-code", "code"].includes(slot.flow.phase);
+		const checking = slot.flow.phase === "checking";
 		slot.attempt++;
 		const child = slot.child;
 		this.#release(slot);
 		child?.kill();
 		if (waiting) this.#set(slot, { phase: "ready" });
+		else if (checking) this.#set(slot, { phase: "idle" });
 	}
 
 	/** Back to the start of a host: the next `begin` runs the checks again. */
@@ -495,14 +558,31 @@ export class ForgeAccounts {
 		}
 	}
 
-	/** The app is quitting: a login that waits ends with it. */
+	/** The app is quitting: a login that waits for approval ends with it. One that is `working` is not cut off; `settled` waits for it. */
 	dispose(): void {
+		this.#disposed = true;
 		for (const slot of this.#hosts.values()) {
+			if (slot.flow.phase === "working") continue;
 			slot.attempt++;
 			const child = slot.child;
 			this.#release(slot);
 			child?.kill();
 		}
+	}
+
+	/**
+	 * Resolves when every operation under way has ended, or after `maxMs`: the quit waits for a login that glab or gh is finishing, so its entry is recorded with its time and its verdict runs
+	 * (T10R-F001). The limit of a CLI call is 60 s, so a login that hangs ends first.
+	 */
+	settled(maxMs: number = (this.#d.callMs ?? CALL_MS) + 15_000): Promise<void> {
+		if (this.#inflight.size === 0) return Promise.resolve();
+		return new Promise((resolve) => {
+			const timer = this.#setTimer(resolve, maxMs);
+			void Promise.allSettled([...this.#inflight]).then(() => {
+				this.#clearTimer(timer);
+				resolve();
+			});
+		});
 	}
 
 	async #prepare(kind: ForgeKind, host: string): Promise<{ file: string; env: EnvMap } | null> {

@@ -39,8 +39,11 @@ export type ForgeFlow =
 	| { phase: "code"; code: string; deviceUrl: string }
 	/** The CLI finished its login; the entries are recorded and the verdict runs. Or glab is signing in with the token. */
 	| { phase: "working" }
-	/** The verdict found a plain-text token: it was removed, and the login is refused with the sentence of the store probe. */
-	| { phase: "plain-text"; detail: string }
+	/**
+	 * The verdict found a plain-text token and the login is refused with the sentence of the store probe. `removed` says whether the files the CLI wrote were read again and hold no token
+	 * line any more; when it is false, the screen says a token may still be on this computer and `detail` names where (T10R-F002).
+	 */
+	| { phase: "plain-text"; detail: string; removed: boolean }
 	/** The verdict could not be read; the login is kept and the step fails. */
 	| { phase: "unverified"; detail: string }
 	/** The CLI said no (a wrong token, a host that does not answer, a closed code). `detail` is its first line, redacted. */

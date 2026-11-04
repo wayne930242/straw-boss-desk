@@ -242,11 +242,9 @@ function stopThenExit(code: (ok: boolean) => number): void {
 	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
 	// A Repair job in the queue does not start the stack again once the engine is gone (T9-F002).
 	supervisor.beginQuit();
-	// A device-code login that waits ends with the app.
+	// A device-code login that waits ends with the app; one that is being finished (glab signing in, the entries being recorded) is waited for, so the login is recorded and never lost.
 	accounts.dispose();
-	engineHost
-		.dispose()
-		.catch(() => undefined)
+	Promise.all([accounts.settled().catch(() => undefined), engineHost.dispose().catch(() => undefined)])
 		.then(() => supervisor.stop())
 		.then((report) => {
 			runtimeLog.event({ event: "quit-stop", ok: report.ok, leftovers: report.leftovers.length });

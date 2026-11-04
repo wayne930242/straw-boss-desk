@@ -474,6 +474,29 @@ describe("the sign-in steps and the end", () => {
 		assert.equal(w.accounts.actions.length, 1);
 	});
 
+	it("Later does nothing while a login is being finished, and ends one that waits (T10R-F001)", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "later" });
+		w.accounts.setFlow("github.com", { phase: "working" });
+		await c.act({ type: "later" });
+		assert.equal(c.view().hosts.index, 0, "still on the host whose login is being recorded");
+		assert.deepEqual(w.accounts.cancelled, []);
+		assert.deepEqual(c.later, [{ item: "claude" }], "nothing was put off");
+		w.accounts.setFlow("github.com", { phase: "code", code: "ABCD-1234", deviceUrl: "https://github.com/login/device" });
+		await c.act({ type: "later" });
+		assert.equal(c.view().hosts.index, 1);
+		assert.deepEqual(w.accounts.cancelled, ["github.com"]);
+	});
+
+	it("a token is honored only for a GitLab host: a GitHub host's sign-in is not replaced by one (T10R-F009)", async () => {
+		const w = await atClaude();
+		await w.controller.forgeAction({ type: "forge-token", host: "github.com", token: "glpat-x" });
+		assert.equal(w.accounts.actions.length, 0);
+		await w.controller.forgeAction({ type: "forge-token", host: "gitlab.example.com", token: "glpat-x" });
+		assert.deepEqual(w.accounts.actions.map((a) => a.type), ["forge-token"]);
+	});
+
 	it("a relaunch on the hosts step starts the checks of the forge it stopped at", async () => {
 		const w = await atClaude();
 		await w.controller.act({ type: "later" });
