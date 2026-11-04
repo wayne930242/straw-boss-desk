@@ -1260,6 +1260,28 @@ describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T
 		assert.ok(!w.order.includes("cli stop"), "an engine job does not stop the stack");
 	});
 
+	it("R11-F002: restart waits for a program of the tools folder that is still ending, and withStackStopped without the wait refuses", async () => {
+		for (const [name, waits] of [["restart", true], ["no wait", false]] as const) {
+			const w = world();
+			await w.supervisor.start();
+			w.procs.add(300, { startTime: "B300", executable: w.exe("node") });
+			const sleep = w.clock.sleep;
+			// The supervisor holds this clock object, so the helper ends 3 s into the sleeps the stop makes.
+			(w.clock as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+				await sleep(ms);
+				if (w.clock.slept.reduce((x, y) => x + y, 0) >= 3_000) w.procs.table.delete(300);
+			};
+			w.deps.stopTimeouts = { leftoversPollMs: 1_000 };
+			const sup = w.supervisor;
+			if (waits) {
+				await sup.restart();
+				assert.equal(sup.state, "running", `${name}: the stack runs again`);
+			} else {
+				await assert.rejects(sup.withStackStopped(async () => undefined), (e: unknown) => e instanceof StackBusyError && e.report.leftovers.some((l) => l.pid === 300), name);
+			}
+		}
+	});
+
 	it("does not run the work when a program still runs from the tools folder", async () => {
 		const w = world();
 		await w.supervisor.start();

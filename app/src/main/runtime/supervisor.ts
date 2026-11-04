@@ -825,6 +825,15 @@ export class Supervisor {
 		return this.#queue.run(work);
 	}
 
+	/**
+	 * Stops the stack and starts it again (the Linear restart offer: Herdr's environment is fixed for its lifetime, so a new key reaches panes only after a restart). The stop waits out a
+	 * program of the tools folder that is still ending, as Repair's does: on macOS a pane's pi leaves the `balance.mjs after-close` helper for 30 s, and a stop that took one listing would
+	 * refuse here and leave the stack down (R11-F002).
+	 */
+	restart(): Promise<void> {
+		return this.withStackStopped(async () => undefined, { waitForTools: true });
+	}
+
 	/** Repair for the engine lock: removes a lock whose owner pid is not an engine of this app. */
 	repairLock(): RepairResult {
 		const result = repairEngineLock(this.#d.layout, { isOurEngine: this.#d.isOurEngine });

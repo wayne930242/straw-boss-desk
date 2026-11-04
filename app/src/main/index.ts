@@ -186,7 +186,7 @@ const linear = new LinearAccounts({
 	// A start under way counts: the key may be read before it is saved, so the new key reaches panes only after a restart too.
 	stackRunning: () => supervisor.state === "running" || supervisor.state === "starting",
 	// Herdr's environment is fixed for its lifetime: the stack stops and starts again, and the new start reads the key.
-	restartStack: () => supervisor.withStackStopped(async () => undefined),
+	restartStack: () => supervisor.restart(),
 	proxyEnv: () => supervisor.engineProxyEnv([]),
 	log: (fields) => shellLog.event(fields),
 	openExternal: (url) => void shell.openExternal(url),
