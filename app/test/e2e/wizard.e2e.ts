@@ -196,12 +196,18 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await until(`${locale} in settings`, 10_000, async () => (await s.evaluate(() => document.documentElement.lang)) === locale, 100);
 		await s.locator('button.nav-item[data-section="accounts"]').click();
 		await s.locator("#accounts-forges").waitFor({ timeout: 10_000 });
+		// The rows ask the store and the CLIs again when the section opens; a picture is taken once they have answered.
+		await s.locator('.forge-panel[data-phase="checking"]').first().waitFor({ state: "detached", timeout: 60_000 });
 	};
-	const shotSettingsBoth = async (s: Page, name: string): Promise<void> => {
-		await settingsIn(s, "zh-TW");
-		await shot(s, `${name}-zh-TW`);
-		await settingsIn(s, "en");
-		await shot(s, `${name}-en`);
+	/** `focus` is a card that the picture must show: it is scrolled into view (the Linear card lies below the fold). */
+	const shotSettingsBoth = async (s: Page, name: string, focus?: string): Promise<void> => {
+		const framed = async (locale: "en" | "zh-TW"): Promise<void> => {
+			await settingsIn(s, locale);
+			if (focus !== undefined) await s.locator(focus).scrollIntoViewIfNeeded();
+			await shot(s, `${name}-${locale}`);
+		};
+		await framed("zh-TW");
+		await framed("en");
 		await settingsIn(s, "zh-TW");
 	};
 	const gitExecutable = (): { git: string; env: Record<string, string> } => {
@@ -879,17 +885,17 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await claudeCard(settings, "signed-in").waitFor({ timeout: 60_000 });
 		assert.equal(await claudeCard(settings).locator(".claude-sign-out").count(), 1);
 		assert.equal(await settings.evaluate(() => { const ids = [...document.querySelectorAll("[id]")].map((e) => e.id); return ids.length === new Set(ids).size; }), true, "no id repeats on the page");
-		await shotSettingsBoth(settings, "claude-card-signed-in");
+		await shotSettingsBoth(settings, "claude-card-signed-in", 'li.account-card[data-account="claude"]');
 
 		await claudeCard(settings).locator(".claude-sign-out").click();
 		await claudeCard(settings, "not-signed-in").waitFor({ timeout: 60_000 });
 		assert.ok(standInCalls().some((c) => c.argv.join(" ") === "auth logout"), "the CLI's own logout ran");
 		assert.equal(await claudeCard(settings).locator(".claude-sign-out").count(), 0, "Sign out is offered only while signed in");
-		await shotSettingsBoth(settings, "claude-card-not-signed-in");
+		await shotSettingsBoth(settings, "claude-card-not-signed-in", 'li.account-card[data-account="claude"]');
 
 		await claudeCard(settings).locator(".claude-sign-in").click();
 		await claudeCard(settings).locator("#claude-code").waitFor({ timeout: 60_000 });
-		await shotSettingsBoth(settings, "claude-card-code-field");
+		await shotSettingsBoth(settings, "claude-card-code-field", 'li.account-card[data-account="claude"]');
 		const code = `${CLAUDE_CODE}-again`;
 		await claudeCard(settings).locator("#claude-code").fill(code);
 		await claudeCard(settings).locator("#claude-send-code").click();
@@ -904,25 +910,25 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	it("settings' Linear card: saved, Sign out deletes the key and offers a restart, Sign in saves a new one (task 11)", { timeout: 900_000 }, async () => {
 		await settingsIn(settings, "zh-TW");
 		await linearCard(settings, "saved").waitFor({ timeout: 60_000 });
-		await shotSettingsBoth(settings, "linear-card-saved");
+		await shotSettingsBoth(settings, "linear-card-saved", 'li.account-card[data-account="linear"]');
 
 		await linearCard(settings).locator(".linear-sign-out").click();
 		await linearCard(settings, "not-saved").waitFor({ timeout: 60_000 });
 		assert.equal(existsSync(join(world.layout.secrets, "linear.bin")), false, "the key file is gone");
 		await settings.locator('[data-role="restart-offer"]').waitFor({ timeout: 30_000 });
-		await shotSettingsBoth(settings, "linear-card-removed-restart-offered");
+		await shotSettingsBoth(settings, "linear-card-removed-restart-offered", 'li.account-card[data-account="linear"]');
 		await settings.locator("#linear-restart-later").click();
 		await settings.locator('[data-role="restart-later-note"]').waitFor({ timeout: 10_000 });
 
 		await linearCard(settings).locator(".linear-sign-in").click();
 		await settings.locator("#linear-key").waitFor({ timeout: 30_000 });
-		await shotSettingsBoth(settings, "linear-card-key-field");
+		await shotSettingsBoth(settings, "linear-card-key-field", 'li.account-card[data-account="linear"]');
 		const second = `lin_api_${randomBytes(20).toString("hex")}`;
 		await settings.locator("#linear-key").fill(second);
 		await settings.locator("#linear-save").click();
 		await linearCard(settings, "saved").waitFor({ timeout: 300_000 });
 		await settings.locator('[data-role="restart-offer"]').waitFor({ timeout: 300_000 });
-		await shotSettingsBoth(settings, "linear-card-saved-restart-offered");
+		await shotSettingsBoth(settings, "linear-card-saved-restart-offered", 'li.account-card[data-account="linear"]');
 		await settings.locator("#linear-restart-later").click();
 		assert.equal(readFileSync(join(world.layout.secrets, "linear.bin")).includes(Buffer.from(second)), false, "encrypted");
 		assert.equal(logText().includes(second), false);
