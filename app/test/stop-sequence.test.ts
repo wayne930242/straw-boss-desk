@@ -6,33 +6,114 @@ import { stopSequence, type StopParts } from "../src/main/stop-sequence.ts";
 // The stop of a quit and the stop before an update's installer are one sequence, and it ends every account work (task 11 R11-F007): a running `ttt init` or Claude sign-in
 // cannot survive the stop. Fakes record the calls; nothing real starts.
 
-function parts(calls: string[]): StopParts {
-	const account = (name: string) => ({ dispose: () => void calls.push(`${name}.dispose`), settled: async () => void calls.push(`${name}.settled`) });
+function parts(calls: string[], over: { settledFails?: boolean; stopFails?: boolean; log?: (f: unknown) => void } = {}): StopParts {
+	const account = (name: string) => ({
+		dispose: () => void calls.push(`${name}.dispose`),
+		settled: async () => {
+			calls.push(`${name}.settled`);
+			if (over.settledFails) throw new Error("settled failed");
+		},
+	});
 	return {
-		supervisor: { beginQuit: () => void calls.push("beginQuit"), stop: async () => (calls.push("stop"), { ok: true, leftovers: [] }) },
+		supervisor: {
+			beginQuit: () => void calls.push("beginQuit"),
+			stop: async () => {
+				calls.push("stop");
+				if (over.stopFails) throw new Error("stop failed");
+				return { ok: true, leftovers: [] };
+			},
+		},
 		updates: { dispose: () => void calls.push("updates.dispose") },
 		accounts: account("accounts"),
 		claude: account("claude"),
 		linear: account("linear"),
 		engineHost: { dispose: async () => void calls.push("engine.dispose") },
-		log: () => undefined,
+		log: (f) => over.log?.(f),
 	};
 }
 
+/** The source with comments dropped; string and template literals are walked so a `//` inside one stays. */
+function code(file: string): string {
+	const source = readFileSync(new URL(file, import.meta.url), "utf8");
+	let out = "";
+	let i = 0;
+	while (i < source.length) {
+		const c = source[i] as string;
+		const next = source[i + 1];
+		if (c === "/" && next === "/") {
+			while (i < source.length && source[i] !== "\n") i++;
+		} else if (c === "/" && next === "*") {
+			const end = source.indexOf("*/", i + 2);
+			i = end < 0 ? source.length : end + 2;
+		} else if (c === '"' || c === "'" || c === "`") {
+			let j = i + 1;
+			while (j < source.length && source[j] !== c) j += source[j] === "\\" ? 2 : 1;
+			out += source.slice(i, j + 1);
+			i = j + 1;
+		} else {
+			out += c;
+			i++;
+		}
+	}
+	return out;
+}
+
+function body(source: string, name: string): string {
+	const start = source.search(new RegExp(`(async )?function ${name}\\(`));
+	assert.ok(start >= 0, `${name} exists`);
+	const open = source.indexOf("{", source.indexOf(")", start));
+	let depth = 0;
+	for (let i = open; i < source.length; i++) {
+		if (source[i] === "{") depth++;
+		if (source[i] === "}" && --depth === 0) return source.slice(open, i + 1);
+	}
+	throw new Error(`${name} has no end`);
+}
+
 describe("stop sequence", () => {
-	it("disposes and waits for Claude and Linear before the stack stops", async () => {
+	it("runs the whole order: beginQuit, updates.dispose, the sign-ins disposed then settled, the engine disposed, then the stack stops", async () => {
 		const calls: string[] = [];
 		assert.equal(await stopSequence(parts(calls)), true);
-		for (const name of ["accounts", "claude", "linear"]) {
-			assert.ok(calls.includes(`${name}.dispose`) && calls.includes(`${name}.settled`), name);
-			assert.ok(calls.indexOf(`${name}.settled`) < calls.indexOf("stop"), name);
+		const at = (name: string) => {
+			assert.ok(calls.includes(name), `${name} ran`);
+			return calls.indexOf(name);
+		};
+		assert.equal(calls[0], "beginQuit");
+		assert.equal(at("updates.dispose"), 1);
+		const names = ["accounts", "claude", "linear"];
+		for (const name of names) {
+			assert.ok(at("updates.dispose") < at(`${name}.dispose`), name);
+			assert.ok(at(`${name}.dispose`) < at(`${name}.settled`), `${name} disposed before it settled`);
+			assert.ok(at(`${name}.settled`) < at("stop"), name);
 		}
+		for (const settled of names.map((n) => at(`${n}.settled`))) {
+			for (const dispose of names.map((n) => at(`${n}.dispose`))) assert.ok(dispose < settled, "every dispose before any settled");
+		}
+		assert.ok(at("engine.dispose") < at("stop"));
+		assert.equal(calls.at(-1), "stop");
+		assert.equal(calls.length, 10);
 	});
 
-	it("is the sequence the update stop path runs", () => {
-		const source = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+	it("a settled that rejects does not hold the stop back; a stop that rejects logs quit-stop-failed and resolves false", async () => {
+		const calls: string[] = [];
+		assert.equal(await stopSequence(parts(calls, { settledFails: true })), true);
+		assert.equal(calls.at(-1), "stop");
+		const logged: unknown[] = [];
+		assert.equal(await stopSequence(parts([], { stopFails: true, log: (f) => logged.push(f) })), false);
+		assert.equal((logged[0] as { event: string }).event, "quit-stop-failed");
+	});
+
+	it("both the update stop and the quit go through stopAll, which hands over the real sign-ins (comments ignored)", () => {
+		const source = code("../src/main/index.ts");
 		assert.match(source, /prepareQuit: \(\) => stopForUpdate\(\)/);
-		assert.match(source, /async function stopForUpdate\(\)[^}]*await stopAll\(\)/s);
-		assert.match(source, /function stopAll\(\)[^}]*stopSequence\(/s);
+		assert.match(body(source, "stopForUpdate"), /await stopAll\(\)/);
+		assert.match(body(source, "stopThenExit"), /stopAll\(\)/);
+		const all = body(source, "stopAll");
+		assert.match(all, /stopSequence\(\{[^]*\bupdates\b[^]*\baccounts\b[^]*\bclaude\b[^]*\blinear\b[^]*\bengineHost\b[^]*\}\)/);
+	});
+
+	it("resumeAfterFailedUpdate resumes every sign-in (comments ignored)", () => {
+		const resume = body(code("../src/main/index.ts"), "resumeAfterFailedUpdate");
+		for (const name of ["accounts", "claude", "linear"]) assert.match(resume, new RegExp(`\\b${name}\\.resume\\(\\)`));
 	});
 });
