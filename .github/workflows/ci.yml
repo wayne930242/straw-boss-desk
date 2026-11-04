@@ -179,7 +179,9 @@ jobs:
         env:
           SBD_E2E_RUNTIME: "1"
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
-        run: node --test --test-timeout=1500000 test/e2e-runtime.test.ts
+        run: |
+          set -o pipefail
+          node --test --test-timeout=1500000 test/e2e-runtime.test.ts 2>&1 | tee -a "$RUNNER_TEMP/runtime-e2e.log"
 
       # App half: the app killed, a second launch, --stop-stack, quit (and, on macOS, a window closed and opened again).
       - name: Playwright, lifecycle on the development build
@@ -188,7 +190,9 @@ jobs:
           SBD_E2E: "1"
           SBD_E2E_KIND: dev
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
-        run: node --test --test-concurrency=1 test/e2e/runtime.e2e.ts
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 test/e2e/runtime.e2e.ts 2>&1 | tee -a "$RUNNER_TEMP/runtime-e2e.log"
 
       # The task 8b anchor: the packaged app follows the GUI (restart, kill, /boss gui stop and Start, the failure screen at the fourth restart, suspend and resume), keeps the page
       # safe (the folder hook, navigation, preview links), and a pi in a pane of a base and its subagent resolve the app's tools, against the scripted stub model. It installs a
@@ -199,4 +203,11 @@ jobs:
           SBD_E2E: "1"
           SBD_E2E_KIND: dev
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
-        run: node --test --test-concurrency=1 --test-timeout=1800000 test/e2e/follow.e2e.ts
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 --test-timeout=1800000 test/e2e/follow.e2e.ts 2>&1 | tee -a "$RUNNER_TEMP/runtime-e2e.log"
+
+      # A failure is readable from the job page without the raw log (the failing lines as one annotation).
+      - name: Annotate the failing lines
+        if: failure()
+        run: node scripts/annotate-failures.mjs "$RUNNER_TEMP/runtime-e2e.log" "runtime e2e failures (${{ matrix.os }})"
