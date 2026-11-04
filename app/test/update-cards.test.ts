@@ -22,7 +22,7 @@ after(() => undo());
 const view = (over: Partial<UpdatesView> = {}): UpdatesView => ({ appVersion: "0.0.1", generation: 5, shell: { phase: "idle", checkedAt: null }, stack: { phase: "idle", checkedAt: null }, checking: false, checkedAt: null, platform: "win32", ...over });
 
 const draw = (u: UpdatesView | undefined, locale: "en" | "zh-TW" = "en", acts: SettingsAction[] = []): MiniElement => {
-	const settings: SettingsView = { locale, section: "updates", later: [], forges: [], recipe: null, appVersion: "0.0.1", dev: true, ...(u === undefined ? {} : { updates: u }) };
+	const settings: SettingsView = { locale, section: "updates", later: [], forges: [], claude: { phase: "idle" } as unknown as SettingsView["claude"], linear: null, recipe: null, appVersion: "0.0.1", dev: true, ...(u === undefined ? {} : { updates: u }) };
 	return updates(makeSettingsCtx(settings, locale, (a) => void acts.push(a))) as unknown as MiniElement;
 };
 
