@@ -300,6 +300,8 @@ export class WizardController {
 	async resume(): Promise<void> {
 		void this.scanPane();
 		const step = this.#file.step;
+		// A sign-in step needs nothing from the stack, so what it shows starts now, not after a start that can take a minute (the Linear screen asks the OS first, and waits for the answer).
+		this.#syncSteps();
 		if (step === "install") await this.#runInstall();
 		else if (STEP_ORDER.indexOf(step) >= STEP_ORDER.indexOf("start")) await this.#startStack();
 		this.#syncSteps();

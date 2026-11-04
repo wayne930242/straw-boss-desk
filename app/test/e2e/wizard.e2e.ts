@@ -439,7 +439,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await shotBoth(page, "wizard-claude");
 	});
 
-	it("Claude step: a refused code, then a planted code that reaches the stand-in's standard input and nowhere else, and the CLI's status says signed in (task 11)", async () => {
+	it("Claude step: a refused code, then a planted code that reaches the stand-in's standard input and nowhere else, and the CLI's status says signed in (task 11)", { timeout: 240_000 }, async () => {
 		assert.equal(await stepOf(page), "claude");
 		// The status is read when the step opens: not signed in, Sign in first, and Later stays a choice.
 		await page.locator("#claude-sign-in").waitFor({ timeout: 60_000 });
@@ -609,7 +609,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await finishHosts();
 	});
 
-	it("Linear step with isEncryptionAvailable() false: the key is refused before it can be typed, nothing is written, and Later is still a choice (task 11)", async () => {
+	it("Linear step with isEncryptionAvailable() false: the key is refused before it can be typed, nothing is written, and Later is still a choice (task 11)", { timeout: 1_800_000 }, async () => {
 		if (!hasToken) {
 			await page.locator("#later").click();
 			await waitStep(page, "linear");
@@ -635,7 +635,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await waitStep(page, "linear", 25 * 60_000);
 	});
 
-	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", async () => {
+	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", { timeout: 1_200_000 }, async () => {
 		await page.locator("#linear-key").waitFor({ timeout: 60_000 });
 		const field = page.locator("#linear-key");
 		assert.equal(await field.getAttribute("type"), "password");
@@ -874,7 +874,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	const claudeCard = (p: Page, state?: string) => p.locator(`li.account-card[data-account="claude"]${state === undefined ? "" : `[data-state="${state}"]`}`);
 	const linearCard = (p: Page, state?: string) => p.locator(`li.account-card[data-account="linear"]${state === undefined ? "" : `[data-state="${state}"]`}`);
 
-	it("settings' Claude card: signed in, Sign out through the CLI, Sign in again with the code field inside the card (task 11)", async () => {
+	it("settings' Claude card: signed in, Sign out through the CLI, Sign in again with the code field inside the card (task 11)", { timeout: 300_000 }, async () => {
 		await settingsIn(settings, "zh-TW");
 		await claudeCard(settings, "signed-in").waitFor({ timeout: 60_000 });
 		assert.equal(await claudeCard(settings).locator(".claude-sign-out").count(), 1);
@@ -901,7 +901,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await fieldsEmpty(settings), true);
 	});
 
-	it("settings' Linear card: saved, Sign out deletes the key and offers a restart, Sign in saves a new one (task 11)", async () => {
+	it("settings' Linear card: saved, Sign out deletes the key and offers a restart, Sign in saves a new one (task 11)", { timeout: 900_000 }, async () => {
 		await settingsIn(settings, "zh-TW");
 		await linearCard(settings, "saved").waitFor({ timeout: 60_000 });
 		await shotSettingsBoth(settings, "linear-card-saved");
@@ -932,14 +932,15 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.deepEqual(items.shipped, shippedSafeStorage, "the shipped product's Safe Storage item is as it was");
 	});
 
-	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false }, async () => {
+	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false, timeout: 240_000 }, async () => {
 		await close(first);
 		const empty = mkdtempSync("/tmp/sbd-nokc-");
 		// The saved Linear key is set aside for this launch: with no keychain in HOME, a start that decrypts the key would wait on the OS's own "no keychain" dialog, which is the OS's question and not this test's.
 		const keyFile = join(world.layout.secrets, "linear.bin");
 		const heldKey = `${keyFile}.held`;
 		if (existsSync(keyFile)) renameSync(keyFile, heldKey);
-		const app = await launch("zh-TW", { HOME: empty, STRAW_BOSS_DESK_ROOT: world.root, SBD_TEST_WSL_BASH: WSL_BASH });
+		// SBD_TEST_NO_ENCRYPTION keeps the Linear card's probe from asking the OS for its encryption: with no keychain in HOME that question is the OS's "no keychain" dialog, and it would hold the main process.
+		const app = await launch("zh-TW", { HOME: empty, STRAW_BOSS_DESK_ROOT: world.root, SBD_TEST_WSL_BASH: WSL_BASH, SBD_TEST_NO_ENCRYPTION: "1" });
 		first = app;
 		await pageOf(app, "screen.html");
 		await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById("settings-accounts")?.click());

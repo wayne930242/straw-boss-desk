@@ -662,6 +662,23 @@ describe("steps 7 and 9: Claude and Linear (task 11)", () => {
 		assert.equal(w.linear.probes, 1);
 	});
 
+	it("a relaunch on a sign-in step starts what the step shows at once, without waiting for the stack to start", async () => {
+		const w = await atClaude();
+		await w.controller.act({ type: "later" });
+		await w.controller.act({ type: "later" });
+		assert.equal(w.controller.step, "linear");
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const again = make({ pick: { layout: w.layout, home: w.base } as Partial<WizardDeps>, start: () => held });
+		// The same wizard.json: a controller made on the same layout opens on the same step.
+		assert.equal(again.controller.step, "linear");
+		const resuming = again.controller.resume();
+		await new Promise((r) => setImmediate(r));
+		assert.equal(again.linear.probes, 1, "asked while the stack is still starting");
+		release();
+		await resuming;
+	});
+
 	it("account actions are checked: a malformed one is dropped, a Linear one is dropped where Linear is not offered, a Claude one reaches the sign-in", async () => {
 		const w = await atClaude();
 		await w.controller.accountAction({ type: "claude-code", code: 5 } as never);
