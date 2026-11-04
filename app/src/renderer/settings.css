@@ -24,6 +24,8 @@ html, body { height: 100%; }
 .update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
 .update-note { margin: 8px 0 0; }
 .update-changes-box { margin: 8px 0 0; }
+.update-details { margin: 8px 0 0; }
+.update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 .update-changes { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
 
 .language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }

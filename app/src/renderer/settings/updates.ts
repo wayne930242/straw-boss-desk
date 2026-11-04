@@ -9,10 +9,16 @@ import { sectionBox, type SettingsCtx } from "./common.ts";
 
 type Tr = SettingsCtx["tr"];
 
-const BADGE_CLASS = { working: "badge-working", done: "badge-done", failed: "badge-failed", quiet: "badge-blocked" } as const;
+const BADGE_CLASS = { working: "badge-working", done: "badge-done", failed: "badge-failed", warn: "badge-warn", quiet: "badge-blocked" } as const;
 type BadgeKind = keyof typeof BADGE_CLASS;
 
 const badge = (cls: BadgeKind, phase: string, text: string): HTMLElement => h("span", { class: `badge ${BADGE_CLASS[cls]}`, "data-badge": phase }, text);
+
+/** The raw text of an error, under a Details fold: the sentence above it is the catalog's, and this is for whoever helps the PM. Null when there is none. */
+function details(tr: Tr, raw: string | undefined): HTMLElement | null {
+	if (raw === undefined || raw === "") return null;
+	return h("details", { class: "update-details" }, h("summary", {}, tr("settings.updates.details")), h("p", { class: "note update-detail" }, raw));
+}
 
 /** A card: its head (name, what it is about, the badge, the one row of buttons), then the sentence, then whatever the state adds. */
 function card(role: string, state: string, head: Array<HTMLElement | null>, ...below: Array<HTMLElement | null>): HTMLElement {
@@ -54,15 +60,18 @@ function appSentence(tr: Tr, state: ShellUpdateState): string {
 		case "downloading":
 			return state.percent === null ? tr("settings.updates.app.downloading", { version: state.version }) : tr("settings.updates.app.downloadingPercent", { version: state.version, percent: state.percent });
 		case "ready":
-			return tr("settings.updates.app.ready", { version: state.version });
+			return state.installFailed === undefined ? tr("settings.updates.app.ready", { version: state.version }) : tr("settings.updates.app.installFailed", { version: state.version });
 		case "downloaded":
 			return tr("settings.updates.app.downloaded", { version: state.version });
 		case "refused":
 			return tr(`settings.updates.app.refused.${state.reason}`, { version: state.version });
 		case "error":
-			return state.kind === "network" ? tr("settings.updates.app.errorNetwork") : tr("settings.updates.app.errorOther", { detail: state.detail });
+			return state.kind === "network" ? tr("settings.updates.app.errorNetwork") : tr("settings.updates.app.errorOther");
 	}
 }
+
+/** The raw reason behind a sentence, or undefined: a failed install start and every error carry one. */
+const appDetail = (state: ShellUpdateState): string | undefined => (state.phase === "error" ? state.detail : state.phase === "ready" ? state.installFailed : undefined);
 
 const APP_BADGE: Record<ShellUpdateState["phase"], BadgeKind> = { off: "quiet", idle: "done", checking: "working", available: "working", downloading: "working", ready: "done", downloaded: "done", refused: "failed", error: "failed" };
 
@@ -80,14 +89,15 @@ function appCard(ctx: SettingsCtx, view: UpdatesView): HTMLElement {
 			badge(APP_BADGE[state.phase], state.phase, ctx.tr(`settings.updates.app.badge.${state.phase}`)),
 			row(restart, download, reveal),
 		],
-		h("p", { class: "note update-note", id: "update-app-note", "data-reason": state.phase === "refused" ? state.reason : null }, appSentence(ctx.tr, state)),
+		h("p", { class: "note update-note", id: "update-app-note", "data-reason": state.phase === "refused" ? state.reason : state.phase === "ready" && state.installFailed !== undefined ? "install-failed" : null }, appSentence(ctx.tr, state)),
+		details(ctx.tr, appDetail(state)),
 	);
 }
 
 // ---- the stack ---------------------------------------------------------------------------------------------------------
 
 const STACK_BADGE_KEY: Record<StackUpdateState["phase"], string> = { idle: "idle", checking: "checking", available: "available", applying: "applying", applied: "applied", "rolled-back": "rolledBack", refused: "refused", error: "error" };
-const STACK_BADGE: Record<StackUpdateState["phase"], BadgeKind> = { idle: "done", checking: "working", available: "working", applying: "working", applied: "done", "rolled-back": "failed", refused: "failed", error: "failed" };
+const STACK_BADGE: Record<StackUpdateState["phase"], BadgeKind> = { idle: "done", checking: "working", available: "working", applying: "working", applied: "done", "rolled-back": "warn", refused: "failed", error: "failed" };
 
 function changeLine(ctx: SettingsCtx, change: ChangeLine): HTMLElement {
 	const name = stageLabel(ctx, change.stage);
@@ -120,7 +130,7 @@ function stackSentence(ctx: SettingsCtx, view: UpdatesView): string {
 		case "refused":
 			return tr(`settings.updates.stack.refused.${state.reason}`, { generation: state.generation ?? 0, minShell: state.minShell ?? "", tools: listOf(ctx.locale, state.tools ?? []) });
 		case "error":
-			return state.kind === "network" ? tr("settings.updates.stack.errorNetwork") : tr("settings.updates.stack.errorOther", { detail: state.detail });
+			return tr(state.kind === "network" ? "settings.updates.stack.errorNetwork" : state.kind === "busy" ? "settings.updates.stack.errorBusy" : "settings.updates.stack.errorOther");
 	}
 }
 
@@ -137,6 +147,7 @@ function stackCard(ctx: SettingsCtx, view: UpdatesView): HTMLElement {
 			row(apply),
 		],
 		h("p", { class: "note update-note", id: "update-stack-note", "data-reason": state.phase === "refused" ? state.reason : state.phase === "rolled-back" ? state.stage : null }, stackSentence(ctx, view)),
+		details(ctx.tr, state.phase === "error" ? state.detail : undefined),
 		state.phase === "available" && state.changes.length > 0
 			? h("details", { class: "update-changes-box", id: "update-changes", open: true }, h("summary", {}, ctx.tr("settings.updates.stack.changes")), h("ul", { class: "update-changes" }, ...state.changes.map((c) => changeLine(ctx, c))))
 			: null,

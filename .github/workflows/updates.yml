@@ -50,7 +50,7 @@ jobs:
         working-directory: app
         run: npm ci
 
-      # The pins of stack.json and the alternates of test/harness/alt-pins.ts (Node 24.22.0, Git 2.56.0.2 and 2.56.0-1, gh 2.103.2) are downloaded once and hashed again when used.
+      # The pins of stack.json and the alternates of test/harness/alt-pins.ts (Node 24.22.2, Git 2.56.0.2 and 2.56.0-1, gh 2.103.2) are downloaded once and hashed again when used.
       - name: Cache the downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
