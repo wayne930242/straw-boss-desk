@@ -31,6 +31,23 @@ describe("execRunner and an abort signal", () => {
 		assert.equal(real.stderr, "cancelled");
 	});
 
+	it("kills the child when the call's own signal aborts, and starts nothing for one that has aborted (R11-F007)", async () => {
+		const controller = new AbortController();
+		const started = Date.now();
+		const pending = execRunner()(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 120_000, signal: controller.signal });
+		setTimeout(() => controller.abort(), 300);
+		const result = await pending;
+		assert.ok(Date.now() - started < 20_000, "the 60 s child did not run to its end");
+		assert.equal(result.code, null);
+		assert.notEqual(result.timedOut, true);
+		assert.equal((await execRunner()(process.execPath, ["-e", "console.log('x')"], { signal: controller.signal })).stderr, "cancelled");
+		// Both signals count: the runner's and the call's.
+		const runnerWide = new AbortController();
+		const both = execRunner(process.env, runnerWide.signal)(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { signal: new AbortController().signal });
+		setTimeout(() => runnerWide.abort(), 300);
+		assert.equal((await both).code, null);
+	});
+
 	it("is unchanged without a signal", async () => {
 		const result = await execRunner()(process.execPath, ["-e", "console.log('hi')"]);
 		assert.equal(result.code, 0);

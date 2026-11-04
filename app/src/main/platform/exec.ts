@@ -11,16 +11,17 @@ export function execRunner(base: Readonly<Record<string, string | undefined>> = 
 	return (file, args, options) =>
 		new Promise((resolve) => {
 			// Node starts a child even when the signal has aborted already, and ends it on the next tick: a cancelled run starts nothing, not even for a moment (R9-F004 a).
-			if (signal?.aborted === true) return resolve({ code: null, stdout: "", stderr: "cancelled" });
+			const ending = signal !== undefined && options?.signal !== undefined ? AbortSignal.any([signal, options.signal]) : (signal ?? options?.signal);
+			if (ending?.aborted === true) return resolve({ code: null, stdout: "", stderr: "cancelled" });
 			const env: Record<string, string | undefined> = options?.replaceEnv && options.env ? { ...options.env } : { ...base, ...options?.env };
 			const child = execFile(
 				file,
 				[...args],
-				{ env, ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}), timeout: options?.timeoutMs ?? 0, killSignal: "SIGKILL", windowsHide: true, ...(signal !== undefined ? { signal } : {}), maxBuffer: MAX_BUFFER, encoding: "utf8" },
+				{ env, ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}), timeout: options?.timeoutMs ?? 0, killSignal: "SIGKILL", windowsHide: true, ...(ending !== undefined ? { signal: ending } : {}), maxBuffer: MAX_BUFFER, encoding: "utf8" },
 				(error, stdout, stderr) => {
 					if (!error) return resolve({ code: 0, stdout, stderr });
 					const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
-					const timedOut = e.killed === true && options?.timeoutMs !== undefined && signal?.aborted !== true;
+					const timedOut = e.killed === true && options?.timeoutMs !== undefined && ending?.aborted !== true;
 					const code = typeof e.code === "number" ? e.code : null;
 					resolve({ code, stdout, stderr: code === null ? `${stderr}${e.message}` : stderr, ...(timedOut ? { timedOut: true } : {}) });
 				},

@@ -12,6 +12,8 @@ export interface RunOptions {
 	env?: Readonly<Record<string, string>>;
 	/** With `env`: the child gets `env` and nothing else, not the runner's base environment merged with it. */
 	replaceEnv?: boolean;
+	/** The child is killed when this aborts (a quit while it runs); the result then has no exit code. */
+	signal?: AbortSignal;
 }
 
 export interface RunResult {

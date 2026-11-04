@@ -27,8 +27,11 @@ export interface SecretBox {
 	/** `isAsyncEncryptionAvailable()`, asked when the Linear screen opens and at each save and read (a test stubs it false at run time). */
 	available(): Promise<boolean>;
 	encrypt(text: string): Promise<Buffer>;
-	/** Throws when the blob cannot be decrypted (another machine, a lost Safe Storage key). */
-	decrypt(blob: Buffer): Promise<string>;
+	/**
+	 * Throws when the blob cannot be decrypted (another machine, a lost Safe Storage key). `shouldReEncrypt` is Electron's request to encrypt the text again with the current key and store that
+	 * (the key it was encrypted with is being retired).
+	 */
+	decrypt(blob: Buffer): Promise<{ result: string; shouldReEncrypt: boolean }>;
 }
 
 /** The result of the `ttt` stage: whether `ttt` is installed now, and the first line of why not. */
@@ -128,7 +131,9 @@ export class LinearKeyFile {
 	async read(): Promise<string | null> {
 		if (!this.exists) return null;
 		if (!(await this.#box.available())) throw new Error("the OS cannot decrypt the key: encryption is not available");
-		const key = await this.#box.decrypt(readFileSync(linearFile(this.#layout)));
+		const { result: key, shouldReEncrypt } = await this.#box.decrypt(readFileSync(linearFile(this.#layout)));
+		// Written back under the current key (R11-F006). A write that fails leaves the old blob, which still reads until the old key is dropped: the key itself was read, so this read does not fail.
+		if (shouldReEncrypt && key !== "") await this.write(key).catch(() => undefined);
 		return key === "" ? null : key;
 	}
 
@@ -157,6 +162,8 @@ export class LinearAccounts {
 	/** What the OS answered when it was last asked whether it can encrypt; null before the first question. */
 	#encryption: boolean | null = null;
 	#disposed = false;
+	/** Ends the `ttt init` child when the app quits (R11-F007). */
+	readonly #quit = new AbortController();
 
 	constructor(deps: LinearAccountsDeps) {
 		this.#d = deps;
@@ -354,7 +361,7 @@ export class LinearAccounts {
 		}
 		// The key is in this child's environment and nowhere else. `-y` takes the defaults and never prompts; an empty standard input ends a prompt that a later version might add.
 		const env: EnvMap = { ...proxyEnv, ...buildEnv({ layout: this.#d.layout, current, appEnv: this.#d.appEnv, linearApiKey: key }) };
-		const result = await this.#d.run(command.file, [...command.args, "init", "-y"], { env, replaceEnv: true, cwd: work, stdin: "", timeoutMs: this.#d.initMs ?? INIT_MS });
+		const result = await this.#d.run(command.file, [...command.args, "init", "-y"], { env, replaceEnv: true, cwd: work, stdin: "", timeoutMs: this.#d.initMs ?? INIT_MS, signal: this.#quit.signal });
 		this.#d.log({ event: "linear-init", exit: result.code, ...(result.timedOut ? { timedOut: true } : {}) });
 		// `ttt init` reports an API error on its output and still exits 0, so what it wrote decides.
 		if (result.code === 0 && existsSync(tttConfigFile(work))) return { phase: "done", initialized: "ran" };
@@ -455,9 +462,10 @@ export class LinearAccounts {
 		}
 	}
 
-	/** The app is quitting: what runs is not continued. The setup's `ttt init` ends at its own limit; the engine run of the `ttt` stage is cancelled by the engine host's dispose. */
+	/** The app is quitting: what runs is not continued. The setup's `ttt init` child is ended through the runner that holds it; the engine run of the `ttt` stage is cancelled by the engine host's dispose. */
 	dispose(): void {
 		this.#disposed = true;
+		this.#quit.abort();
 	}
 
 	/** Resolves when the work under way has ended, or after `maxMs`. */

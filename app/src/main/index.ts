@@ -163,11 +163,8 @@ const linear = new LinearAccounts({
 	box: {
 		available: async () => !(identity.kind === "dev" && process.env.SBD_TEST_NO_ENCRYPTION === "1") && (await safeStorage.isAsyncEncryptionAvailable()),
 		encrypt: (text) => safeStorage.encryptStringAsync(text),
-		// Electron says when the key has rotated and the text should be decrypted again for the current one.
-		decrypt: async (blob) => {
-			const first = await safeStorage.decryptStringAsync(blob);
-			return first.shouldReEncrypt ? (await safeStorage.decryptStringAsync(blob)).result : first.result;
-		},
+		// `shouldReEncrypt` asks the caller to encrypt the text again with the current key and store it: `LinearKeyFile.read` does.
+		decrypt: (blob) => safeStorage.decryptStringAsync(blob),
 	},
 	run,
 	appEnv: process.env,

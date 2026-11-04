@@ -21,6 +21,11 @@ const KEY = "lin_api_TESTDUMMYKEY0123456789abcdef";
 class FakeBox implements SecretBox {
 	isAvailable = true;
 	failDecrypt = false;
+	/** Electron's request to encrypt again under the current key. */
+	reEncrypt = false;
+	/** Makes `encrypt` fail from now on. */
+	failEncrypt = false;
+	generation = 0;
 	/** What the OS was asked, in order: "available", "encrypt", "decrypt". */
 	asked: string[] = [];
 	async available(): Promise<boolean> {
@@ -29,17 +34,18 @@ class FakeBox implements SecretBox {
 	}
 	async encrypt(text: string): Promise<Buffer> {
 		this.asked.push("encrypt");
-		if (!this.isAvailable) throw new Error("not available");
-		return Buffer.from(`ENC:${[...text].reverse().join("")}`);
+		if (!this.isAvailable || this.failEncrypt) throw new Error("not available");
+		this.generation++;
+		return Buffer.from(`ENC${this.generation}:${[...text].reverse().join("")}`);
 	}
-	async decrypt(blob: Buffer): Promise<string> {
+	async decrypt(blob: Buffer): Promise<{ result: string; shouldReEncrypt: boolean }> {
 		this.asked.push("decrypt");
 		if (this.failDecrypt) throw new Error("cannot decrypt this blob");
-		return [...blob.toString().slice(4)].reverse().join("");
+		return { result: [...blob.toString().slice(blob.toString().indexOf(":") + 1)].reverse().join(""), shouldReEncrypt: this.reEncrypt };
 	}
 }
 
-function rig(options: { install?: TttInstall; initWrites?: boolean; initCode?: number; running?: boolean; restartFails?: boolean; tttMissing?: boolean } = {}) {
+function rig(options: { install?: TttInstall; initWrites?: boolean; initCode?: number; running?: boolean; restartFails?: boolean; tttMissing?: boolean; initHangs?: boolean } = {}) {
 	const made = scratchRoot("sbd-linear-");
 	scratch.push(made.base);
 	const layout = testLayout(made.root);
@@ -55,6 +61,13 @@ function rig(options: { install?: TttInstall; initWrites?: boolean; initCode?: n
 	let running = options.running ?? true;
 	const run: CommandRunner = async (file, args, o): Promise<RunResult> => {
 		calls.push({ file, args: [...args], ...(o !== undefined ? { options: o } : {}) });
+		if (options.initHangs) {
+			// A `ttt init` that never ends by itself: only the signal ends it, the way the production runner kills its child.
+			return new Promise<RunResult>((resolve) => {
+				if (o?.signal?.aborted) return resolve({ code: null, stdout: "", stderr: "cancelled" });
+				o?.signal?.addEventListener("abort", () => resolve({ code: null, stdout: "", stderr: "cancelled" }), { once: true });
+			});
+		}
 		if (options.initWrites !== false) {
 			mkdirSync(join(o?.cwd ?? work, ".ttt"), { recursive: true });
 			writeFileSync(tttConfigFile(o?.cwd ?? work), "team: x\n");
@@ -217,6 +230,28 @@ describe("the key for the Herdr server", () => {
 		assert.equal(r.linear.state, "saved");
 	});
 
+	it("R11-F006: when Electron asks for the key to be encrypted again, it is encrypted with the current key and written back; a failed write still reads the key", async () => {
+		const r = rig();
+		await r.linear.save(KEY);
+		const before = readFileSync(linearFile(r.layout));
+		assert.equal(await r.linear.read(), KEY);
+		assert.deepEqual(readFileSync(linearFile(r.layout)), before, "no request, no rewrite");
+		r.box.reEncrypt = true;
+		r.box.asked.length = 0;
+		assert.equal(await r.linear.read(), KEY);
+		assert.deepEqual(r.box.asked, ["available", "decrypt", "encrypt"], "decrypted once, then encrypted again");
+		const after = readFileSync(linearFile(r.layout));
+		assert.notDeepEqual(after, before, "the blob on disk is the new one");
+		r.box.reEncrypt = false;
+		assert.equal(await r.linear.read(), KEY, "and it reads back");
+		assert.deepEqual(filesUnder(join(r.layout.root, "secrets")).filter((f) => f.endsWith(".tmp")), [], "no temporary file is left");
+		r.box.reEncrypt = true;
+		r.box.failEncrypt = true;
+		assert.equal(await r.linear.read(), KEY, "a write that fails does not fail the read");
+		assert.deepEqual(readFileSync(linearFile(r.layout)), after, "the old blob stays");
+		assert.equal(r.linear.state, "saved");
+	});
+
 	it("is not read when encryption has become unavailable", async () => {
 		const r = rig();
 		await r.linear.save(KEY);
@@ -289,6 +324,24 @@ describe("small things", () => {
 		r.linear.dispose();
 		await r.linear.save(KEY);
 		assert.equal(existsSync(linearFile(r.layout)), false);
+	});
+
+	it("R11-F007: a quit during `ttt init` ends the child through the runner's signal, and settled returns without waiting for its limit", async () => {
+		const r = rig({ initHangs: true });
+		const saving = r.linear.save(KEY);
+		for (let i = 0; i < 400 && r.calls.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(r.calls.length, 1, "ttt init is running");
+		const signal = r.calls[0]?.options?.signal;
+		assert.ok(signal, "the call carries a signal");
+		assert.equal(signal.aborted, false);
+		r.linear.dispose();
+		assert.equal(signal.aborted, true, "the quit aborted it");
+		const started = Date.now();
+		await r.linear.settled(60_000);
+		await saving;
+		assert.ok(Date.now() - started < 5_000, "settled did not wait for the init limit");
+		assert.equal(r.linear.flow.phase !== "done", true);
+		assert.equal(JSON.stringify(r.log).includes(KEY), false);
 	});
 
 	it("failureLine hides the key and anything shaped like a Linear token", () => {
