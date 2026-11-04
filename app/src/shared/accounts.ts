@@ -121,8 +121,8 @@ export type ClaudeFlow =
 	| { phase: "checking" }
 	/** The CLI runs and has not said where the browser goes yet. */
 	| { phase: "starting" }
-	/** The CLI opened a browser window and waits. `url` is what it printed for a browser that did not open (null until it printed one); `codeAsked` says it asked for a code; `codeSent` that one was handed over. */
-	| { phase: "browser"; url: string | null; codeAsked: boolean; codeSent: boolean }
+	/** The CLI opened a browser window and waits. `url` is what it printed for a browser that did not open (null until it printed one); `codeAsked` says it asked for a code; `codeSent` that one was handed over; `codeRefused` that the CLI answered it with a refusal and goes on waiting, so another can be sent. */
+	| { phase: "browser"; url: string | null; codeAsked: boolean; codeSent: boolean; codeRefused?: boolean }
 	/** The CLI ended its login; the status is being read. */
 	| { phase: "working" }
 	/** The CLI ended with an error (a closed browser tab, a refused code, no network). `detail` is its first line, redacted. */

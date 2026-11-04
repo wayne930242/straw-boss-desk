@@ -191,6 +191,7 @@ export const en = {
 		codeLabel: "Code from Claude",
 		sendCode: "Send code",
 		codeSent: "Code sent. Waiting for Claude…",
+		codeRefused: "Claude did not accept that code. Check that you copied all of it, then send it again.",
 		working: "Checking the sign-in…",
 		failed: "Claude could not sign in. Details has what it said.",
 		timeout: "The sign-in was not finished within 15 minutes.",

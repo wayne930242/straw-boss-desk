@@ -67,6 +67,8 @@ button:hover:not(:disabled) { border-color: var(--edge); background: var(--tint-
 button.primary { color: var(--ink); background: var(--accent); border-color: var(--accent); }
 button.primary:hover:not(:disabled) { background: var(--accent-hi); border-color: var(--accent-hi); }
 button:disabled { opacity: 0.45; cursor: default; }
+.url-actions { display: flex; gap: 8px; margin: -6px 0 12px; }
+.url-actions button { padding: 3px 10px; font-size: 12px; }
 button[aria-pressed="true"], button[aria-current="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); font-weight: 700; }
 
 /* Fields */

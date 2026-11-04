@@ -231,6 +231,52 @@ describe("the login", () => {
 		assert.match(flow.phase === "failed" ? flow.detail : "", /Invalid code/);
 	});
 
+	it("R11-F003: a line the CLI cannot read is refused and it keeps waiting, so the field comes back and another code can be sent", async () => {
+		const r = rig();
+		await r.claude.start();
+		const s = r.started[0] as (typeof r.started)[number];
+		s.child.say("Paste code here if prompted > ");
+		r.claude.sendCode("not-a-pair");
+		assert.deepEqual(s.child.written, ["not-a-pair\n"]);
+		s.child.stderr.emit("data", Buffer.from("Invalid code. Please make sure the full code was copied.\n"));
+		const again = r.claude.flow;
+		assert.deepEqual(again.phase === "browser" && [again.codeAsked, again.codeSent, again.codeRefused], [true, false, true]);
+		r.claude.sendCode(CODE);
+		assert.deepEqual(s.child.written, ["not-a-pair\n", `${CODE}\n`], "a second code is written");
+		const second = r.claude.flow;
+		assert.deepEqual(second.phase === "browser" && [second.codeSent, second.codeRefused], [true, undefined], "sending clears the refusal");
+		// The CLI's success line is not a refusal.
+		s.child.say("\nLogin successful.\n");
+		const ok = r.claude.flow;
+		assert.equal(ok.phase === "browser" && ok.codeSent, true);
+		assert.equal(JSON.stringify([r.log, r.claude.view()]).includes(CODE), false);
+		s.child.finish(0);
+		await until("the verdict", () => r.claude.flow.phase === "done");
+	});
+
+	it("R11-F005: output that arrives after the CLI exited does not change a final state", async () => {
+		const failed = rig();
+		await failed.claude.start();
+		const f = failed.started[0] as (typeof failed.started)[number];
+		f.child.say("visit: https://claude.ai/x\nsomething went wrong\n");
+		f.child.finish(1);
+		const before = JSON.stringify(failed.claude.flow);
+		assert.equal(failed.claude.flow.phase, "failed");
+		f.child.say("Paste code here if prompted > ");
+		f.child.stderr.emit("data", Buffer.from("late line\n"));
+		assert.equal(JSON.stringify(failed.claude.flow), before, "still the failure, with its detail");
+
+		const ok = rig();
+		await ok.claude.start();
+		const o = ok.started[0] as (typeof ok.started)[number];
+		o.child.finish(0);
+		o.child.say("Paste code here if prompted > ");
+		assert.equal(ok.claude.flow.phase, "working", "the verdict is being read, the screen does not go back to waiting");
+		await until("the verdict", () => ok.claude.flow.phase === "done");
+		o.child.say("late line\n");
+		assert.equal(ok.claude.flow.phase, "done");
+	});
+
 	it("a login that waits too long is stopped and says so; Cancel kills the child and frees the code", async () => {
 		const r = rig();
 		await r.claude.start();

@@ -193,6 +193,7 @@ export const zhTW: Messages = {
 		codeLabel: "Claude 的代碼",
 		sendCode: "送出代碼",
 		codeSent: "已送出代碼，等待 Claude…",
+		codeRefused: "Claude 不接受這組代碼。請確認整組都已複製，再送出一次。",
 		working: "正在確認登入…",
 		failed: "Claude 無法登入。「詳細資料」裡有它的回應。",
 		timeout: "15 分鐘內沒有完成登入。",

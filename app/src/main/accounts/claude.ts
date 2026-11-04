@@ -104,6 +104,9 @@ export function parseSignInUrl(text: string): string | null {
 }
 
 /** True when the CLI asks to be given a code ("Paste code here if prompted >"). */
+/** The CLI's answer to a code it cannot take (`Invalid code. Please make sure the full code was copied.`): said on a line of its own while it goes on waiting. */
+export const refusesCode = (text: string): boolean => /invalid code|incorrect code|code (?:is )?(?:not valid|expired)|full code was copied/i.test(stripAnsi(text));
+
 export const asksForCode = (text: string): boolean => /paste code here/i.test(stripAnsi(text));
 
 /** The `loggedIn` field of `claude auth status --json`: true, false, or null when the output is not that JSON. */
@@ -133,12 +136,14 @@ interface Slot {
 	/** The CLI's output so far (the last `OUTPUT_KEEP` characters), for the address and the prompt. */
 	output: string;
 	codeSent: boolean;
+	/** The CLI answered the last code with a refusal and still waits (a line it cannot read as `code#state`): the field is offered again. */
+	codeRefused: boolean;
 	attempt: number;
 }
 
 export class ClaudeAccounts {
 	readonly #d: ClaudeAccountsDeps;
-	readonly #slot: Slot = { flow: { phase: "idle" }, state: "unknown", child: null, stdin: null, timer: null, url: null, codes: [], output: "", codeSent: false, attempt: 0 };
+	readonly #slot: Slot = { flow: { phase: "idle" }, state: "unknown", child: null, stdin: null, timer: null, url: null, codes: [], output: "", codeSent: false, codeRefused: false, attempt: 0 };
 	readonly #listeners = new Set<() => void>();
 	readonly #signedIn = new Set<() => void>();
 	readonly #setTimer: (fn: () => void, ms: number) => unknown;
@@ -270,11 +275,19 @@ export class ClaudeAccounts {
 		slot.codes = [];
 		slot.output = "";
 		slot.codeSent = false;
+		slot.codeRefused = false;
 		// A closed standard input (the CLI ended while a code was on its way) must not throw in main.
 		child.stdin?.on?.("error", () => undefined);
 		const take = (chunk: Buffer | string): void => {
-			if (slot.attempt !== attempt) return;
-			slot.output = `${slot.output}${chunk.toString()}`.slice(-OUTPUT_KEEP);
+			// Output can still arrive after `exit` (the pipes may be open): by then the attempt has ended and its phase is final (R11-F005).
+			if (slot.attempt !== attempt || slot.child !== child) return;
+			const text = chunk.toString();
+			slot.output = `${slot.output}${text}`.slice(-OUTPUT_KEEP);
+			// The CLI answers a line it cannot read as `code#state` with a refusal and keeps waiting: the field comes back for another code (R11-F003).
+			if (slot.codeSent && refusesCode(text)) {
+				slot.codeSent = false;
+				slot.codeRefused = true;
+			}
 			this.#showBrowser();
 		};
 		child.stdout?.on("data", take);
@@ -315,7 +328,7 @@ export class ClaudeAccounts {
 	#showBrowser(): void {
 		const slot = this.#slot;
 		slot.url = parseSignInUrl(slot.output);
-		this.#set({ phase: "browser", url: slot.url, codeAsked: asksForCode(slot.output), codeSent: slot.codeSent });
+		this.#set({ phase: "browser", url: slot.url, codeAsked: asksForCode(slot.output), codeSent: slot.codeSent, ...(slot.codeRefused ? { codeRefused: true } : {}) });
 	}
 
 	/** The CLI ended its login well: done when its own status says signed in. */
@@ -343,6 +356,7 @@ export class ClaudeAccounts {
 		slot.codes = [];
 		slot.output = "";
 		slot.codeSent = false;
+		slot.codeRefused = false;
 	}
 
 	/**
@@ -363,6 +377,7 @@ export class ClaudeAccounts {
 		slot.stdin.write(`${value}\n`, () => undefined);
 		this.#d.log({ event: "claude-code-sent" });
 		slot.codeSent = true;
+		slot.codeRefused = false;
 		this.#showBrowser();
 	}
 

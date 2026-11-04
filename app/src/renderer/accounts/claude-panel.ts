@@ -19,6 +19,9 @@ const spinner = (ctx: ClaudePanelCtx, key: string): HTMLElement => h("p", part("
 
 const details = (ctx: ClaudePanelCtx, detail: string): HTMLElement => h("details", part("details", { class: "forge-details" }), h("summary", {}, ctx.tr("claude.details")), h("pre", {}, detail));
 
+/** Cancel for a panel that has no **Later** of its own (the card in settings): it ends the login and stays on the card. */
+const cancelButton = (ctx: ClaudePanelCtx): HTMLElement => h("button", part("cancel", { type: "button", onclick: () => ctx.act({ type: "claude-cancel" }) }), ctx.tr("claude.cancel"));
+
 const tryAgain = (ctx: ClaudePanelCtx): HTMLElement =>
 	h("button", part("retry", { type: "button", class: "primary", onclick: () => ctx.act({ type: "claude-start" }) }), ctx.tr("claude.tryAgain"));
 
@@ -76,24 +79,33 @@ export function claudePanel(ctx: ClaudePanelCtx, view: ClaudeView, { trailing = 
 			break;
 		case "starting":
 			body.push(spinner(ctx, "claude.starting"));
-			actions.push(h("button", part("cancel", { type: "button", onclick: () => ctx.act({ type: "claude-cancel" }) }), ctx.tr("claude.cancel")));
+			// In the wizard **Later** ends the login too, so a second button for it would read as the same choice (SA-T11-1).
+			if (trailing.length === 0) actions.push(cancelButton(ctx));
 			break;
 		case "browser": {
 			body.push(h("p", { class: "note" }, ctx.tr("claude.browser")));
-			// The row has one primary button: Send, while the CLI waits for a code; else Open.
+			// The row holds Send (primary, while the CLI waits for a code) and the step's own **Later**; opening and copying the address are small actions beside it.
 			const asking = flow.codeAsked && !flow.codeSent;
 			if (flow.url !== null) {
-				body.push(h("p", { class: "note" }, ctx.tr("claude.urlHelp")), h("p", part("url", { class: "path" }), flow.url));
-				actions.push(h("button", part("open", { type: "button", ...(asking ? {} : { class: "primary" }), onclick: () => ctx.act({ type: "claude-open" }) }), ctx.tr("claude.open")));
-				actions.push(h("button", part("copy", { type: "button", onclick: () => ctx.act({ type: "claude-copy-url" }) }), ctx.tr("claude.copy")));
+				body.push(
+					h("p", { class: "note" }, ctx.tr("claude.urlHelp")),
+					h("p", part("url", { class: "path" }), flow.url),
+					h(
+						"div",
+						{ class: "url-actions" },
+						h("button", part("open", { type: "button", onclick: () => ctx.act({ type: "claude-open" }) }), ctx.tr("claude.open")),
+						h("button", part("copy", { type: "button", onclick: () => ctx.act({ type: "claude-copy-url" }) }), ctx.tr("claude.copy")),
+					),
+				);
 			}
 			if (asking) {
 				const code = codeField(ctx);
+				if (flow.codeRefused === true) body.push(h("div", part("code-refused", { class: "problem", role: "alert" }), ctx.tr("claude.codeRefused")));
 				body.push(code.field);
 				actions.unshift(h("button", part("send-code", { type: "button", class: "primary", onclick: () => code.send() }), ctx.tr("claude.sendCode")));
 			} else if (flow.codeSent) body.push(spinner(ctx, "claude.codeSent"));
 			else body.push(spinner(ctx, "claude.waiting"));
-			actions.push(h("button", part("cancel", { type: "button", onclick: () => ctx.act({ type: "claude-cancel" }) }), ctx.tr("claude.cancel")));
+			if (trailing.length === 0) actions.push(cancelButton(ctx));
 			break;
 		}
 		case "working":

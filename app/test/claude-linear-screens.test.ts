@@ -28,7 +28,7 @@ const cv = (flow: ClaudeFlow, state: ClaudeView["state"] = "not-signed-in", stor
 const lv = (flow: LinearFlow, state: LinearView["state"] = "not-saved", restart: LinearView["restart"] = { phase: "none" }, encryption: boolean | null = true): LinearView => ({ state, flow, restart, encryption });
 
 function wizardView(locale: Locale, over: Partial<WizardView>): WizardView {
-	return { step: "claude", locale, hosts: { forges: [], index: 0, current: null }, later: [], linearOffered: true, claude: cv({ phase: "idle" }), linear: lv({ phase: "idle" }), ...over } as unknown as WizardView;
+	return { step: "claude", locale, hosts: { forges: [], index: 0, current: null }, later: [], linearOffered: true, start: { status: "idle", failure: null }, claude: cv({ phase: "idle" }), linear: lv({ phase: "idle" }), ...over } as unknown as WizardView;
 }
 const drawClaude = (view: ClaudeView, locale: Locale, acts: unknown[] = []): MiniElement => claude(makeCtx(wizardView(locale, { step: "claude", claude: view }), locale, (a) => acts.push(a))) as unknown as MiniElement;
 const drawLinear = (view: LinearView, locale: Locale, acts: unknown[] = []): MiniElement => linear(makeCtx(wizardView(locale, { step: "linear", linear: view }), locale, (a) => acts.push(a))) as unknown as MiniElement;
@@ -50,6 +50,7 @@ const CLAUDE_FLOWS: Array<[string, ClaudeFlow, ClaudeView["state"]]> = [
 	["browser, no address yet", { phase: "browser", url: null, codeAsked: false, codeSent: false }, "not-signed-in"],
 	["browser with the address", { phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: false, codeSent: false }, "not-signed-in"],
 	["browser asking for a code", { phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: true, codeSent: false }, "not-signed-in"],
+	["browser, code refused", { phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: true, codeSent: false, codeRefused: true }, "not-signed-in"],
 	["browser, code sent", { phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: true, codeSent: true }, "not-signed-in"],
 	["working", { phase: "working" }, "not-signed-in"],
 	["done", { phase: "done" }, "signed-in"],
@@ -110,6 +111,28 @@ describe("step 7: Claude, in every state and both languages", () => {
 		input.value = "   ";
 		(step.querySelector("#claude-send-code") as MiniElement).fire("click");
 		assert.equal(acts.length, 2, "an empty field sends nothing");
+	});
+
+	it("SA-T11-1: the wizard's row holds Send code first and Later only; Open and Copy sit beside the address, and a refused code shows its sentence", () => {
+		for (const locale of LOCALES) {
+			const acts: ClaudeAction[] = [];
+			const step = drawClaude(cv({ phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: true, codeSent: false, codeRefused: true }), locale, acts);
+			assert.deepEqual(buttons(step).map((b) => b.id), ["claude-send-code", "later"], locale);
+			assert.equal(primaries(step).length, 1);
+			assert.equal(step.querySelector("#claude-cancel"), null, "Later ends the login, so Cancel is not offered beside it");
+			const beside = step.querySelectorAll(".url-actions button").map((b) => b.id);
+			assert.deepEqual(beside, ["claude-open", "claude-copy"], locale);
+			assert.equal(step.querySelectorAll(".actions #claude-open").length, 0);
+			assert.equal(step.querySelector("#claude-code-refused")?.textContent, catalogs[locale].claude.codeRefused);
+			const waiting = drawClaude(cv({ phase: "browser", url: "https://claude.ai/oauth/authorize?x=1", codeAsked: false, codeSent: false }), locale);
+			assert.deepEqual(buttons(waiting).map((b) => b.id), ["later"], "with no code asked the row is Later alone");
+			assert.equal(waiting.querySelector("#claude-code-refused"), null);
+			const starting = drawClaude(cv({ phase: "starting" }), locale);
+			assert.equal(starting.querySelector("#claude-cancel"), null);
+		}
+		// The card in settings has no Later, so Cancel stays there.
+		const card = drawCards("en", cv({ phase: "browser", url: null, codeAsked: true, codeSent: false }), null);
+		assert.equal(card.querySelectorAll("#claude-cancel").length, 1);
 	});
 
 	it("the address is text on the page and main opens it: Open and Copy only send a request without the address", () => {
@@ -222,6 +245,23 @@ describe("step 9: Linear, in every state and both languages", () => {
 		assert.equal(row[0]?.id, "linear-retry");
 		assert.equal(primaries(step).length, 1);
 	});
+});
+
+describe("a start that failed while the PM is on step 9 (R11-F001)", () => {
+	for (const locale of LOCALES) {
+		it(`${locale}: the Linear step shows the start's sentence with Try again and Repair, and nothing when the start did not fail`, () => {
+			const acts: unknown[] = [];
+			const failure = { kind: "engine-locked", reason: "another engine", offerRepair: true };
+			const out = linear(makeCtx(wizardView(locale, { step: "linear", linear: lv({ phase: "idle" }), start: { status: "failed", failure } } as Partial<WizardView>), locale, (a) => acts.push(a))) as unknown as MiniElement;
+			assert.equal(out.querySelector("#start-failure")?.getAttribute("data-kind"), "engine-locked");
+			assert.ok((out.querySelector("#start-failure")?.textContent ?? "").length > 0);
+			(out.querySelector("#start-retry") as MiniElement).fire("click");
+			(out.querySelector("#start-repair") as MiniElement).fire("click");
+			assert.deepEqual(acts, [{ type: "start-retry" }, { type: "repair" }]);
+			assert.ok(unique(ids(out)), ids(out).join(" "));
+			assert.equal(drawLinear(lv({ phase: "idle" }), locale).querySelector("#start-failure"), null);
+		});
+	}
 });
 
 describe("the Claude and Linear cards of settings", () => {

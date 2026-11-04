@@ -471,6 +471,14 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await until("the address to be opened", 10_000, async () => (await openedExternal(first)).length === 1 || undefined, 100);
 		assert.deepEqual(await openedExternal(first), [address]);
 
+		// A line the CLI cannot read keeps it waiting: the screen says it was not accepted and offers the field again (R11-F003).
+		await field.fill("MALFORMED-CODE");
+		await page.locator("#claude-send-code").click();
+		await page.locator('[data-role="code-refused"]').waitFor({ timeout: 30_000 });
+		await field.waitFor({ timeout: 30_000 });
+		assert.equal(await fieldsEmpty(page), true, "the field was cleared when the code was sent");
+		await shotBoth(page, "claude-code-refused");
+
 		// A code the stand-in refuses: the screen says so, with the CLI's line in Details, and Try again starts a new login.
 		await field.fill("WRONG-CODE");
 		await page.locator("#claude-send-code").click();
