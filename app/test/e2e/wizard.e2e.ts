@@ -24,6 +24,7 @@ import { format, t } from "../../src/renderer/i18n/index.ts";
 import { zhTW } from "../../src/renderer/i18n/zh-TW.ts";
 import { entryNames, readAccountsRecord, writeAccountsRecord } from "../../src/main/accounts/existing.ts";
 import { scan } from "../../src/main/accounts/token-search.ts";
+import { BRANCH_OF, runPushCheck, type GitRun } from "../harness/ci-push-check.ts";
 import { openForgeRig, type ForgeRig } from "../harness/forge-e2e.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
@@ -81,6 +82,8 @@ const GH_FOREIGN = { name: "gh:github.com", account: "sbd-foreign-user" };
 const GL_FOREIGN = { name: "glab:gitlab.com:token", account: "sbd-foreign-user" };
 const tr = (locale: "en" | "zh-TW", key: string, vars: Record<string, string> = {}): string => format(t(locale, key), vars);
 const EXCLUDED_FROM_APP_ENV = /^(PI_|HERDR_|ELECTRON_RUN_AS_NODE$|SBD_GITLAB_TEST_TOKEN$)/;
+/** This OS's own branch on the test project: one fixed name per OS (T10R-F004). */
+const BRANCH = isWindows ? BRANCH_OF.win32 : BRANCH_OF.darwin;
 /** A path that is a WSL launcher on Windows and only a name on macOS, where nothing runs it. */
 const WSL_BASH = isWindows ? "C:\\Windows\\System32\\bash.exe" : "/mnt/wsl/bash.exe";
 
@@ -168,7 +171,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	const eventsNamed = (event: string, cli?: string) => logEvents().filter((e) => e.event === event && (cli === undefined || e.cli === cli));
 	const panelOf = (p: Page, host: string, phase?: string) => p.locator(`.forge-panel[data-forge="${host}"]${phase === undefined ? "" : `[data-phase="${phase}"]`}`);
 	const waitPhase = (p: Page, host: string, phase: string, ms = 60_000) => panelOf(p, host, phase).waitFor({ timeout: ms });
-	const rowOf = (p: Page, host: string, state?: string) => p.locator(`li.forge-row[data-forge="${host}"]${state === undefined ? "" : `[data-state="${state}"]`}`);
+	const rowOf = (p: Page, host: string, state?: string) => p.locator(`li.forge-card[data-forge="${host}"]${state === undefined ? "" : `[data-state="${state}"]`}`);
 	const recordOf = () => readAccountsRecord(world.layout);
 	const ownFolders = (): string[] => [world.layout.state, world.layout.logs, join(world.root, "config")];
 	const under = (dir: string, path: string): boolean => path.replace(/\\/g, "/").toLowerCase().startsWith(dir.replace(/\\/g, "/").toLowerCase());
@@ -385,10 +388,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await page.locator("#later").click();
 		await waitStep(page, "hosts");
 		await waitPhase(page, "github.com", "foreign");
-		assert.equal((await page.locator("#forge-foreign").innerText()).trim(), tr("zh-TW", "forge.foreign", { host: "github.com", tool: t("zh-TW", "forge.tool.github") }));
-		for (const id of ["#device-code", "#forge-sign-in", "#forge-token"]) assert.equal(await page.locator(id).count(), 0, `${id} is not on the refused step`);
-		await page.locator("#forge-details summary").click();
-		assert.ok((await page.locator("#forge-details .forge-entries").innerText()).includes(GH_FOREIGN.name), "Details names the entry");
+		assert.equal((await page.locator('[data-role="foreign"]').innerText()).trim(), tr("zh-TW", "forge.foreign", { host: "github.com", tool: t("zh-TW", "forge.tool.github") }));
+		for (const id of ['[data-role="device-code"]', '[data-role="sign-in"]', '[data-role="token"]']) assert.equal(await page.locator(id).count(), 0, `${id} is not on the refused step`);
+		await page.locator('[data-role="details"] summary').click();
+		assert.ok((await page.locator('[data-role="details"] .forge-entries').innerText()).includes(GH_FOREIGN.name), "Details names the entry");
 		await shotBoth(page, "accounts-github-refused");
 		assert.deepEqual(await rig.snapshot(GH_FOREIGN.name, GH_FOREIGN.account), foreignGh, "the entry has the same secret and the same modification time");
 		assert.deepEqual(eventsNamed("forge-login-start"), [], "no gh login was started");
@@ -403,17 +406,17 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.ok(foreignGl.secret !== null && foreignGl.modified !== null, "the foreign glab entry is in the store");
 		await page.locator("#later").click();
 		await waitPhase(page, "gitlab.com", "foreign");
-		assert.equal((await page.locator("#forge-foreign").innerText()).trim(), tr("zh-TW", "forge.foreign", { host: "gitlab.com", tool: t("zh-TW", "forge.tool.gitlab") }));
-		assert.equal(await page.locator("#forge-token").count(), 0, "the token field is not shown");
-		assert.equal(await page.locator("#forge-sign-in").count(), 0);
+		assert.equal((await page.locator('[data-role="foreign"]').innerText()).trim(), tr("zh-TW", "forge.foreign", { host: "gitlab.com", tool: t("zh-TW", "forge.tool.gitlab") }));
+		assert.equal(await page.locator('[data-role="token"]').count(), 0, "the token field is not shown");
+		assert.equal(await page.locator('[data-role="sign-in"]').count(), 0);
 		await shotBoth(page, "accounts-gitlab-refused");
 		assert.deepEqual(await rig.snapshot(GL_FOREIGN.name, GL_FOREIGN.account), foreignGl, "the entry has the same secret and the same modification time");
 		assert.deepEqual(eventsNamed("forge-login-start"), []);
 		// The PM removes their own entry; Try again passes the check and shows the token field (the "not signed in" state).
 		await rig.seeder.remove(GL_FOREIGN.name, GL_FOREIGN.account);
-		await page.locator("#forge-retry").click();
+		await page.locator('[data-role="retry"]').click();
 		await waitPhase(page, "gitlab.com", "ready");
-		const field = page.locator("#forge-token");
+		const field = page.locator('[data-role="token"]');
 		assert.equal(await field.getAttribute("type"), "password", "the field is masked");
 		assert.equal(await field.getAttribute("autocomplete"), "off");
 		assert.equal(await page.locator("#forge-token-reveal, .reveal").count(), 0, "there is no reveal toggle");
@@ -426,10 +429,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	};
 
 	it("GitLab token login: verdict PASS, the created entries are recorded with their times, the token is nowhere on disk, in a log or in the page, and git pushes through it (SBD_GITLAB_TEST_TOKEN)", { skip: noToken }, async () => {
-		await page.locator("#forge-token").fill(GITLAB_TOKEN);
-		await page.locator("#forge-sign-in").click();
+		await page.locator('[data-role="token"]').fill(GITLAB_TOKEN);
+		await page.locator('[data-role="sign-in"]').click();
 		await waitPhase(page, "gitlab.com", "done", 180_000);
-		assert.equal(await page.locator("#forge-token").count(), 0, "the field is gone");
+		assert.equal(await page.locator('[data-role="token"]').count(), 0, "the field is gone");
 		assert.equal(await page.evaluate(() => [...document.querySelectorAll("input")].every((i) => i.value === "")), true, "no field holds a value");
 		await shotBoth(page, "accounts-gitlab-signed-in");
 
@@ -451,10 +454,14 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		for (const e of mine) assert.match(e.modified, /^\d{4}-\d\d-\d\dT/);
 		console.log(`accounts e2e: glab login verdict PASS, ${mine.length} entries recorded (${mine.map((e) => e.name).join(", ")})`);
 
-		// Followup R3-F003: a token search over everything the app and its children wrote (the whole data root, and the home it lies in). The keychain file of the scratch HOME is the store itself.
-		const found = scan([world.home], GITLAB_TOKEN, { skipDirs: [join(world.home, "Library", "Keychains")] });
+		// Followup R3-F003: a token search over everything the app and its children wrote (the whole data root, the home it lies in, and the temp folder the app and every child were given, which lies
+		// beside the home). The keychain file of the scratch HOME is the store itself. Seven forms are looked for (UTF-8, UTF-16LE, go-keyring's, base64, and HTTP Basic's base64 of oauth2:token).
+		const found = scan([world.home, join(world.base, "tmp")], GITLAB_TOKEN, { skipDirs: [join(world.home, "Library", "Keychains")] });
 		console.log(`token search: ${found.files} files, ${Math.round(found.bytes / 1_000_000)} MB, ${found.hits.length} hits, ${found.unread.length} listed as not read (links, files in use)`);
-		assert.equal(found.hits.length, 0, `the token is in ${found.hits.length} file(s) under the home`);
+		// The files that could not be read, by path and the error code alone (never a content), so a reviewer sees what the search did not cover.
+		for (const u of found.unread.slice(0, 40)) console.log(`token search: not read: ${u.path} (${(/\b(E[A-Z]+|EPERM|EBUSY)\b/.exec(u.reason)?.[0]) ?? u.reason.split(":")[0]})`);
+		if (found.unread.length > 40) console.log(`token search: not read: ... and ${found.unread.length - 40} more`);
+		assert.equal(found.hits.length, 0, `the token is in ${found.hits.length} file(s) under the home or the temp folder`);
 		assert.deepEqual(found.unread.filter((u) => ownFolders().some((d) => under(d, u.path))).map((u) => u.reason), [], "every file of the app's own folders was read");
 		assert.equal(logText().includes(GITLAB_TOKEN), false, "no log holds the token");
 		assert.equal(
@@ -464,38 +471,16 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		);
 		assert.equal(logText().includes(`${GITLAB_TOKEN}`), false);
 
-		// The stored token works through Git's credential helper: one branch to the account's private test project, deleted again in every case.
+		// The stored token works through Git's credential helper: old sbd-ci-* branches swept, then one fixed branch per OS pushed and deleted in a `finally` (T10R-F004); the project's default branch is never touched.
 		const { git, env } = gitExecutable();
 		const dir = join(world.base, "push-check");
 		mkdirSync(dir, { recursive: true });
-		const branch = `sbd-ci-${Date.now().toString(36)}-${process.pid}`;
-		const g = (args: string[], timeoutMs = 120_000) => run(git, args, { env, cwd: dir, timeoutMs });
-		assert.equal((await g(["init", "-q", "-b", branch])).code, 0);
+		const g: GitRun = async (args, timeoutMs = 120_000) => run(git, args, { env, cwd: dir, timeoutMs });
+		assert.equal((await g(["init", "-q", "-b", BRANCH])).code, 0);
 		const committed = await g(["-c", "user.name=Straw Boss CI", "-c", "user.email=ci@example.invalid", "commit", "--allow-empty", "-q", "-m", "login check"]);
 		assert.equal(committed.code, 0, `commit exited ${committed.code}`);
-		let pushed = false;
-		try {
-			const head = await g(["ls-remote", "--heads", GITLAB_TEST_PROJECT]);
-			assert.equal(head.code, 0, `ls-remote of the private test project exited ${head.code} (the credential helper gave no token)`);
-			// The first branch pushed to an empty project becomes its default branch, which a push cannot delete and the account's projects are not ours to change: with no branch there, only the read is checked.
-			if (head.stdout.trim() === "") {
-				console.log("accounts e2e: push check read the test project; it has no branch, so nothing was pushed (a first branch could not be deleted again)");
-				return await finishHosts();
-			}
-			const push = await g(["push", GITLAB_TEST_PROJECT, `HEAD:refs/heads/${branch}`]);
-			pushed = push.code === 0;
-			assert.equal(push.code, 0, `push exited ${push.code}`);
-			const there = await g(["ls-remote", "--heads", GITLAB_TEST_PROJECT, branch]);
-			assert.ok(there.stdout.includes(branch), "the branch is on the project");
-		} finally {
-			const present = (await g(["ls-remote", "--heads", GITLAB_TEST_PROJECT, branch])).stdout.includes(branch);
-			if (pushed || present) {
-				const removed = await g(["push", GITLAB_TEST_PROJECT, "--delete", branch]);
-				assert.equal(removed.code, 0, `deleting the pushed branch exited ${removed.code}`);
-			}
-		}
-		assert.equal((await g(["ls-remote", "--heads", GITLAB_TEST_PROJECT, branch])).stdout.trim(), "", "no branch of this run is left on the project");
-		console.log(`accounts e2e: git pushed ${branch} to the test project through the stored token and deleted it again`);
+		const checked = await runPushCheck({ git: g, project: GITLAB_TEST_PROJECT, branch: BRANCH, log: (line) => console.log(`accounts e2e: ${line}`) });
+		if (!checked.skipped) console.log(`accounts e2e: git pushed ${BRANCH} to the test project through the stored token and deleted it again`);
 
 		await finishHosts();
 	});
@@ -599,8 +584,15 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const logouts = eventsNamed("forge-logout", "gh").length;
 		await rowOf(settings, "github.com").locator(".forge-sign-out").click();
 		await waitPhase(settings, "github.com", "left-alone");
-		const text = await panelOf(settings, "github.com", "left-alone").innerText();
-		assert.ok(text.includes(GH_FOREIGN.name), text);
+		const note = panelOf(settings, "github.com", "left-alone");
+		assert.equal((await note.locator("p").first().innerText()).trim(), tr("zh-TW", "forge.leftAlone", { host: "github.com" }));
+		assert.equal((await note.locator("p").first().innerText()).includes(GH_FOREIGN.name), false, "the sentence names no store key");
+		await note.locator('[data-role="details"] summary').click();
+		assert.ok((await note.locator('[data-role="details"] .forge-entries').innerText()).includes(GH_FOREIGN.name), "Details names the entry");
+		// One card per host, with the flow inside it, and no id repeated on the page (T10R-F003, SA-T10-1).
+		assert.equal(await settings.locator("li.forge-card").count(), 2, "one card per code host");
+		assert.equal(await rowOf(settings, "github.com").locator(".forge-panel").count(), 1, "the flow is inside its host's card");
+		assert.equal(await settings.evaluate(() => { const ids = [...document.querySelectorAll("[id]")].map((e) => e.id); return ids.length === new Set(ids).size; }), true, "no id repeats on the page");
 		assert.equal(eventsNamed("forge-logout", "gh").length, logouts, "no gh logout ran");
 		assert.ok(eventsNamed("forge-logout-skipped", "gh").length >= 1, "the skip is logged");
 		assert.deepEqual(await rig.snapshot(GH_FOREIGN.name, GH_FOREIGN.account), foreignGh, "same secret, same modification time");
@@ -611,7 +603,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await rowOf(settings, "github.com").locator(".forge-sign-in-again").click();
 		await waitPhase(settings, "github.com", "ready");
 		await rowOf(settings, "github.com", "not-signed-in").waitFor({ timeout: 30_000 });
-		assert.equal(await panelOf(settings, "github.com").locator("#forge-sign-in").count(), 1);
+		assert.equal(await panelOf(settings, "github.com").locator('[data-role="sign-in"]').count(), 1);
 		assert.deepEqual(eventsNamed("forge-login-start", "gh"), []);
 		await shotSettingsBoth(settings, "accounts-github-not-signed-in");
 	});
@@ -627,8 +619,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 
 		await rowOf(settings, "gitlab.com").locator(".forge-sign-in-again").click();
 		await waitPhase(settings, "gitlab.com", "ready");
-		await panelOf(settings, "gitlab.com").locator("#forge-token").fill(GITLAB_TOKEN);
-		await panelOf(settings, "gitlab.com").locator("#forge-sign-in").click();
+		await panelOf(settings, "gitlab.com").locator('[data-role="token"]').fill(GITLAB_TOKEN);
+		await panelOf(settings, "gitlab.com").locator('[data-role="sign-in"]').click();
 		await waitPhase(settings, "gitlab.com", "done", 180_000);
 		await rowOf(settings, "gitlab.com", "signed-in").waitFor({ timeout: 30_000 });
 		assert.ok(recordOf().entries.some((e) => e.host === "gitlab.com"));
@@ -660,15 +652,15 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 
 		await rowOf(settings, "gitlab.com").locator(".forge-sign-in-again").click();
 		await waitPhase(settings, "gitlab.com", "foreign");
-		assert.equal((await panelOf(settings, "gitlab.com").locator("#forge-foreign").innerText()).trim(), tr("zh-TW", "forge.changed", { host: "gitlab.com", tool: t("zh-TW", "forge.tool.gitlab") }));
-		await panelOf(settings, "gitlab.com").locator("#forge-details summary").click();
-		assert.ok((await panelOf(settings, "gitlab.com").locator("#forge-details .forge-entries").innerText()).includes(target.name), "Details names the entry");
-		assert.equal(await panelOf(settings, "gitlab.com").locator("#forge-token").count(), 0);
+		assert.equal((await panelOf(settings, "gitlab.com").locator('[data-role="foreign"]').innerText()).trim(), tr("zh-TW", "forge.changed", { host: "gitlab.com", tool: t("zh-TW", "forge.tool.gitlab") }));
+		await panelOf(settings, "gitlab.com").locator('[data-role="details"] summary').click();
+		assert.ok((await panelOf(settings, "gitlab.com").locator('[data-role="details"] .forge-entries').innerText()).includes(target.name), "Details names the entry");
+		assert.equal(await panelOf(settings, "gitlab.com").locator('[data-role="token"]').count(), 0);
 		await shotSettingsBoth(settings, "accounts-gitlab-changed-refused");
 
 		// The test deletes the PM's entry (and whatever else of the login is left); the record drops it and Sign in again passes the check.
 		for (const e of await rig.list(entryNames("gitlab", "gitlab.com"))) await rig.seeder.remove(e.name, e.account);
-		await panelOf(settings, "gitlab.com").locator("#forge-retry").click();
+		await panelOf(settings, "gitlab.com").locator('[data-role="retry"]').click();
 		await waitPhase(settings, "gitlab.com", "ready");
 		assert.deepEqual(recordOf(), { schema: 1, entries: [], left: [] });
 		await shotSettingsBoth(settings, "accounts-gitlab-after-removal");
@@ -686,8 +678,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await s.locator("#accounts-forges").waitFor({ timeout: 30_000 });
 		await rowOf(s, "gitlab.com").locator(".forge-sign-in-again").click();
 		await waitPhase(s, "gitlab.com", "store-unavailable", 30_000);
-		assert.equal((await panelOf(s, "gitlab.com").locator("#forge-refusal p").first().innerText()).trim(), t("zh-TW", "forge.storeUnavailable"));
-		assert.equal(await s.locator("#forge-token").count(), 0, "no token field is offered");
+		assert.equal((await panelOf(s, "gitlab.com").locator('[data-role="refusal"] p').first().innerText()).trim(), t("zh-TW", "forge.storeUnavailable"));
+		assert.equal(await s.locator('[data-role="token"]').count(), 0, "no token field is offered");
 		await shotSettingsBoth(s, "accounts-store-unavailable");
 		if (hasToken) {
 			const found = scan([empty, world.root], GITLAB_TOKEN);

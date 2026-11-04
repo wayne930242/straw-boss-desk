@@ -2,8 +2,8 @@ import { closeSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // The token search (spec: Workflows step 4, followup R3-F003), ported from the kit's `spike/win/lib/token-scan.mjs`. It looks for a token's bytes in every file under some roots. Test code and
-// diagnostics use it; the product never searches for a secret. Three forms are looked for: UTF-8, UTF-16LE, and go-keyring's stored form (`go-keyring-base64:` plus base64), which is what a leak
-// through the `security -i` channel would carry. No size limit: files are read in 4 MB chunks. A path that cannot be read is tried once more and then listed with a reason. A link (symlink or
+// diagnostics use it; the product never searches for a secret. The forms looked for are UTF-8, UTF-16LE, go-keyring's stored form (`go-keyring-base64:` plus base64, which is what a leak
+// through the `security -i` channel would carry), plain base64, and HTTP Basic's base64 of `user:token`. No size limit: files are read in 4 MB chunks. A path that cannot be read is tried once more and then listed with a reason. A link (symlink or
 // junction) is not followed and is listed as unread with that reason, and so is a root that is missing or not a folder, so a search over a root that is not there cannot pass for a clean one.
 
 const CHUNK = 4 * 1024 * 1024;
@@ -20,8 +20,39 @@ export interface ScanResult {
 	bytes: number;
 }
 
-export function needlesFor(token: string): Buffer[] {
-	return [Buffer.from(token, "utf8"), Buffer.from(token, "utf16le"), Buffer.from(`go-keyring-base64:${Buffer.from(token, "utf8").toString("base64")}`, "utf8")];
+/** The user names git's credential helpers send with a token over HTTP Basic: GitLab's own is `oauth2`. */
+export const BASIC_USERS: readonly string[] = ["oauth2"];
+
+/**
+ * The part of `bytes` in base64 that does not depend on what lies around it, for each of the three alignments a run of bytes can have inside a larger base64 text. A file that holds the token
+ * inside some other base64 (an HTTP header, a config blob) shows one of the three, whichever column the token began at.
+ */
+export function base64Needles(bytes: Buffer): Buffer[] {
+	const needles: Buffer[] = [];
+	for (const k of [0, 1, 2]) {
+		const encoded = Buffer.concat([Buffer.alloc(k, 0x78), bytes]).toString("base64").replace(/=+$/, "");
+		const total = k + bytes.length;
+		// The first characters carry the padding bytes' bits, and the last one or two carry bits of whatever follows when the length is not a multiple of three.
+		const from = [0, 2, 3][k] as number;
+		const to = total % 3 === 0 ? encoded.length : encoded.length - 2;
+		if (to - from >= 8) needles.push(Buffer.from(encoded.slice(from, to), "utf8"));
+	}
+	return needles;
+}
+
+/**
+ * Every form a token's bytes may have been written in: UTF-8, UTF-16LE, go-keyring's stored form, its plain base64 (at any alignment), and HTTP Basic's `base64(<user>:<token>)` for each of
+ * `users` (T10R-F008).
+ */
+export function needlesFor(token: string, users: readonly string[] = BASIC_USERS): Buffer[] {
+	const bytes = Buffer.from(token, "utf8");
+	return [
+		bytes,
+		Buffer.from(token, "utf16le"),
+		Buffer.from(`go-keyring-base64:${bytes.toString("base64")}`, "utf8"),
+		...base64Needles(bytes),
+		...users.flatMap((user) => base64Needles(Buffer.from(`${user}:${token}`, "utf8"))),
+	];
 }
 
 interface Stats {

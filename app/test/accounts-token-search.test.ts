@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { hideSecrets, removeNestedRoots, scan, splitUnread } from "../src/main/accounts/token-search.ts";
+import { hideSecrets, needlesFor, removeNestedRoots, scan, splitUnread } from "../src/main/accounts/token-search.ts";
 
 // The token search (task 10, R3-F003), with the kit's cases: three forms of one token, a token that straddles a chunk boundary, an unreadable file, and now links and missing roots listed as unread.
 
@@ -23,6 +23,26 @@ describe("token search", () => {
 		assert.deepEqual(r.hits.map((p) => p.split(/[\\/]/).pop()).sort(), ["keyring.txt", "utf16.txt", "utf8.txt"]);
 		assert.equal(r.unread.length, 0);
 		assert.equal(r.files, 4);
+	});
+
+	it("T10R-F008: finds the token in base64 at any alignment, and in HTTP Basic's base64 of user:token, inside a larger text", () => {
+		const d = join(tmp, "b64");
+		mkdirSync(d);
+		const b64 = (text: string) => Buffer.from(text).toString("base64");
+		// A run of bytes inside bigger base64 starts at one of three columns; each file puts the token after 0, 1 or 2 bytes of other text.
+		for (const pad of ["", "a", "ab"]) {
+			writeFileSync(join(d, `plain-${pad.length}.txt`), `blob=${b64(`${pad}${canary}-and-more`)}\n`);
+			writeFileSync(join(d, `basic-${pad.length}.txt`), `Authorization: Basic ${b64(`${pad}oauth2:${canary}`)}`);
+		}
+		writeFileSync(join(d, "clean.txt"), `blob=${b64("nothing to see here, no token at all, only some filler text")}`);
+		const r = scan([d], canary);
+		assert.deepEqual(r.hits.map((p2) => p2.split(/[\\/]/).pop()).sort(), ["basic-0.txt", "basic-1.txt", "basic-2.txt", "plain-0.txt", "plain-1.txt", "plain-2.txt"]);
+		// A user name nobody listed still shows: the token's own base64 is inside the Basic text at one of the three alignments.
+		const other = join(tmp, "b64-user");
+		mkdirSync(other);
+		writeFileSync(join(other, "h.txt"), `Authorization: Basic ${b64(`wayne930242:${canary}`)}`);
+		assert.equal(scan([other], canary).hits.length, 1);
+		assert.ok(needlesFor(canary, ["wayne930242"]).length > needlesFor(canary, []).length, "a named user adds its own forms");
 	});
 
 	it("finds a token that straddles the 4 MB chunk boundary", () => {
