@@ -270,7 +270,7 @@ export const en = {
 		next: "Next",
 		tryAgain: "Try again",
 		checking: "Checking that this computer can keep the key safely…",
-		refused: "This computer cannot encrypt the key, so Straw Boss will not save it (it would have to keep it as plain text). Nothing was saved.",
+		refused: "This computer cannot encrypt the key. Straw Boss will not keep it as plain text, so nothing was saved this time.",
 		invalid: "That does not look like a Linear key. Copy it again from Linear's page, without spaces.",
 		saveFailed: "The key could not be saved. Details has what happened.",
 		saving: "Saving the key…",

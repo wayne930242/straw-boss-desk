@@ -264,6 +264,17 @@ describe("a start that failed while the PM is on step 9 (R11-F001)", () => {
 	}
 });
 
+describe("SA-T11-2: the refusal when the OS cannot encrypt", () => {
+	it("says in both languages that the key is not kept as plain text and that nothing was saved this time, and the step shows it", () => {
+		assert.equal(catalogs["zh-TW"].linear.refused, "這台電腦無法加密金鑰。Straw Boss 不會用純文字存放它，所以這次沒有儲存。");
+		assert.match(catalogs.en.linear.refused, /cannot encrypt the key\. Straw Boss will not keep it as plain text, so nothing was saved this time\./);
+		for (const locale of LOCALES) {
+			const out = drawLinear(lv({ phase: "idle" }, "not-saved", { phase: "none" }, false), locale);
+			assert.ok(out.textContent.includes(catalogs[locale].linear.refused), locale);
+		}
+	});
+});
+
 describe("the Claude and Linear cards of settings", () => {
 	for (const locale of LOCALES) {
 		it(`${locale}: one card each, a badge for the state, and Sign in again and Sign out only where they apply`, () => {
