@@ -515,7 +515,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const found = scan(searchRoots(), CLAUDE_CODE, { skipDirs: [join(world.home, "Library", "Keychains")] });
 		assert.equal(found.hits.length, 0, `the code is in ${found.hits.length} file(s) under the home or the temp folder`);
 		assert.equal(await pageHolds(page, CLAUDE_CODE), false, "and not in the page, its storage or its cookies");
-		assert.equal(eventsNamed("claude-code-sent").length, 2, "main logged that two codes were sent, never what they were");
+		assert.equal(eventsNamed("claude-code-sent").length, 3, "main logged that three codes were sent (a malformed one, a refused one, the planted one), never what they were");
 		await page.locator("#step-next").click();
 		await waitStep(page, "hosts");
 	});
