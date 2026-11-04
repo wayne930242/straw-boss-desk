@@ -39,6 +39,16 @@ export function parseListing(stdout: string): Listing {
 	return { heads, head };
 }
 
+/** The ref of a branch name: every command names the branch by it (`refs/heads/<name>`), so a tag or another ref of the same short name can never be the one a push or a delete reaches (T10RR-F004). */
+export const headRef = (name: string): string => `refs/heads/${name}`;
+
+/** True when an `ls-remote` answer holds exactly the line `<sha>\trefs/heads/<name>`: a pattern also matches the tail of longer paths (`refs/heads/x/<name>`), which are not this branch. */
+export const hasBranch = (stdout: string, name: string): boolean =>
+	stdout.split(/\r?\n/).some((line) => {
+		const [sha, ref, ...rest] = line.trim().split(/\s+/);
+		return rest.length === 0 && /^[0-9a-f]{7,64}$/.test(sha ?? "") && ref === headRef(name);
+	});
+
 /** The branches the sweep deletes: `sbd-ci-*` ones, not the default branch (named, or reported as HEAD), and not the other OS's own name. */
 export function sweepTargets(listing: Listing, { own }: { own: string }): string[] {
 	const others = Object.values(BRANCH_OF).filter((name) => name !== own);
@@ -85,7 +95,7 @@ export async function runPushCheck({ git, project, branch, log = () => undefined
 	const sweepFailed: string[] = [];
 	for (const stale of sweepTargets(listing, { own: branch })) {
 		guard(stale, listing);
-		const removed = await git(["push", project, "--delete", stale]);
+		const removed = await git(["push", project, "--delete", headRef(stale)]);
 		(removed.code === 0 ? swept : sweepFailed).push(stale);
 	}
 	log(`push check swept ${swept.length} old ${CI_PREFIX}* branch(es)${swept.length > 0 ? ` (${swept.join(", ")})` : ""}${sweepFailed.length > 0 ? `; could not delete ${sweepFailed.join(", ")}` : ""}; the default branch ${listing.head ?? DEFAULT_BRANCH} was not touched`);
@@ -94,21 +104,21 @@ export async function runPushCheck({ git, project, branch, log = () => undefined
 	let present = false;
 	try {
 		// `--force`: this run's own fixed name may be left from a run that was killed; it is the only ref the force can reach.
-		const push = await git(["push", "--force", project, `HEAD:refs/heads/${branch}`]);
+		const push = await git(["push", "--force", project, `HEAD:${headRef(branch)}`]);
 		pushed = push.code === 0;
 		if (!pushed) throw new Error(`push exited ${push.code}`);
-		const there = await git(["ls-remote", "--heads", project, branch]);
-		if (!there.stdout.includes(branch)) throw new Error("the pushed branch is not on the project");
+		const there = await git(["ls-remote", project, headRef(branch)]);
+		if (!hasBranch(there.stdout, branch)) throw new Error("the pushed branch is not on the project");
 	} finally {
 		// In every case, also when the push reported a failure after the server took the branch: look, and delete what is there.
-		const look = await git(["ls-remote", "--heads", project, branch]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
-		present = look.code !== 0 || look.stdout.includes(branch);
+		const look = await git(["ls-remote", project, headRef(branch)]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+		present = look.code !== 0 || hasBranch(look.stdout, branch);
 		if (pushed || present) {
-			const removed = await git(["push", project, "--delete", branch]);
+			const removed = await git(["push", project, "--delete", headRef(branch)]);
 			if (removed.code === 0) present = false;
 			else {
-				const again = await git(["ls-remote", "--heads", project, branch]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
-				present = again.code !== 0 || again.stdout.includes(branch);
+				const again = await git(["ls-remote", project, headRef(branch)]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+				present = again.code !== 0 || hasBranch(again.stdout, branch);
 				if (present) log(`push check could not delete ${branch}: the delete exited ${removed.code}`);
 			}
 		}
