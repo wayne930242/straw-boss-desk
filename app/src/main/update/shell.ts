@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AppUpdater } from "electron-updater";
 import type { ShellRefusal, ShellUpdateState } from "../../shared/updates.ts";
@@ -36,8 +36,12 @@ export interface UpdaterDriver {
 	quitAndInstall(): void;
 }
 
-/** Wraps electron-updater's `autoUpdater`: nothing downloads or installs unless the app asks, and no file is downloaded as a patch of the old installer (the whole file is what is signed). */
-export function electronUpdaterDriver(updater: AppUpdater, feed: UpdateFeed | null): UpdaterDriver {
+/**
+ * Wraps electron-updater's `autoUpdater`: nothing downloads or installs unless the app asks, and no file is downloaded as a patch of the old installer (the whole file is what is signed).
+ * `configDir` is a folder the app may write: a development build has no `app-update.yml` of its own, and electron-updater reads one from disk to name its download cache (a missing file
+ * fails the download with ENOENT), so a generic feed gets a small one there.
+ */
+export function electronUpdaterDriver(updater: AppUpdater, feed: UpdateFeed | null, configDir?: string): UpdaterDriver {
 	updater.autoDownload = false;
 	updater.autoInstallOnAppQuit = false;
 	updater.autoRunAppAfterInstall = true;
@@ -46,7 +50,15 @@ export function electronUpdaterDriver(updater: AppUpdater, feed: UpdateFeed | nu
 	updater.disableDifferentialDownload = true;
 	updater.disableWebInstaller = true;
 	// A generic feed is set here; a GitHub feed is what the package's `app-update.yml` says.
-	if (feed !== null && feed.kind === "generic") updater.setFeedURL({ provider: "generic", url: feed.url });
+	if (feed !== null && feed.kind === "generic") {
+		if (configDir !== undefined) {
+			mkdirSync(configDir, { recursive: true });
+			const file = join(configDir, "app-update.yml");
+			writeFileSync(file, `provider: generic\nurl: ${JSON.stringify(feed.url)}\nupdaterCacheDirName: straw-boss-desk-updater\n`);
+			updater.updateConfigPath = file;
+		}
+		updater.setFeedURL({ provider: "generic", url: feed.url });
+	}
 	return {
 		async check() {
 			const result = await updater.checkForUpdates();

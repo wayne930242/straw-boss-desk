@@ -345,7 +345,7 @@ const shellUpdater = new ShellUpdater({
 	version: app.getVersion(),
 	feed: updateCfg.shell,
 	keys: updateCfg.keys,
-	driver: () => electronUpdaterDriver(electronUpdater.autoUpdater, updateCfg.shell),
+	driver: () => electronUpdaterDriver(electronUpdater.autoUpdater, updateCfg.shell, join(app.getPath("userData"), "updater")),
 	fetchBytes,
 	downloadFile,
 	downloadDir: () => app.getPath("downloads"),

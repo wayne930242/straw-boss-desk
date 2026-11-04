@@ -4,7 +4,7 @@
 //   - refused, each with its reason: a wrong signature, a lower generation, a `minShell` above the app, and a key that is not in the list (the app's list holds two test keys);
 //   - the second key of the list verifies;
 //   - the app channel: an installer (Windows) or a dmg (macOS) signed by the test key is offered; one with a byte changed and its `latest*.yml` SHA512 regenerated is refused, deleted, and never offered;
-//   - available, applying, applied: a signed candidate that changes gh is applied with the stack stopped and started again, and the stack is back (GUI 200);
+//   - available, applying, applied: a signed candidate that changes Node is applied with the stack stopped and started again, and the stack is back (GUI 200);
 //   - rolled back: a candidate whose pi stage fails is undone, the report names the stage, and the stack in force is the old one.
 // The keys are made for this run and never written to disk. The Windows install and update (0.0.1 to 0.0.2 through the NSIS installer) is `updates-windows.e2e.ts`.
 //   SBD_E2E=1 SBD_E2E_KIND=dev node --test test/e2e/updates.e2e.ts        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
@@ -12,11 +12,11 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it as nodeIt } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { platformKey } from "../../src/main/bootstrap/stack.ts";
 import { stackFiles } from "../../src/main/update/stack.ts";
-import { ALT_GH_VERSION, altStack } from "../harness/alt-pins.ts";
+import { ALT_NODE_VERSION, altStack } from "../harness/alt-pins.ts";
 import { createWorld, disposeWorld, noteUserPath, realStack, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
@@ -31,12 +31,24 @@ const packaged: Packaged | undefined = enabled && kind === "dev" ? locatePackage
 const screenshotDir = process.env.SBD_SCREENSHOT_DIR ?? join(appRoot, "test-results", "screenshots");
 
 if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
-	it("runs on a hosted runner", () => {
+	nodeIt("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
+function logTails(dir: string, lines = 14, width = 360): string[] {
+	if (!existsSync(dir)) return [];
+	return readdirSync(dir).flatMap((name) => {
+		try {
+			return [`${name}: ${readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean).slice(-lines).map((l) => l.slice(0, width)).join(" | ")}`];
+		} catch {
+			return [];
+		}
+	});
+}
 
 async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 400): Promise<NonNullable<T>> {
 	const deadline = Date.now() + ms;
@@ -74,6 +86,31 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 	let app: ElectronApplication;
 	let settings: Page;
 	let appVersion = "0.0.1";
+	/** Every case below runs through this: a failure carries the cards' text, the update record, the tool versions in force and the app's logs. */
+	const it = (name: string, body: () => Promise<void>) =>
+		nodeIt(name, async () => {
+			try {
+				await body();
+			} catch (error) {
+				const parts: string[] = [];
+				try {
+					parts.push(`cards: ${(await settings.locator("#update-cards").innerText({ timeout: 3000 })).replace(/\s+/g, " ")}`);
+				} catch {
+					parts.push("cards: (unreadable)");
+				}
+				for (const file of ["current.json", "update.json"]) {
+					try {
+						parts.push(`${file}: ${readFileSync(join(world.layout.state, file), "utf8").replace(/\s+/g, " ").slice(0, 700)}`);
+					} catch {
+						parts.push(`${file}: (missing)`);
+					}
+				}
+				parts.push(...logTails(world.layout.logs));
+				parts.push(`feed requests: ${feed.requests.slice(-12).join(", ")}`);
+				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`;
+				throw error;
+			}
+		});
 	const keyA = makeTestKey();
 	const keyB = makeTestKey();
 	const outsider = makeTestKey();
@@ -156,7 +193,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		feed = await FeedServer.start();
 		const installed = await runWorld(world, { profile: true, recipe: RECIPE });
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
-		// The stack in force is the shipped one (the app's bundled file has the same generation), so nothing is applied at the start.
+		// The app has no wizard record for this root, so it knows no code host: the update changes Node, which every stack has. The stack in force is the shipped one (the app's bundled file has the same generation), so nothing is applied at the start.
 		mkdirSync(world.layout.stack, { recursive: true });
 		writeFileSync(stackFiles(world.layout).active, `${JSON.stringify(realStack, null, "\t")}\n`);
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
@@ -224,7 +261,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 	});
 
 	it("verifies a candidate signed by the second key of the list", async () => {
-		await checkedStack({ ...altStack(realStack, { gh: true }), generation: generation + 1 }, keyB);
+		await checkedStack({ ...altStack(realStack, { node: true }), generation: generation + 1 }, keyB);
 		assert.equal(await stackState(), "available");
 	});
 
@@ -270,13 +307,13 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		}
 	});
 
-	it("applies a signed candidate that changes gh: the card goes through applying to applied, the stack is back, and a pane-resolvable gh is the new one", async () => {
+	it("applies a signed candidate that changes Node: the card goes through applying to applied, the stack is back, and the Node in force is the new one", async () => {
 		feed.clear();
 		feed.put(LATEST, latestYml({ version: appVersion, file: INSTALLER_NAME, bytes: installerBytes("same"), }));
-		await checkedStack({ ...altStack(realStack, { gh: true }), generation: generation + 1 });
+		await checkedStack({ ...altStack(realStack, { node: true }), generation: generation + 1 });
 		assert.equal(await stackState(), "available");
 		assert.equal(await settings.locator("#update-changes li").count(), 1);
-		assert.match((await settings.locator("#update-changes li").first().textContent()) ?? "", new RegExp(`${ALT_GH_VERSION.replace(/\./g, "\\.")}`));
+		assert.match((await settings.locator("#update-changes li").first().textContent()) ?? "", new RegExp(`${ALT_NODE_VERSION.replace(/\./g, "\\.")}`));
 		await shotBoth("available");
 
 		// Applied in zh-TW: the page is left in that language while the apply runs, so the applying shot is a Chinese one.
@@ -294,14 +331,14 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		const active = JSON.parse(activeText()) as { generation: number };
 		assert.equal(active.generation, generation + 1);
 		const current = JSON.parse(readFileSync(join(world.layout.state, "current.json"), "utf8")) as { versions: Record<string, string> };
-		assert.equal(current.versions.gh, ALT_GH_VERSION);
+		assert.equal(current.versions.node, ALT_NODE_VERSION);
 		const url = await until("the GUI view to load again", 240_000, guiUrl, 500);
 		assert.equal(await guiStatus(url), 200, "the stack is back");
 	});
 
 	it("rolls back a candidate whose pi stage fails: the card names the stage, the old stack is in force, and the stack is back", async () => {
 		const before = activeText();
-		const bad = altStack(realStack, { gh: false });
+		const bad = altStack(realStack, {});
 		const pi = (bad.npmGlobal as Array<{ version: string }>)[0] as { version: string };
 		pi.version = "0.0.1";
 		await checkedStack({ ...bad, generation: generation + 2 });
@@ -316,7 +353,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		assert.equal(activeText(), before, "the stack in force is the old one");
 		assert.equal(await settings.locator("#stack-generation").textContent(), `Generation ${generation + 1}`);
 		const current = JSON.parse(readFileSync(join(world.layout.state, "current.json"), "utf8")) as { versions: Record<string, string> };
-		assert.equal(current.versions.gh, ALT_GH_VERSION, "the tools of the old stack are in force");
+		assert.equal(current.versions.node, ALT_NODE_VERSION, "the Node of the old stack is in force");
 		const url = await until("the GUI view to load again", 240_000, guiUrl, 500);
 		assert.equal(await guiStatus(url), 200, "the stack is back on the old generation");
 	});
