@@ -160,7 +160,7 @@ describe("the CI push check", () => {
 		const mutating = r.state.commands.filter((c) => c[0] === "push");
 		assert.ok(mutating.length >= 3, "the sweep, the push and the delete ran");
 		for (const c of mutating) assert.ok((c.at(-1) as string).includes("refs/heads/"), `${c.join(" ")} names the full ref`);
-		assert.deepEqual(r.state.tags.sort(), [own, "sbd-ci-old-1"].sort(), "no tag was deleted");
+		assert.deepEqual([...(r.state.tags ?? [])].sort(), [own, "sbd-ci-old-1"].sort(), "no tag was deleted");
 		assert.ok(!r.state.heads.includes(own) && !r.state.heads.includes("sbd-ci-old-1"), "the branches were");
 		for (const c of r.state.commands.filter((x) => x[0] === "ls-remote" && !x.includes("--symref"))) assert.equal(c.at(-1)?.startsWith("refs/heads/"), true, `${c.join(" ")} looks for the full ref`);
 	});
