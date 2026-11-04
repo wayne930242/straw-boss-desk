@@ -407,7 +407,7 @@ export class WorldHerdr {
 	 * Runs `command` in a fresh pane and returns the text it wrote to a file: the pane's shell is whatever Herdr starts. `command` must write to the
 	 * file named by the first argument of `wrap`.
 	 */
-	async inPane(label: string, wrap: (outFile: string) => string, cwd: string, waitMs = 60_000): Promise<string> {
+	async inPane(label: string, wrap: (outFile: string) => string, cwd: string, waitMs = 60_000, done?: string): Promise<string> {
 		const out = join(this.world.base, `pane-${label}-${Date.now()}.txt`);
 		const { workspace, pane } = await this.open(cwd, label);
 		try {
@@ -416,7 +416,7 @@ export class WorldHerdr {
 			await this.type(pane, wrap(out));
 			const deadline = Date.now() + waitMs;
 			while (Date.now() < deadline) {
-				if (existsSync(out) && statSync(out).size > 0) {
+				if (existsSync(out) && statSync(out).size > 0 && (done === undefined || readFileSync(out, "utf8").includes(done))) {
 					await new Promise((resolve) => setTimeout(resolve, 800));
 					return readFileSync(out, "utf8");
 				}

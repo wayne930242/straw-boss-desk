@@ -347,7 +347,8 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		await settings.locator("#update-apply").click();
 		await stackCard().and(settings.locator('[data-state="applying"]')).waitFor({ timeout: 120_000 });
 		await shot(settings, "updates-applying-en");
-		await stackCard().and(settings.locator('[data-state="rolled-back"]')).waitFor({ timeout: 900_000 });
+		// Not a Playwright wait: a timeout there carries none of the diagnostics below (the cards, the records, the logs).
+		await until("the stack card to be rolled back", 480_000, async () => (await stackState()) === "rolled-back", 1000);
 		assert.equal(await stackReason(), "pi", "the report names the stage");
 		await shotBoth("rolled-back");
 		assert.equal(activeText(), before, "the stack in force is the old one");
