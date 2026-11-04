@@ -33,6 +33,8 @@ import { FRESH, readWizardFile, writeWizardFile, type WizardFile } from "./state
 export interface WizardSupervisor {
 	start(): Promise<StartResult>;
 	engineProxyEnv(forgeHosts: readonly string[]): Promise<Record<string, string>>;
+	/** Runs `work` as a job of the supervisor's queue without stopping the stack: a start, a Herdr restart or `upOnce` waits for it (R11-F001). */
+	withEngineJob<T>(work: () => Promise<T>): Promise<T>;
 	withStackStopped<T>(work: () => Promise<T>, options?: { waitForTools?: boolean }): Promise<T>;
 	repairLock(): unknown;
 	readonly state: string;
@@ -366,10 +368,10 @@ export class WizardController {
 				if (this.#at("install") && !this.#installing) await this.#runInstall();
 				return;
 			case "start-retry":
-				if (this.#at("start") && !this.#starting) await this.#startStack();
+				if (this.#atStartFailure() && !this.#starting) await this.#startStack();
 				return;
 			case "repair":
-				if (this.#at("start")) {
+				if (this.#atStartFailure()) {
 					const outcome = await this.repair();
 					if (!outcome.ok) {
 						this.#startStatus = "failed";
@@ -461,6 +463,11 @@ export class WizardController {
 
 	#at(step: WizardStep): boolean {
 		return this.#file.step === step && !this.#file.done;
+	}
+
+	/** Try again and Repair belong to the start step, and to the Linear step, where a start that failed while the PM filled in the key is shown too (R11-F001). */
+	#atStartFailure(): boolean {
+		return this.#at("start") || (this.#at("linear") && this.#startStatus === "failed");
 	}
 
 	#save(change: Partial<WizardFile> & { workFolder?: string | undefined }): void {
@@ -709,7 +716,7 @@ export class WizardController {
 				only: ["ttt"],
 				...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}),
 			};
-			const end = await d.engine.run(config, () => undefined);
+			const end = await d.supervisor.withEngineJob(() => d.engine.run(config, () => undefined));
 			if (end.kind === "done") {
 				const outcome = end.outcomes.find((o) => o.stage === "ttt");
 				if (end.ok && outcome !== undefined && outcome.status !== "failed" && outcome.status !== "blocked") return { ok: true, detail: "" };

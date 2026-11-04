@@ -817,6 +817,14 @@ export class Supervisor {
 		});
 	}
 
+	/**
+	 * Runs `work` as one job of the queue with the stack left as it is. An engine run takes `engine.lock`, and a start, a Herdr restart or `upOnce` that met it would fail as a
+	 * foreign engine run (`engine-locked`); here they wait for it, and it waits for a start under way, as the prune does (R8A-F002). `work` must not call `start`, `stop` or `upOnce`.
+	 */
+	withEngineJob<T>(work: () => Promise<T>): Promise<T> {
+		return this.#queue.run(work);
+	}
+
 	/** Repair for the engine lock: removes a lock whose owner pid is not an engine of this app. */
 	repairLock(): RepairResult {
 		const result = repairEngineLock(this.#d.layout, { isOurEngine: this.#d.isOurEngine });

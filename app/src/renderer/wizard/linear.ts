@@ -1,6 +1,7 @@
 import { linearPanel } from "../accounts/linear-panel.ts";
 import { h } from "../dom.ts";
 import type { Ctx } from "./common.ts";
+import { startFailureBlock } from "./start.ts";
 
 /** The phases in which a save, the install of `ttt`, `ttt init` or a restart is under way: **Later** and **Next** wait for them. */
 const BUSY = ["saving", "installing", "initializing"];
@@ -25,6 +26,7 @@ export function linear(ctx: Ctx): HTMLElement {
 		{ class: "step", "data-step": "linear" },
 		h("h1", {}, ctx.tr("linear.title")),
 		h("p", { class: "lead" }, ctx.tr("linear.stepLead")),
+		startFailureBlock(ctx),
 		linearPanel(ctx, view, { trailing: last === null ? [] : [last] }),
 		done || offering ? null : h("p", { class: "note" }, ctx.tr("linear.laterNote")),
 	);

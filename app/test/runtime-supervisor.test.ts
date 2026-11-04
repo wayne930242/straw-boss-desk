@@ -1233,6 +1233,33 @@ describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T
 		assert.ok(w.log.some((l) => l.event === "prune" && l.tool === "node"), "and runs after it");
 	});
 
+	it("R11-F001: an engine job waits for a start under way, and a start asked during the job waits for it", async () => {
+		let result: Promise<string> | null = null;
+		let during: string[] = [];
+		let startAsked: Promise<unknown> | null = null;
+		let w: ReturnType<typeof world> | undefined;
+		w = world({
+			// Asked while the first start spawns Herdr, so the job is behind a start under way.
+			onSpawn: () => {
+				if (result !== null || !w) return;
+				const mine = w;
+				result = mine.supervisor.withEngineJob(async () => {
+					during = [...mine.order];
+					startAsked = mine.supervisor.start().catch(() => undefined);
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					assert.deepEqual(mine.order, during, "no second start ran while the job ran");
+					return "worked";
+				});
+			},
+		});
+		await w.supervisor.start();
+		assert.equal(await result, "worked");
+		assert.deepEqual(during, ["spawn herdr 100", "up"], "the job began after the start had finished");
+		assert.equal(w.supervisor.state, "running", "the job left the stack as it was");
+		await startAsked;
+		assert.ok(!w.order.includes("cli stop"), "an engine job does not stop the stack");
+	});
+
 	it("does not run the work when a program still runs from the tools folder", async () => {
 		const w = world();
 		await w.supervisor.start();

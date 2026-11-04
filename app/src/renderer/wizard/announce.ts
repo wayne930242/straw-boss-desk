@@ -66,6 +66,11 @@ export function announcementParts(ctx: Ctx): string[] {
 		}
 		case "linear": {
 			const { flow, restart } = view.linear;
+			// The start runs beside this step; its failure is drawn here too, so it is spoken here.
+			if (view.start.failure !== null) {
+				const sentences = catalogs[ctx.locale].start.failure as Record<string, string>;
+				parts.push((sentences[view.start.failure.kind] ?? sentences.other ?? "").replaceAll("{pid}", String(view.start.failure.pid ?? "")));
+			}
 			if (flow.phase === "refused" || (view.linear.encryption === false && flow.phase === "idle")) parts.push(ctx.tr("linear.refused"));
 			else if (flow.phase === "invalid") parts.push(ctx.tr("linear.invalid"));
 			else if (flow.phase === "save-failed") parts.push(ctx.tr("linear.saveFailed"));

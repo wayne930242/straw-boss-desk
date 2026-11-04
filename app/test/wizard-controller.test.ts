@@ -46,6 +46,7 @@ interface MakeOptions {
 }
 
 const stackStopOptions: Array<{ waitForTools?: boolean } | undefined> = [];
+const engineJobs: string[] = [];
 
 function make(options: MakeOptions = {}) {
 	const made = scratchRoot("sbd-ctl-");
@@ -76,6 +77,10 @@ function make(options: MakeOptions = {}) {
 			engineProxyEnv: async () => ({}),
 			withStackStopped: (work, options) => {
 				stackStopOptions.push(options);
+				return work();
+			},
+			withEngineJob: (work) => {
+				engineJobs.push("job");
 				return work();
 			},
 			repairLock: () => undefined,
@@ -677,6 +682,41 @@ describe("steps 7 and 9: Claude and Linear (task 11)", () => {
 		assert.equal(again.linear.probes, 1, "asked while the stack is still starting");
 		release();
 		await resuming;
+	});
+
+	it("R11-F001: a start that fails while the PM is on the Linear step is shown there, and Try again and Repair work from it", async () => {
+		const w = await atClaude();
+		await w.controller.act({ type: "later" });
+		await w.controller.act({ type: "later" });
+		assert.equal(w.controller.step, "linear");
+		let attempts = 0;
+		const again = make({
+			pick: { layout: w.layout, home: w.base } as Partial<WizardDeps>,
+			start: async () => {
+				if (attempts++ === 0) throw new StartFailureError({ kind: "engine-locked", reason: "another engine", offerRepair: true });
+			},
+		});
+		await again.controller.resume();
+		assert.equal(again.controller.step, "linear", "the failed start does not move the PM off the step");
+		const failed = again.controller.view().start;
+		assert.deepEqual([failed.status, failed.failure?.kind, failed.failure?.offerRepair], ["failed", "engine-locked", true]);
+		const before = again.engine.configs.length;
+		await again.controller.act({ type: "repair" });
+		assert.equal(again.engine.configs.length, before + 1, "Repair ran from the Linear step");
+		assert.equal(again.controller.view().start.status, "idle");
+		assert.equal(again.controller.step, "linear");
+		// Without a failed start, neither action does anything on this step.
+		const calls = again.starts();
+		await again.controller.act({ type: "start-retry" });
+		assert.equal(again.starts(), calls);
+	});
+
+	it("R11-F001: the install of ttt is a job of the supervisor's queue", async () => {
+		const w = await atClaude();
+		engineJobs.length = 0;
+		w.engine.scripts.push(() => ({ kind: "done" as const, ok: true, outcomes: [okOutcome("ttt")] }));
+		await w.controller.installTtt();
+		assert.deepEqual(engineJobs, ["job"]);
 	});
 
 	it("account actions are checked: a malformed one is dropped, a Linear one is dropped where Linear is not offered, a Claude one reaches the sign-in", async () => {
