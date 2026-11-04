@@ -355,3 +355,21 @@ describe("small things", () => {
 		assert.equal(statSync(linearFile(r.layout)).mode & 0o077, 0);
 	});
 });
+
+describe("resume after a stop that did not end the app (R13C-F001)", () => {
+	it("dispose then resume: the stuck setup is cleared, the quit signal is fresh, and setup runs again", async () => {
+		const r = rig({ initHangs: true });
+		const saving = r.linear.save(KEY);
+		for (let i = 0; i < 400 && r.calls.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+		r.linear.dispose();
+		await r.linear.settled(60_000);
+		await saving;
+		r.linear.resume();
+		assert.equal(r.linear.flow.phase, "setup-failed", "not stuck mid-setup");
+		const before = r.calls.length;
+		void r.linear.setup();
+		for (let i = 0; i < 400 && r.calls.length === before; i++) await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(r.calls.length, before + 1, "setup ran again");
+		assert.equal(r.calls[before]?.options?.signal?.aborted, false, "a fresh abort controller");
+	});
+});

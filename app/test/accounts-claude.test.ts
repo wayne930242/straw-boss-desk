@@ -328,3 +328,15 @@ describe("signing out and the end", () => {
 		assert.equal(r.started.length, 1, "no login starts after the quit began");
 	});
 });
+
+describe("resume after a stop that did not end the app (R13C-F001)", () => {
+	it("dispose then resume: a login starts again", async () => {
+		const r = rig();
+		r.claude.dispose();
+		await r.claude.start();
+		assert.equal(r.started.length, 0, "refused while disposed");
+		r.claude.resume();
+		await r.claude.start();
+		assert.equal(r.started.length, 1);
+	});
+});

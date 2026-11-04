@@ -483,6 +483,9 @@ async function resumeAfterFailedUpdate(): Promise<void> {
 	stopped = false;
 	supervisor.cancelQuit();
 	engineHost.resume();
+	accounts.resume();
+	claude.resume();
+	linear.resume();
 	updates.start();
 	runtimeLog.event({ event: "update-resume" });
 	// A start that fails shows on the runtime page through the supervisor's `failure` event.

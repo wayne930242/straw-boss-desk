@@ -163,7 +163,7 @@ export class LinearAccounts {
 	#encryption: boolean | null = null;
 	#disposed = false;
 	/** Ends the `ttt init` child when the app quits (R11-F007). */
-	readonly #quit = new AbortController();
+	#quit = new AbortController();
 
 	constructor(deps: LinearAccountsDeps) {
 		this.#d = deps;
@@ -466,6 +466,13 @@ export class LinearAccounts {
 	dispose(): void {
 		this.#disposed = true;
 		this.#quit.abort();
+	}
+
+	/** The app goes on after a stop that did not end it (an update's installer that could not start): work is taken again. A setup the stop cut short shows as failed, so Run setup again is offered. */
+	resume(): void {
+		this.#disposed = false;
+		this.#quit = new AbortController();
+		if (BUSY.includes(this.#flow.phase)) this.#set(this.#file.exists ? { phase: "setup-failed", step: "init", detail: "interrupted" } : { phase: "idle" });
 	}
 
 	/** Resolves when the work under way has ended, or after `maxMs`. */

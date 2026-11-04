@@ -830,3 +830,22 @@ describe("ForgeAccounts has no reset (T10RR-F001)", () => {
 		flow(r, "gitlab.com", "done");
 	});
 });
+
+describe("resume after a stop that did not end the app (R13C-F001)", () => {
+	it("dispose then resume: a call made after the stop has its normal limit again, and a new login starts", async () => {
+		const g = gate();
+		let clock = 1_000_000;
+		const r = rig({ holdGlabLogin: g.promise }, { now: () => clock });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		const signing = r.accounts.signInGitlab("gitlab.com", TOKEN);
+		await until("glab to run", () => logins(r).length === 1);
+		r.accounts.dispose();
+		r.accounts.resume();
+		clock += 74_000;
+		g.open();
+		await signing;
+		const limits = r.cli.calls.filter((c) => c.args[0] === "auth" && c.args[1] === "status").map((c) => c.timeoutMs);
+		assert.ok(limits.length > 0);
+		for (const ms of limits) assert.equal(ms, 60_000, "the deadline of the stop is gone");
+	});
+});

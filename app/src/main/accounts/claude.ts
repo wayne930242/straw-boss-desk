@@ -459,6 +459,11 @@ export class ClaudeAccounts {
 		}
 	}
 
+	/** The app goes on after a stop that did not end it: sign-in works again. */
+	resume(): void {
+		this.#disposed = false;
+	}
+
 	/** The app is quitting: a login that waits ends with it; a status or logout call under way is waited for by `settled`. */
 	dispose(): void {
 		this.#disposed = true;

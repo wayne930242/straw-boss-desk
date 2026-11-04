@@ -625,6 +625,12 @@ export class ForgeAccounts {
 		}
 	}
 
+	/** The app goes on after a stop that did not end it: calls get their normal limits again. */
+	resume(): void {
+		this.#disposed = false;
+		this.#deadline = null;
+	}
+
 	/** The app is quitting: a login that waits for approval ends with it. One that is `working` is not cut off; `settled` waits for it. */
 	dispose(): void {
 		this.#disposed = true;
