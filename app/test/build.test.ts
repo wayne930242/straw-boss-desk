@@ -37,6 +37,11 @@ describe("SBD_BUILD", () => {
 		assert.ok(release.configArgs.includes("-c.appId=tw.wayneh.straw-boss-desk"));
 	});
 
+	it("points only the release build's updater at GitHub Releases (the development build's feed is set at run time)", () => {
+		assert.deepEqual(packPlan({ SBD_BUILD: "release" }).configArgs.filter((a) => a.startsWith("-c.publish")), ["-c.publish.provider=github", "-c.publish.owner=wayne930242", "-c.publish.repo=straw-boss-desk"]);
+		assert.deepEqual(packPlan({}).configArgs.filter((a) => a.startsWith("-c.publish")), []);
+	});
+
 	it("defaults the checked-in files to the development build, so a plain electron-builder run cannot make the shipped product", () => {
 		const builder = readJson("electron-builder.json");
 		assert.equal(builder.productName, "Straw Boss Desk Dev");
