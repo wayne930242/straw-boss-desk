@@ -15,6 +15,7 @@ import { loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, WorldHerdr, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
+import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
 import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
@@ -114,7 +115,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		const file = join(world.layout.logs, "start.jsonl");
 		return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : [];
 	};
-	const eventsSince = (event: string, since: number) => logLines().filter((l) => l.event === event && Date.parse(String(l.t)) >= since);
+	const eventsSince = (event: string, since: number, skewMs = 0) => lineEventsSince(logLines(), event, since, skewMs);
 	/** On a failed check, the tail of the start log (events and their short details only): the CI log is all there is of a runner. */
 	const check = (name: string, fn: () => Promise<void>): void => {
 		it(name, async () => {
@@ -479,7 +480,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			"the 20 s after a resume are the sleep's gap, not an unanswered GUI",
 		);
 		assert.deepEqual([...eventsSince("follow-restart", began), ...eventsSince("follow-moved", began)].map((l) => l.event), [], "no restart or move was seen before the sample");
-		assert.ok(eventsSince("follow-resume", resumedAt).length === 1 && eventsSince("power-resume", resumedAt).length === 1);
+		// The app stamps its lines with its own clock; on Windows that can read a few milliseconds before the test's mark, so the mark is taken a second early (the suspend was 2 s before it, so no older resume falls in the margin; R-F005).
+		assert.ok(eventsSince("follow-resume", resumedAt, CLOCK_SKEW_MS).length === 1 && eventsSince("power-resume", resumedAt, CLOCK_SKEW_MS).length === 1);
 		assert.deepEqual(eventsSince("restart-budget", began).map((l) => l.which), [], "the budget did not stop the follower, so the follower was running when it judged");
 		assert.equal(await onFailureScreen(), false, "no failure screen: the follower is running");
 		assert.deepEqual([...eventsSince("follow-screen", began), ...eventsSince("start-failed", began)].map((l) => l.detail ?? l.kind), [], "no shell screen was shown and no start failed since the suspend");
