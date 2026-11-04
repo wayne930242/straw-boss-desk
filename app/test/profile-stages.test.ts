@@ -655,6 +655,14 @@ describe("the stage list", () => {
 		assert.deepEqual(needs(profileStages(s([]), recipe, "darwin"))["team-pkg:team-skills"], ["profile"], "a stack with no package still keeps the team package behind the profile");
 	});
 
+	it("makes pi-claude-bridge wait for the pinned Agent SDK, which is listed first, and the claude stage checks that pin", () => {
+		const stack = s(["@anthropic-ai/claude-agent-sdk", "pi-claude-bridge"]);
+		const stages = profileStages(stack, engineRecipeOf(undefined, stack), "darwin");
+		assert.deepEqual(stages.map((x) => x.name), ["profile", "pkg:@anthropic-ai/claude-agent-sdk", "pkg:pi-claude-bridge", "claude"]);
+		assert.deepEqual(stages.find((x) => x.name === "pkg:pi-claude-bridge")?.needs, ["profile", "pkg:@anthropic-ai/claude-agent-sdk"]);
+		assert.deepEqual(stages.find((x) => x.name === "pkg:@anthropic-ai/claude-agent-sdk")?.needs, ["profile"]);
+	});
+
 	it("has no claude stage when the stack does not list pi-claude-bridge, and no team-pkg stage for a recipe without packages", () => {
 		const stack = s(["pkg-one"]);
 		assert.deepEqual(profileStages(stack, engineRecipeOf({ ...RECIPE, packages: [] }, stack), "darwin").map((x) => x.name), ["profile", "pkg:pkg-one"]);

@@ -8,7 +8,7 @@ import type { EngineRecipe } from "../recipe-config.ts";
 import { StackError, type NpmPin, type Stack } from "../stack.ts";
 import { detectFromRecord, fileKey, type Evidence, type Stage, type StageContext } from "../stage.ts";
 import type { StageWarning } from "../state.ts";
-import { claudeStage } from "./claude.ts";
+import { CLAUDE_SDK, claudeStage } from "./claude.ts";
 import { piSettingsStage } from "./pi-settings.ts";
 
 // The profile and package stages (spec: Stages `profile`, `pkg:<name>`, `team-pkg:<name>`; team-profile section 7). All of them go through pi's package
@@ -271,7 +271,8 @@ export function profileStages(stack: Stack, recipe: EngineRecipe, platform: AppP
 	const reserved = reservedNames(stack);
 	for (const pkg of recipe.team?.packages ?? []) if (reserved.includes(pkg.name)) throw new StackError(`the recipe's package ${pkg.name} is one the stack installs itself`);
 	const after = platform === "win32" ? "pi-settings" : "profile";
-	const packages = stack.piPackages.map((pin) => piPackageStage(pin, [after], options));
+	// pi-claude-bridge waits for the Agent SDK pin when the stack lists one, so npm finds the pinned SDK in the tree and nests no newer copy.
+	const packages = stack.piPackages.map((pin) => piPackageStage(pin, pin.name === "pi-claude-bridge" && stack.piPackages.some((p) => p.name === CLAUDE_SDK) ? [after, `pkg:${CLAUDE_SDK}`] : [after], options));
 	// A team package needs the stage that wrote `settings.json` as well as the `pkg:` ones, so it never runs ahead of the profile when the stack lists no package.
 	const team = (recipe.team?.packages ?? []).map((pin) => teamPackageStage(pin, [after, ...packages.map((s) => s.name)], options));
 	return [
@@ -279,6 +280,6 @@ export function profileStages(stack: Stack, recipe: EngineRecipe, platform: AppP
 		...(platform === "win32" ? [piSettingsStage()] : []),
 		...packages,
 		...team,
-		...(stack.piPackages.some((p) => p.name === "pi-claude-bridge") ? [claudeStage()] : []),
+		...(stack.piPackages.some((p) => p.name === "pi-claude-bridge") ? [claudeStage(stack.piPackages.find((p) => p.name === CLAUDE_SDK)?.version)] : []),
 	];
 }

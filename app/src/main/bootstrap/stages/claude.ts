@@ -13,6 +13,9 @@ import { readManifest } from "./pi.ts";
 
 const SCOPE = "@anthropic-ai";
 
+/** The Agent SDK package the stack pins beside pi-claude-bridge (stack.json), so the bundled `claude` is the one whose Keychain naming was read. */
+export const CLAUDE_SDK = "@anthropic-ai/claude-agent-sdk";
+
 /** The platform package the SDK installs for this machine: `claude-agent-sdk-darwin-arm64`, `claude-agent-sdk-win32-x64`, ... */
 export const sdkPlatformPackage = (key: PlatformKey): string => `claude-agent-sdk-${key}`;
 
@@ -34,13 +37,17 @@ export function locateClaude(modulesDir: string, key: PlatformKey, exists: (path
 /** `<agent>/npm/node_modules`: the folder pi installs its npm packages into. */
 export const agentModules = (layout: Layout): string => join(layout.agent, "npm", "node_modules");
 
-export function claudeStage(): Stage {
+export function claudeStage(pinnedSdk?: string): Stage {
 	const found = (ctx: StageContext): { exe: string; packageDir: string; version: string } => {
 		const located = locateClaude(agentModules(ctx.layout), ctx.key);
 		if (located === null) {
 			throw new StageError("other", { stage: "claude" }, `pi-claude-bridge's Claude Agent SDK has no ${sdkPlatformPackage(ctx.key)}/claude under ${agentModules(ctx.layout)}: the platform package was not installed`);
 		}
-		return { ...located, version: readManifest(join(located.packageDir, "package.json"))?.version ?? "" };
+		const version = readManifest(join(located.packageDir, "package.json"))?.version ?? "";
+		if (pinnedSdk !== undefined && version !== "" && version !== pinnedSdk) {
+			throw new StageError("other", { stage: "claude" }, `${located.packageDir} is ${version}, the stack pins the Agent SDK at ${pinnedSdk}: a second copy of the SDK is in the tree`);
+		}
+		return { ...located, version };
 	};
 	return {
 		name: "claude",

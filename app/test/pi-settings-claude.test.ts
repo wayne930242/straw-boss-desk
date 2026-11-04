@@ -143,6 +143,15 @@ describe("the claude stage", { skip: isWindows ? "the stand-in claude is a shell
 		assert.deepEqual(Object.keys(new StateStore(w.layout).record("claude")?.hashes ?? {}), [`agent/npm/node_modules/pi-claude-bridge/node_modules/@anthropic-ai/${sdkPlatformPackage(key)}/claude`]);
 	});
 
+	it("fails when the tree holds an Agent SDK other than the one the stack pins, and passes at the pin", async () => {
+		const w = await withClaude("0.3.318", "2.1.318 (Claude Code)");
+		const pinned = (version: string) => testEngine(w.root, () => [{ ...claudeStage(version), needs: [] as string[] }], { layout: w.layout }).run(makeStack({}));
+		const drifted = await pinned("0.3.309");
+		assert.equal(drifted.outcomes.claude?.status, "failed", JSON.stringify(drifted.outcomes.claude));
+		assert.match(JSON.stringify(drifted.outcomes.claude), /pins the Agent SDK at 0\.3\.309/);
+		assert.equal((await pinned("0.3.318")).outcomes.claude?.status, "installed");
+	});
+
 	it("runs again when the executable changes or the SDK moves to another version", async () => {
 		const w = await withClaude("0.3.316", "2.1.316 (Claude Code)");
 		await runStage(w);

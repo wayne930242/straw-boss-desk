@@ -108,6 +108,12 @@
     { "name": "@pify/memory", "version": "0.14.0", "integrity": "sha512-TtrdIYpJpA5+5ONzBibmmcHWRftpUMIRz9WpdyLHPRmxKWYIa8AHTZY0SpbfYLNDGUWD2MRrk7nXN0seJal0jw==" },
     { "name": "pi-anchorloop", "version": "2.2.3", "integrity": "sha512-YkEUBo0JgtDdHMt3jpS9cbosVBiXJRneewSCSQtGUOkZKPtDyRlbYHASC6BHkGwlfSRKVO+UtVmFvcv2VEy3/Q==" },
     {
+      "name": "@anthropic-ai/claude-agent-sdk",
+      "version": "0.3.309",
+      "integrity": "sha512-Tou0fXBkxKJDcgT09v3Iv/Jd7bNgapgfAiHxGPctAADPFQhidfhZbcv7at1cVL0Lon5sbs+OzP/pEOigw2TI0A==",
+      "note": "Pinned for the Claude Agent SDK's bundled claude 2.1.309, whose Keychain naming and device-key handling were read (design record, Keychain finding). pi-claude-bridge 0.9.3 asks for ^0.3.293 and ships no shrinkwrap, so without this entry a fresh install takes the newest 0.3.x. Installed before the bridge, it satisfies the bridge's range and npm does not nest a second copy. The SDK's platform packages are optional dependencies at the exact same version. pi lists it in settings.json like any package; it has no pi resources, so pi loads nothing from it."
+    },
+    {
       "name": "pi-claude-bridge",
       "version": "0.9.3",
       "integrity": "sha512-5OM3X6QLX7Xsv86bD+yiWvQEHdlGdXnaY9DgZg6jG4jpnKiHQ2FZKYVRFHYmDAEccDPfeFwW+NFHnkb+BUM+6Q==",
