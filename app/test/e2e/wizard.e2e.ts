@@ -449,6 +449,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			"the record holds exactly the store's entries for the host, with their modification times",
 		);
 		for (const e of mine) assert.match(e.modified, /^\d{4}-\d\d-\d\dT/);
+		console.log(`accounts e2e: glab login verdict PASS, ${mine.length} entries recorded (${mine.map((e) => e.name).join(", ")})`);
 
 		// Followup R3-F003: a token search over everything the app and its children wrote (the whole data root, and the home it lies in). The keychain file of the scratch HOME is the store itself.
 		const found = scan([world.home], GITLAB_TOKEN, { skipDirs: [join(world.home, "Library", "Keychains")] });
@@ -478,7 +479,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			assert.equal(head.code, 0, `ls-remote of the private test project exited ${head.code} (the credential helper gave no token)`);
 			// The first branch pushed to an empty project becomes its default branch, which a push cannot delete and the account's projects are not ours to change: with no branch there, only the read is checked.
 			if (head.stdout.trim() === "") {
-				console.log("::notice title=push check::the test project has no branch, so the push check read it and did not push (a first branch could not be deleted again)");
+				console.log("accounts e2e: push check read the test project; it has no branch, so nothing was pushed (a first branch could not be deleted again)");
 				return await finishHosts();
 			}
 			const push = await g(["push", GITLAB_TEST_PROJECT, `HEAD:refs/heads/${branch}`]);
@@ -494,6 +495,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			}
 		}
 		assert.equal((await g(["ls-remote", "--heads", GITLAB_TEST_PROJECT, branch])).stdout.trim(), "", "no branch of this run is left on the project");
+		console.log(`accounts e2e: git pushed ${branch} to the test project through the stored token and deleted it again`);
 
 		await finishHosts();
 	});
@@ -631,6 +633,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await rowOf(settings, "gitlab.com", "signed-in").waitFor({ timeout: 30_000 });
 		assert.ok(recordOf().entries.some((e) => e.host === "gitlab.com"));
 		assert.equal(logText().includes(GITLAB_TOKEN), false, "no log holds the token");
+		console.log("accounts e2e: Sign out of the owned GitLab login ran glab auth logout and emptied the record; Sign in again worked");
 	});
 
 	it("a foreign write over the app's GitLab entry: Sign out runs no logout and keeps the PM's secret, the row says changed, Sign in again stops at the check, and after the entry is deleted it passes (SBD_GITLAB_TEST_TOKEN)", { skip: noToken }, async () => {
@@ -669,6 +672,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await waitPhase(settings, "gitlab.com", "ready");
 		assert.deepEqual(recordOf(), { schema: 1, entries: [], left: [] });
 		await shotSettingsBoth(settings, "accounts-gitlab-after-removal");
+		console.log("accounts e2e: foreign write over the owned entry: Sign out ran no logout, row said changed, record has it left, Sign in again stopped at the check and passed after the entry was deleted");
 	});
 
 	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false }, async () => {

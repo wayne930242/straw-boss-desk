@@ -73,6 +73,10 @@ jobs:
           set -o pipefail
           node --test --test-concurrency=1 --test-timeout=2100000 test/e2e/wizard.e2e.ts 2>&1 | tee "$RUNNER_TEMP/wizard-e2e.log"
 
+      - name: What the accounts e2e did
+        if: always()
+        run: node scripts/annotate-failures.mjs "$RUNNER_TEMP/wizard-e2e.log" "accounts e2e (${{ matrix.os }})" --summary
+
       - name: Annotate the failing lines
         if: failure()
         run: node scripts/annotate-failures.mjs "$RUNNER_TEMP/wizard-e2e.log" "wizard e2e failures (${{ matrix.os }})"
