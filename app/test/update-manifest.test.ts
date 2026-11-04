@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { parseStack } from "../src/main/bootstrap/stack.ts";
@@ -114,7 +115,7 @@ describe("a signature of one kind is not a signature of the other", () => {
 describe("sign-stack.mjs --shell-version writes what the app verifies", () => {
 	const dirs: string[] = [];
 	after(() => dirs.forEach(removeTree));
-	const script = new URL("../../scripts/sign-stack.mjs", import.meta.url).pathname;
+	const script = fileURLToPath(new URL("../../scripts/sign-stack.mjs", import.meta.url));
 	const env = (key: KeyObject) => ({ PATH: process.env.PATH ?? "", SBD_SIGNING_KEY: key.export({ type: "pkcs8", format: "der" }).toString("base64") });
 
 	it("signs an installer into a manifest and its signature that verifyShellFile accepts", () => {
