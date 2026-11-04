@@ -27,6 +27,8 @@ const view = (over: Partial<WizardView> = {}): WizardView => ({
 	install: { status: "running", stages: [{ name: "node", badge: "working" }], current: "node", failures: [], tail: [], crashed: null },
 	start: { status: "idle", failure: null },
 	hosts: { forges: [], index: 0, current: null },
+	claude: { state: "unknown", storage: "keychain", flow: { phase: "idle" } },
+	linear: { state: "not-saved", flow: { phase: "idle" }, restart: { phase: "none" }, encryption: true },
 	linearOffered: false,
 	later: [],
 	...over,

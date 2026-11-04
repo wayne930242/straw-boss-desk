@@ -24,7 +24,17 @@ after(() => undo());
 
 const forgeView = (kind: "github" | "gitlab", host: string, flow: ForgeFlow, state: ForgeView["state"] = "not-signed-in"): ForgeView => ({ kind, host, state, entries: [], flow });
 
-const settingsView = (forges: ForgeView[], locale: "en" | "zh-TW" = "en"): SettingsView => ({ locale, section: "accounts", later: [], forges, recipe: null, appVersion: "0", dev: true });
+const settingsView = (forges: ForgeView[], locale: "en" | "zh-TW" = "en"): SettingsView => ({
+	locale,
+	section: "accounts",
+	later: [],
+	forges,
+	claude: { state: "not-signed-in", storage: "keychain", flow: { phase: "idle" } },
+	linear: null,
+	recipe: null,
+	appVersion: "0",
+	dev: true,
+});
 
 const drawSettings = (forges: ForgeView[], locale: "en" | "zh-TW" = "en"): MiniElement => accounts(makeSettingsCtx(settingsView(forges, locale), locale, () => undefined)) as unknown as MiniElement;
 

@@ -14,7 +14,7 @@ import type { RuntimeEvent } from "../runtime/log.ts";
 import { StartFailureError, firstLineOf } from "../runtime/failure.ts";
 import { shellFailureOf } from "../shell-state.ts";
 import type { StartResult } from "../runtime/supervisor.ts";
-import { isForgeAction, type ForgeAction, type ForgeView } from "../../shared/accounts.ts";
+import { isAccountAction, isClaudeAction, isForgeAction, isLinearAction, type AccountAction, type ClaudeAction, type ClaudeView, type ForgeAction, type ForgeView, type LinearAction, type LinearView } from "../../shared/accounts.ts";
 import type { Locale } from "../../shared/locale.ts";
 import type { ShellFailure } from "../../shared/shell-state.ts";
 import { WIZARD_STEPS, type FolderProblem, type Forge, type LaterItem, type RecipeChoice, type RecipeRefusal, type WizardAction, type WizardStep, type WizardView } from "../../shared/wizard.ts";
@@ -50,6 +50,32 @@ export interface WizardAccounts {
 	onSignedIn(listener: (kind: Forge["kind"], host: string) => void): () => void;
 }
 
+/** What the controller asks of the Claude sign-in (`accounts/claude.ts`). */
+export interface WizardClaude {
+	view(): ClaudeView;
+	act(action: ClaudeAction): Promise<void>;
+	/** Stops a login that waits. */
+	cancel(): void;
+	/** Reads the CLI's status. */
+	refresh(): Promise<void>;
+	readonly flow: ClaudeView["flow"];
+	readonly state: ClaudeView["state"];
+	onChange(listener: () => void): () => void;
+	onSignedIn(listener: () => void): () => void;
+}
+
+/** What the controller asks of the Linear key and its setup (`accounts/linear.ts`). */
+export interface WizardLinear {
+	view(): LinearView;
+	act(action: LinearAction): Promise<void>;
+	/** Back to the start of the screen after an outcome the PM has read. */
+	reset(): void;
+	readonly flow: LinearView["flow"];
+	readonly state: LinearView["state"];
+	onChange(listener: () => void): () => void;
+	onSaved(listener: () => void): () => void;
+}
+
 export interface WizardDeps {
 	layout: Layout;
 	home: string;
@@ -62,6 +88,10 @@ export interface WizardDeps {
 	engine: EngineHost;
 	supervisor: WizardSupervisor;
 	accounts: WizardAccounts;
+	claude: WizardClaude;
+	linear: WizardLinear;
+	/** True when the `ttt` stage is installed, so a later engine run (Repair) keeps it in its plan. */
+	tttInstalled(): boolean;
 	/** The language the OS asks for, when the PM has not chosen one. */
 	osLocale: () => Locale;
 	/** Opens the file dialog for a recipe and reads the file; null when the PM cancelled. Throws a plain message when the file cannot be read. */
@@ -80,6 +110,9 @@ export interface WizardDeps {
 export type RepairOutcome = { ok: true } | { ok: false; failure: ShellFailure };
 
 const STEP_ORDER: readonly WizardStep[] = WIZARD_STEPS;
+/** The phases in which a Claude sign-in is under way, and a Linear save: the step's **Next** and **Later** wait for them to end. */
+const CLAUDE_BUSY: readonly string[] = ["checking", "starting", "browser", "working"];
+const LINEAR_BUSY: readonly string[] = ["saving", "installing", "initializing"];
 /** An engine process that ends is resumed this many times at most in one run; the same stage ending it twice fails the stage earlier. */
 const MAX_RESUMES = 5;
 const HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
@@ -113,6 +146,15 @@ export class WizardController {
 		deps.accounts.onSignedIn((kind, host) => {
 			if (this.#file.later.some((l) => l.item === kind && "host" in l && l.host === host)) this.#save({ later: this.#file.later.filter((l) => !(l.item === kind && "host" in l && l.host === host)) });
 		});
+		deps.claude.onChange(() => this.#emit());
+		deps.claude.onSignedIn(() => this.#takeOffLater("claude"));
+		deps.linear.onChange(() => this.#emit());
+		deps.linear.onSaved(() => this.#takeOffLater("linear"));
+	}
+
+	/** A sign-in that is done leaves the list of those put off, in the wizard and in settings alike. */
+	#takeOffLater(item: "claude" | "linear"): void {
+		if (this.#file.later.some((l) => l.item === item)) this.#save({ later: this.#file.later.filter((l) => l.item !== item) });
 	}
 
 	// ---- reading -----------------------------------------------------------------------------------------------------
@@ -226,6 +268,8 @@ export class WizardController {
 			install: this.#progress.view(),
 			start: { status: this.#startStatus, failure: this.#startFailure },
 			hosts: { forges, index: hostsIndex, current: forgeViews[hostsIndex] ?? null },
+			claude: this.#d.claude.view(),
+			linear: this.#d.linear.view(),
 			linearOffered: this.linearOffered,
 			later: this.later,
 		};
@@ -256,7 +300,7 @@ export class WizardController {
 		const step = this.#file.step;
 		if (step === "install") await this.#runInstall();
 		else if (STEP_ORDER.indexOf(step) >= STEP_ORDER.indexOf("start")) await this.#startStack();
-		this.#syncHosts();
+		this.#syncSteps();
 	}
 
 	async scanPane(): Promise<void> {
@@ -336,6 +380,9 @@ export class WizardController {
 			case "hosts-next":
 				if (this.#at("hosts")) this.#hostsNext();
 				return;
+			case "step-next":
+				this.#stepNext();
+				return;
 			case "finish":
 				if (this.#at("done")) this.#finish();
 				return;
@@ -348,6 +395,37 @@ export class WizardController {
 			case "forge-sign-out":
 				await this.forgeAction(action);
 				return;
+			case "claude-begin":
+			case "claude-start":
+			case "claude-code":
+			case "claude-cancel":
+			case "claude-open":
+			case "claude-copy-url":
+			case "claude-sign-out":
+			case "linear-save":
+			case "linear-edit":
+			case "linear-cancel":
+			case "linear-setup":
+			case "linear-open":
+			case "linear-sign-out":
+			case "linear-restart":
+			case "linear-restart-later":
+				await this.accountAction(action);
+				return;
+		}
+	}
+
+	/**
+	 * A request from a wizard step or from settings' Accounts. The shape is checked here, since the page is a renderer; a forge request must also name one of this recipe's hosts.
+	 * A Linear key is accepted only where Linear is offered or already set up, so a page cannot start a setup the recipe turned off.
+	 */
+	async accountAction(action: AccountAction): Promise<void> {
+		if (!isAccountAction(action)) return;
+		if (isForgeAction(action)) return this.forgeAction(action);
+		if (isClaudeAction(action)) return this.#d.claude.act(action);
+		if (isLinearAction(action)) {
+			if (!this.linearOffered && this.#d.linear.state === "not-saved") return;
+			return this.#d.linear.act(action);
 		}
 	}
 
@@ -365,10 +443,12 @@ export class WizardController {
 		await this.#d.accounts.act(action);
 	}
 
-	/** Starts the checks of the forge on screen when the hosts step shows it and nothing has run for it yet. */
-	#syncHosts(): void {
+	/** Starts what a sign-in step shows when it opens: Claude's status, and the checks of the forge on screen. Nothing runs for a step that is not on screen. */
+	#syncSteps(): void {
 		const file = this.#file;
-		if (file.done || file.step !== "hosts") return;
+		if (file.done) return;
+		if (file.step === "claude" && this.#d.claude.flow.phase === "idle" && this.#d.claude.state === "unknown") void this.#d.claude.refresh().catch((error: Error) => this.#d.log({ event: "claude-refresh-failed", detail: firstLineOf(error.message) }));
+		if (file.step !== "hosts") return;
 		const forge = this.forges[Math.min(file.hostsIndex, Math.max(0, this.forges.length - 1))];
 		if (forge === undefined) return;
 		if (this.#d.accounts.flowOf(forge.host).phase === "idle") void this.#d.accounts.begin(forge.kind, forge.host).catch((error: Error) => this.#d.log({ event: "forge-begin-failed", detail: firstLineOf(error.message) }));
@@ -384,7 +464,7 @@ export class WizardController {
 		this.#file = next;
 		writeWizardFile(this.#d.layout, this.#file);
 		this.#emit();
-		this.#syncHosts();
+		this.#syncSteps();
 	}
 
 	#go(step: WizardStep): void {
@@ -533,7 +613,8 @@ export class WizardController {
 
 	#plannedStages(stack: Stack, recipeObj: unknown): string[] {
 		try {
-			return orderStages(allStages(stack, engineRecipeOf(recipeObj, stack), this.#d.platform)).map((s) => s.name);
+			const recipe = engineRecipeOf(recipeObj, stack);
+			return orderStages(allStages(stack, this.#d.tttInstalled() ? { ...recipe, ttt: true } : recipe, this.#d.platform)).map((s) => s.name);
 		} catch (error) {
 			this.#d.log({ event: "install-plan-failed", detail: firstLineOf((error as Error).message) });
 			return [];
@@ -563,6 +644,8 @@ export class WizardController {
 				...(recipeObj !== undefined ? { recipe: recipeObj } : {}),
 				...(options.force ? { force: true } : {}),
 				...(options.forceStages !== undefined ? { forceStages: options.forceStages } : {}),
+				// Once `ttt` is installed a Repair keeps it in its plan, so it is verified with the rest.
+				...(d.tttInstalled() ? { ttt: true } : {}),
 				...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}),
 			};
 			let end: EngineEnd;
@@ -597,6 +680,41 @@ export class WizardController {
 			crashedIn.add(stage);
 			// The list shows the run again from the stages that are left.
 			this.#progress.begin(this.#plannedStages(active.stack, recipeObj));
+		}
+	}
+
+	/**
+	 * The Linear step's install of `ttt` (spec: Stages `ttt`): the engine runs that one stage while the stack runs (every other stage is left alone, the engine's `only`), and the install page's list is
+	 * not touched. Says whether `ttt` can run now, and the first line of why not.
+	 */
+	async installTtt(): Promise<{ ok: boolean; detail: string }> {
+		const d = this.#d;
+		try {
+			const active = this.#stackNow();
+			const recipeObj = this.#engineRecipe();
+			const proxyEnv = await d.supervisor.engineProxyEnv(this.forges.map((f) => f.host));
+			const config: EngineConfig = {
+				root: d.layout.root,
+				home: d.home,
+				platform: d.platform,
+				stack: active.raw,
+				secretPatterns: d.secretPatterns,
+				...(recipeObj !== undefined ? { recipe: recipeObj } : {}),
+				ttt: true,
+				only: ["ttt"],
+				...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}),
+			};
+			const end = await d.engine.run(config, () => undefined);
+			if (end.kind === "done") {
+				const outcome = end.outcomes.find((o) => o.stage === "ttt");
+				if (end.ok && outcome !== undefined && outcome.status !== "failed" && outcome.status !== "blocked") return { ok: true, detail: "" };
+				return { ok: false, detail: firstLineOf(outcome?.failure?.detail ?? outcome?.failure?.sentence ?? "the ttt stage did not finish") };
+			}
+			if (end.kind === "error") return { ok: false, detail: firstLineOf(end.message) };
+			if (end.kind === "crashed") return { ok: false, detail: "the setup process ended unexpectedly" };
+			return { ok: false, detail: "cancelled" };
+		} catch (error) {
+			return { ok: false, detail: firstLineOf((error as Error).message) };
 		}
 	}
 
@@ -673,7 +791,11 @@ export class WizardController {
 		if (file.done) return;
 		const forges = this.forges;
 		if (file.step === "claude") {
-			this.#save({ later: addLater(file.later, { item: "claude" }), step: forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+			// The CLI's status is being read after a login that ended: Later waits for it, as it does for a forge.
+			if (this.#d.claude.flow.phase === "working") return;
+			// A login that waits (the browser, the code field) ends with the PM's choice.
+			this.#d.claude.cancel();
+			this.#afterClaude(addLater(file.later, { item: "claude" }));
 		} else if (file.step === "hosts") {
 			const forge = forges[file.hostsIndex];
 			// A login that is being finished (glab signing in, the entries being recorded) is not interrupted: Later waits for it (T10R-F001).
@@ -682,7 +804,26 @@ export class WizardController {
 			if (forge !== undefined) this.#d.accounts.cancel(forge.host);
 			this.#advanceHosts(forge === undefined ? null : { item: forge.kind, host: forge.host });
 		} else if (file.step === "linear") {
+			// A key being saved, `ttt` being installed and `ttt init` running are not cut off by Later: the key is saved first, so what stays is never half done.
+			if (LINEAR_BUSY.includes(this.#d.linear.flow.phase)) return;
+			this.#d.linear.reset();
 			this.#save({ later: addLater(file.later, { item: "linear" }), step: "done" });
+		}
+	}
+
+	/** On from Claude: to the first code host, else Linear, else the end. `later` is the list to keep. */
+	#afterClaude(later: LaterItem[]): void {
+		this.#save({ later, step: this.forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+	}
+
+	/** **Next** after the sign-in on screen passed: Claude's status says signed in (step 7), or the Linear key is saved and no setup is running (step 9). */
+	#stepNext(): void {
+		const file = this.#file;
+		if (file.done) return;
+		if (file.step === "claude" && this.#d.claude.state === "signed-in" && !CLAUDE_BUSY.includes(this.#d.claude.flow.phase)) this.#afterClaude(file.later);
+		else if (file.step === "linear" && this.#d.linear.state === "saved" && !LINEAR_BUSY.includes(this.#d.linear.flow.phase)) {
+			this.#d.linear.reset();
+			this.#save({ step: "done" });
 		}
 	}
 

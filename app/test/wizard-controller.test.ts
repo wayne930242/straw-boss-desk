@@ -10,7 +10,7 @@ import { WizardController, type WizardDeps } from "../src/main/wizard/controller
 import type { EngineEnd, EngineHost } from "../src/main/wizard/engine-host.ts";
 import { readWizardFile } from "../src/main/wizard/state-file.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
-import { FakeAccounts } from "./harness/fake-accounts.ts";
+import { FakeAccounts, FakeClaude, FakeLinear } from "./harness/fake-accounts.ts";
 
 // The wizard's step machine (task 9): the steps in order, what is written and when, the refusals, the resume of an install, an engine that crashes, and the sign-in placeholders.
 
@@ -53,6 +53,8 @@ function make(options: MakeOptions = {}) {
 	const layout = testLayout(made.root);
 	const engine = new FakeEngine();
 	const accounts = new FakeAccounts();
+	const claude = new FakeClaude();
+	const linear = new FakeLinear();
 	const log: Array<Record<string, unknown>> = [];
 	let starts = 0;
 	const deps: WizardDeps = {
@@ -79,6 +81,9 @@ function make(options: MakeOptions = {}) {
 			repairLock: () => undefined,
 		},
 		accounts,
+		claude,
+		linear,
+		tttInstalled: () => false,
 		osLocale: () => "en",
 		pickRecipeFile: async () => null,
 		pickFolder: async () => null,
@@ -89,7 +94,7 @@ function make(options: MakeOptions = {}) {
 		...options.pick,
 	};
 	const controller = new WizardController(deps);
-	return { controller, layout, engine, accounts, deps, base: made.base, log, starts: () => starts };
+	return { controller, layout, engine, accounts, claude, linear, deps, base: made.base, log, starts: () => starts };
 }
 
 const recipeFiles = (layout: { recipe: string }): string[] => (existsSync(layout.recipe) ? readdirSync(layout.recipe) : []);
@@ -562,5 +567,113 @@ describe("the interface language", () => {
 		assert.equal(w.controller.locale, "zh-TW");
 		assert.equal(w.controller.view().locale, "zh-TW");
 		assert.ok(asked >= 1);
+	});
+});
+
+describe("steps 7 and 9: Claude and Linear (task 11)", () => {
+	// One code host (github.com) sits between Claude and Linear.
+	async function atClaude() {
+		const w = make();
+		await w.controller.act({ type: "welcome-next" });
+		await w.controller.act({ type: "no-recipe", github: true, gitlabHost: "" });
+		await w.controller.act({ type: "folder-next" });
+		assert.equal(w.controller.step, "claude");
+		return w;
+	}
+
+	it("opening the Claude step reads the CLI's status once; a later redraw does not read it again", async () => {
+		const w = await atClaude();
+		await new Promise((r) => setImmediate(r));
+		assert.equal(w.claude.refreshes, 1);
+		await w.controller.act({ type: "rescan" });
+		assert.equal(w.claude.refreshes, 1, "the state is known now");
+	});
+
+	it("Next moves on only when the CLI's status says signed in, and does not put Claude off; Later puts it off and ends a login that waits", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "step-next" });
+		assert.equal(c.step, "claude", "not signed in: Next does nothing");
+		w.claude.set({ phase: "browser", url: null, codeAsked: false, codeSent: false }, "not-signed-in");
+		w.claude.signedIn();
+		await c.act({ type: "step-next" });
+		assert.equal(c.step, "claude", "a login still under way is not skipped past");
+		w.claude.set({ phase: "done" }, "signed-in");
+		await c.act({ type: "step-next" });
+		assert.equal(c.step, "hosts", "on to the code hosts");
+		assert.deepEqual(c.later, [], "nothing was put off");
+
+		const later = await atClaude();
+		later.claude.set({ phase: "browser", url: "https://claude.ai/x", codeAsked: true, codeSent: false }, "not-signed-in");
+		await later.controller.act({ type: "later" });
+		assert.equal(later.claude.cancels, 1, "the login that waited ended with the choice");
+		assert.deepEqual(later.controller.later, [{ item: "claude" }]);
+	});
+
+	it("Later waits while the CLI's status is read after a login ended", async () => {
+		const w = await atClaude();
+		w.claude.set({ phase: "working" }, "not-signed-in");
+		await w.controller.act({ type: "later" });
+		assert.equal(w.controller.step, "claude");
+		assert.equal(w.claude.cancels, 0);
+	});
+
+	it("a Claude sign-in that is done takes Claude off the list of those put off", async () => {
+		const w = await atClaude();
+		await w.controller.act({ type: "later" });
+		assert.deepEqual(w.controller.later, [{ item: "claude" }]);
+		w.claude.signedIn();
+		assert.deepEqual(w.controller.later, []);
+	});
+
+	it("the Linear step: Next needs a saved key and no setup running; Later puts Linear off and resets the screen; a saved key takes it off the list", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "later" });
+		await c.act({ type: "later" });
+		assert.equal(c.step, "linear");
+		await c.act({ type: "step-next" });
+		assert.equal(c.step, "linear", "no key saved");
+		w.linear.set({ phase: "initializing" }, "saved");
+		await c.act({ type: "step-next" });
+		await c.act({ type: "later" });
+		assert.equal(c.step, "linear", "a setup under way is neither skipped nor cut off");
+		w.linear.set({ phase: "done", initialized: "ran" }, "saved");
+		await c.act({ type: "step-next" });
+		assert.equal(c.step, "done");
+		assert.equal(w.linear.resets, 1);
+		assert.deepEqual(c.later, [{ item: "claude" }, { item: "github", host: "github.com" }]);
+
+		const off = await atClaude();
+		for (let i = 0; i < 3; i++) await off.controller.act({ type: "later" });
+		assert.deepEqual(off.controller.later.map((l) => l.item), ["claude", "github", "linear"]);
+		off.linear.saved();
+		assert.deepEqual(off.controller.later.map((l) => l.item), ["claude", "github"]);
+	});
+
+	it("account actions are checked: a malformed one is dropped, a Linear one is dropped where Linear is not offered, a Claude one reaches the sign-in", async () => {
+		const w = await atClaude();
+		await w.controller.accountAction({ type: "claude-code", code: 5 } as never);
+		await w.controller.accountAction({ type: "nonsense" } as never);
+		assert.deepEqual(w.claude.actions, []);
+		await w.controller.accountAction({ type: "claude-start" });
+		assert.deepEqual(w.claude.actions, [{ type: "claude-start" }]);
+		await w.controller.accountAction({ type: "linear-save", key: "lin_api_DUMMYDUMMY1234" });
+		assert.equal(w.linear.actions.length, 1, "Linear is offered without a recipe");
+	});
+
+	it("installTtt runs the engine with only the ttt stage, and says why when it fails", async () => {
+		const w = await atClaude();
+		w.engine.scripts.push(() => ({ kind: "done" as const, ok: true, outcomes: [okOutcome("ttt")] }));
+		assert.deepEqual(await w.controller.installTtt(), { ok: true, detail: "" });
+		const config = w.engine.configs.at(-1) as EngineConfig;
+		assert.deepEqual(config.only, ["ttt"]);
+		assert.equal(config.ttt, true);
+		w.engine.scripts.push(() => ({ kind: "done" as const, ok: false, outcomes: [{ ...okOutcome("ttt"), status: "failed" as const, failure: { stage: "ttt", category: "network" as const, sentence: "npm could not reach the registry", detail: "ENOTFOUND", params: {} } }] }));
+		const failed = await w.controller.installTtt();
+		assert.equal(failed.ok, false);
+		assert.match(failed.detail, /registry|ENOTFOUND/);
+		w.engine.scripts.push(() => ({ kind: "error" as const, name: "Error", message: "engine exploded\nstack", details: [] }));
+		assert.deepEqual(await w.controller.installTtt(), { ok: false, detail: "engine exploded" });
 	});
 });

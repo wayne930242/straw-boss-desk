@@ -15,6 +15,7 @@ import { FORGE_LAUNCHERS, LAUNCHER_UNSET, cmdLauncher, everyLauncherName, launch
 import { pathFiles, pathsCmd, pathsSh, type PathVersions } from "../src/main/bootstrap/stages/path-files.ts";
 import { gitHelpersStage, helperCommand, helpersBody, launchersStage, toolPathsStage } from "../src/main/bootstrap/stages/paths-launchers.ts";
 import { enabledTools, toolStages } from "../src/main/bootstrap/stages/index.ts";
+import { onlyStages } from "../src/main/bootstrap/engine.ts";
 import { GIT_BASE_BLOCK, OPTIONAL_TOOLS, ZDOTDIR_TEXT, dugiteEnv, expectedGitVersion, herdrConfigText, optionalToolStage } from "../src/main/bootstrap/stages/tools.ts";
 import { MIN_FREE_BYTES, downloadHosts, preflightStage, privateHostSentence, reachKindOf } from "../src/main/bootstrap/stages/preflight.ts";
 import { MACHINE_BUN_SENTENCE, type PaneFindings } from "../src/main/pane-path.ts";
@@ -127,6 +128,20 @@ describe("the recipe's tools reach the engine (FE2R-F003)", () => {
 		const paths = toolStages(stack, { forges: [{ kind: "github", host: "github.com" }], tools: ["bun"] }, "darwin").find((s) => s.name === "tool-paths");
 		assert.deepEqual([...(paths?.needs ?? [])].sort(), ["gh", "git", "herdr", "node", "opt:bun"]);
 		assert.throws(() => toolStages(stack, { forges: [], tools: ["deno"] }, "darwin"), StackError);
+	});
+
+	it("the ttt stage is planned only when the Linear step asks, after pi, and a run can be narrowed to it (task 11)", () => {
+		const names = (recipe: Parameters<typeof toolStages>[1]): string[] => toolStages(stack, recipe, "darwin").map((s) => s.name);
+		assert.equal(names(NO_RECIPE).includes("ttt"), false, "not in the first install");
+		const asked = toolStages(stack, { ...NO_RECIPE, ttt: true }, "darwin");
+		const ttt = asked.find((s) => s.name === "ttt");
+		assert.deepEqual([...(ttt?.needs ?? [])], ["pi"]);
+		const only = onlyStages(asked, ["ttt"]);
+		assert.deepEqual(only.map((s) => s.name), ["ttt"]);
+		assert.deepEqual([...(only[0]?.needs ?? [])], [], "the needs outside the run are taken as met");
+		assert.deepEqual(onlyStages(asked, undefined).map((s) => s.name), asked.map((s) => s.name));
+		assert.throws(() => onlyStages(asked, ["tttt"]), /does not have: tttt/);
+		assert.throws(() => onlyStages(toolStages(stack, NO_RECIPE, "darwin"), ["ttt"]), /does not have: ttt/, "a typo or a missing stage never turns into an empty run that succeeds");
 	});
 
 	it("every stage but preflight needs something that leads to it, and the graph orders", () => {

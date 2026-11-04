@@ -54,6 +54,28 @@ export function announcementParts(ctx: Ctx): string[] {
 			else if (flow.phase === "done") parts.push(ctx.tr("forge.done", { host }));
 			break;
 		}
+		case "claude": {
+			const flow = view.claude.flow;
+			// The browser, a problem and the outcome each speak once; the address and the code are on the page, not read out.
+			if (flow.phase === "browser") parts.push(ctx.tr("claude.browser"));
+			else if (flow.phase === "failed") parts.push(ctx.tr("claude.failed"));
+			else if (flow.phase === "timeout") parts.push(ctx.tr("claude.timeout"));
+			else if (flow.phase === "unverified") parts.push(ctx.tr("claude.unverified"));
+			else if (flow.phase === "done" || (flow.phase === "idle" && view.claude.state === "signed-in")) parts.push(ctx.tr("claude.done"));
+			break;
+		}
+		case "linear": {
+			const { flow, restart } = view.linear;
+			if (flow.phase === "refused" || (!view.linear.encryption && flow.phase === "idle")) parts.push(ctx.tr("linear.refused"));
+			else if (flow.phase === "invalid") parts.push(ctx.tr("linear.invalid"));
+			else if (flow.phase === "save-failed") parts.push(ctx.tr("linear.saveFailed"));
+			else if (flow.phase === "setup-failed") parts.push(ctx.tr("linear.setupFailed"));
+			else if (flow.phase === "done") parts.push(ctx.tr(flow.initialized === "kept" ? "linear.doneKept" : "linear.done"));
+			if (restart.phase === "offer") parts.push(ctx.tr(restart.change === "saved" ? "linear.restart.savedLead" : "linear.restart.removedLead"));
+			else if (restart.phase === "restarted") parts.push(ctx.tr("linear.restart.restarted"));
+			else if (restart.phase === "failed") parts.push(ctx.tr("linear.restart.failed"));
+			break;
+		}
 		default:
 	}
 	return parts;

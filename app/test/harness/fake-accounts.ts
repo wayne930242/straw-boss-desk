@@ -1,6 +1,6 @@
-import type { ForgeAction, ForgeFlow, ForgeView } from "../../src/shared/accounts.ts";
+import type { ClaudeAction, ClaudeFlow, ClaudeState, ClaudeView, ForgeAction, ForgeFlow, ForgeView, LinearAction, LinearFlow, LinearState, LinearView } from "../../src/shared/accounts.ts";
 import type { Forge } from "../../src/shared/wizard.ts";
-import type { WizardAccounts } from "../../src/main/wizard/controller.ts";
+import type { WizardAccounts, WizardClaude, WizardLinear } from "../../src/main/wizard/controller.ts";
 
 /** The controller's view of the code-host sign-in, scripted by a test: it records what the controller asked and lets the test set a host's flow. */
 export class FakeAccounts implements WizardAccounts {
@@ -43,5 +43,88 @@ export class FakeAccounts implements WizardAccounts {
 	}
 	signedIn(kind: Forge["kind"], host: string): void {
 		for (const l of this.#signedIn) l(kind, host);
+	}
+}
+
+/** The controller's view of the Claude sign-in, scripted by a test. */
+export class FakeClaude implements WizardClaude {
+	flow: ClaudeFlow = { phase: "idle" };
+	state: ClaudeState = "unknown";
+	readonly actions: ClaudeAction[] = [];
+	cancels = 0;
+	refreshes = 0;
+	/** What `refresh` leaves the state at (default not signed in). */
+	afterRefresh: ClaudeState = "not-signed-in";
+	readonly #changed = new Set<() => void>();
+	readonly #signedIn = new Set<() => void>();
+	view(): ClaudeView {
+		return { state: this.state, storage: "keychain", flow: this.flow };
+	}
+	async act(action: ClaudeAction): Promise<void> {
+		this.actions.push(action);
+	}
+	cancel(): void {
+		this.cancels++;
+	}
+	async refresh(): Promise<void> {
+		this.refreshes++;
+		this.state = this.afterRefresh;
+		this.set(this.flow);
+	}
+	onChange(listener: () => void): () => void {
+		this.#changed.add(listener);
+		return () => this.#changed.delete(listener);
+	}
+	onSignedIn(listener: () => void): () => void {
+		this.#signedIn.add(listener);
+		return () => this.#signedIn.delete(listener);
+	}
+	set(flow: ClaudeFlow, state: ClaudeState = this.state): void {
+		this.flow = flow;
+		this.state = state;
+		for (const l of this.#changed) l();
+	}
+	signedIn(): void {
+		this.state = "signed-in";
+		for (const l of this.#signedIn) l();
+	}
+}
+
+/** The controller's view of the Linear key, scripted by a test. */
+export class FakeLinear implements WizardLinear {
+	flow: LinearFlow = { phase: "idle" };
+	state: LinearState = "not-saved";
+	restart: LinearView["restart"] = { phase: "none" };
+	encryption = true;
+	readonly actions: LinearAction[] = [];
+	resets = 0;
+	readonly #changed = new Set<() => void>();
+	readonly #saved = new Set<() => void>();
+	view(): LinearView {
+		return { state: this.state, flow: this.flow, restart: this.restart, encryption: this.encryption };
+	}
+	async act(action: LinearAction): Promise<void> {
+		this.actions.push(action);
+	}
+	reset(): void {
+		this.resets++;
+		this.set({ phase: "idle" });
+	}
+	onChange(listener: () => void): () => void {
+		this.#changed.add(listener);
+		return () => this.#changed.delete(listener);
+	}
+	onSaved(listener: () => void): () => void {
+		this.#saved.add(listener);
+		return () => this.#saved.delete(listener);
+	}
+	set(flow: LinearFlow, state: LinearState = this.state): void {
+		this.flow = flow;
+		this.state = state;
+		for (const l of this.#changed) l();
+	}
+	saved(): void {
+		this.state = "saved";
+		for (const l of this.#saved) l();
 	}
 }

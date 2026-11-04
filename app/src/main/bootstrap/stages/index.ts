@@ -6,7 +6,7 @@ import type { Stage } from "../stage.ts";
 import { launchersStage, gitHelpersStage, toolPathsStage } from "./paths-launchers.ts";
 import type { EnabledTools } from "./path-files.ts";
 import { piShimStage } from "./pi-shim.ts";
-import { piStage } from "./pi.ts";
+import { npmGlobalStage, piStage } from "./pi.ts";
 import { preflightStage, type PreflightOptions } from "./preflight.ts";
 import { profileStages } from "./profile.ts";
 import { fdRgStage, ghStage, gitStage, glabStage, herdrStage, nodeStage, optionalToolStage } from "./tools.ts";
@@ -47,6 +47,8 @@ export function toolStages(stack: Stack, recipe: EngineRecipe, platform: AppPlat
 		launchersStage(platform, enabled, optionalToolNames(stack)),
 		gitHelpersStage(platform, recipe.forges),
 		piStage(platform, options.npm),
+		// `ttt` is the Linear client: it installs when the Linear step asks (the PM saved a key), never in the first install (spec: Stages).
+		...(recipe.ttt === true ? [npmGlobalStage({ name: "ttt", needs: ["pi"], ...(options.npm ? { npm: options.npm } : {}) })] : []),
 		...(platform === "win32" ? [piShimStage(enabled, optionalToolNames(stack))] : []),
 	];
 }

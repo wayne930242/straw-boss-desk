@@ -47,6 +47,10 @@ export interface EngineConfig {
 	recipe?: unknown;
 	/** The variables main resolved from the OS proxy setting (`resolveOsProxy`), handed to every child the engine starts. */
 	proxyEnv?: Record<string, string>;
+	/** Adds the `ttt` stage (the Linear client; spec: Stages). Only the Linear step and a Repair after it ask. */
+	ttt?: boolean;
+	/** Runs only these stages (a stage's `needs` outside the list are taken as met): the Linear step installs `ttt` while the stack runs and must not touch another stage. */
+	only?: string[];
 }
 
 /** Engine to main. */
@@ -97,6 +101,19 @@ export class EngineBusyError extends Error {
 
 export interface Engine {
 	handle(request: EngineRequest): Promise<void>;
+}
+
+/**
+ * `stages` narrowed to the names in `only`, in their order, with every `needs` entry outside the list dropped (the caller says those are met). Throws when a name is not planned, so a typo
+ * can never turn into an empty run that reports success.
+ */
+export function onlyStages(stages: readonly Stage[], only: readonly string[] | undefined): Stage[] {
+	if (only === undefined) return [...stages];
+	const names = new Set(stages.map((s) => s.name));
+	const missing = only.filter((n) => !names.has(n));
+	if (missing.length > 0) throw new Error(`the run names stages this plan does not have: ${missing.join(", ")}`);
+	const keep = new Set(only);
+	return stages.filter((s) => keep.has(s.name)).map((s) => ({ ...s, needs: s.needs.filter((n) => keep.has(n)) }));
 }
 
 export function createEngine(deps: EngineDeps): Engine {
@@ -150,7 +167,8 @@ export function createEngine(deps: EngineDeps): Engine {
 			const key = platformKey(process.platform, process.arch);
 			const state = new StateStore(layout, { onQuarantine: (file, moved) => logger.event({ event: "state-quarantined", file, moved }) });
 			const recipe = engineRecipeOf(config.recipe, stack);
-			const stages = (deps.stages ?? allStages)(stack, recipe, layout.platform);
+			const planned = (deps.stages ?? allStages)(stack, config.ttt === true ? { ...recipe, ttt: true } : recipe, layout.platform);
+			const stages = onlyStages(planned, config.only);
 			logger.event({ event: "run-begin", stages: stages.map((s) => s.name), generation: stack.generation, force: config.force === true, forges: recipe.forges.map((f) => `${f.kind}:${f.host}`), tools: recipe.tools });
 			const swept = sweepLeftovers(layout);
 			if (swept.removed.length > 0 || swept.restored.length > 0 || swept.kept.length > 0) logger.event({ event: "swept", removed: swept.removed, restored: swept.restored, kept: swept.kept });

@@ -28,6 +28,8 @@ export interface EngineRecipe {
 	tools: string[];
 	/** Absent before a recipe is chosen, and for a caller that only needs the forges and tools. */
 	team?: EngineTeam;
+	/** True when the Linear step asked for `ttt` (spec: Stages `ttt`: installed when the PM saves a Linear key, not in the first install). Not part of any recipe; the engine's caller sets it. */
+	ttt?: boolean;
 }
 
 /** The engine's recipe before any recipe is chosen (the welcome screen's preflight; "I have no recipe"): no forges and no optional tools. */

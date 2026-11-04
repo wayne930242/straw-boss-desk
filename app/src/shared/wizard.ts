@@ -1,4 +1,4 @@
-import type { ForgeAction, ForgeView } from "./accounts.ts";
+import type { AccountAction, ClaudeView, ForgeView, LinearView } from "./accounts.ts";
 import type { Locale } from "./locale.ts";
 import type { ShellFailure } from "./shell-state.ts";
 
@@ -113,6 +113,10 @@ export interface WizardView {
 	start: { status: "idle" | "starting" | "failed"; failure: ShellFailure | null };
 	/** The forges the hosts step walks through, the one it is at, and where its sign-in stands (null outside the step or without a forge). */
 	hosts: { forges: Forge[]; index: number; current: ForgeView | null };
+	/** Step 7: where Claude's sign-in stands. */
+	claude: ClaudeView;
+	/** Step 9: the Linear key, and the setup after it. */
+	linear: LinearView;
 	linearOffered: boolean;
 	later: LaterItem[];
 }
@@ -137,8 +141,10 @@ export type WizardAction =
 	| { type: "later" }
 	/** The sign-in of the forge on screen passed: on to the next step without putting it off. */
 	| { type: "hosts-next" }
+	/** Claude is signed in (step 7) or the Linear key is saved (step 9): on to the next step without putting it off. */
+	| { type: "step-next" }
 	| { type: "finish" }
-	| ForgeAction;
+	| AccountAction;
 
 export const SETTINGS_SECTIONS = ["accounts", "recipe", "guidance", "updates", "computer", "diagnostics"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
@@ -152,9 +158,12 @@ export interface SettingsView {
 	later: LaterItem[];
 	/** The recipe's forges (the wizard's "I have no recipe" choice included) with the state of each sign-in. */
 	forges: ForgeView[];
+	claude: ClaudeView;
+	/** Null when Linear is not offered (a recipe that turns it off) and no key is saved. */
+	linear: LinearView | null;
 	recipe: RecipeSummary | null;
 	appVersion: string;
 	dev: boolean;
 }
 
-export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | ForgeAction;
+export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | AccountAction;

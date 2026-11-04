@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, Menu, powerMonitor, session, shell, utilityProcess } from "electron";
+import { app, clipboard, dialog, Menu, powerMonitor, safeStorage, session, shell, utilityProcess } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,6 +28,12 @@ import { Supervisor } from "./runtime/supervisor.ts";
 import { isInstalled, readInstalled } from "./runtime/readiness.ts";
 import { ForgeAccounts } from "./accounts/session.ts";
 import { spawnLogin } from "./accounts/cli.ts";
+import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
+import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
+import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
+import { platformKey } from "./bootstrap/stack.ts";
+import { StateStore } from "./bootstrap/state.ts";
+import { loadActiveStack } from "./wizard/stack-source.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
 
 // The lifecycle: single instance, Chromium's profile inside the app data root, one window holding the two views the design needs, the GUI view (pi-straw-boss) and the shell
@@ -87,6 +93,8 @@ const supervisor = new Supervisor({
 	isOurEngine: (pid) => engineHost.pid === pid,
 	// What a pane's `bash` would resolve to, at every start (the WSL notice).
 	...(paneCheck === undefined ? {} : { checkPane: paneCheck }),
+	// The Linear key, decrypted at each start for the Herdr server's environment only (`linear` is built below; a start runs after the module has loaded).
+	linearKey: () => linear.read(),
 });
 
 let desk: DeskWindow | undefined;
@@ -109,6 +117,74 @@ const accounts = new ForgeAccounts({
 	writeClipboard: (text) => clipboard.writeText(text),
 });
 
+/** The active tool versions, or null before the install is complete. */
+const installedTools = () => {
+	const found = readInstalled(layout);
+	return isInstalled(found) ? found.current : null;
+};
+
+// Main's redactors hide a value that main holds in flight (the Claude code, the Linear key) by exact match, in both of its logs.
+const holdSecret = (value: string): void => {
+	runtimeLog.redactor.add(value);
+	shellLog.redactor.add(value);
+};
+const releaseSecret = (value: string): void => {
+	runtimeLog.redactor.remove(value);
+	shellLog.redactor.remove(value);
+};
+
+// The Claude sign-in (task 11): `claude auth login` of the Agent SDK's bundled executable with the app's own `CLAUDE_CONFIG_DIR`. A development build answers the e2e's stand-in (`SBD_TEST_CLAUDE_CMD`).
+const claudeCommand = (): ClaudeCommand | null => {
+	const stub = identity.kind === "dev" ? testClaudeCommand(process.env) : null;
+	if (stub !== null) return stub;
+	const found = locateClaude(agentModules(layout), platformKey(process.platform, process.arch));
+	return found === null ? null : { file: found.exe, args: [] };
+};
+const claude = new ClaudeAccounts({
+	layout,
+	run,
+	spawn: spawnClaude,
+	appEnv: process.env,
+	current: installedTools,
+	command: claudeCommand,
+	proxyEnv: () => supervisor.engineProxyEnv([]),
+	log: (fields) => shellLog.event(fields),
+	// The address is the one the CLI printed, and only an https one is kept (`accounts/claude.ts`).
+	openExternal: (url) => void shell.openExternal(url),
+	writeClipboard: (text) => clipboard.writeText(text),
+	hold: holdSecret,
+	release: releaseSecret,
+});
+
+// The Linear key (task 11): encrypted with `safeStorage` into `secrets/linear.bin`, then `ttt` and `ttt init`. `isEncryptionAvailable` is asked at each use; a development build can be told it is false
+// (`SBD_TEST_NO_ENCRYPTION=1`, as it is told the WSL bash and the stand-in `claude`), so the refusal is proved where the OS can encrypt. A release build never reads the variable.
+const linear = new LinearAccounts({
+	layout,
+	box: { available: () => !(identity.kind === "dev" && process.env.SBD_TEST_NO_ENCRYPTION === "1") && safeStorage.isEncryptionAvailable(), encrypt: (text) => safeStorage.encryptString(text), decrypt: (blob) => safeStorage.decryptString(blob) },
+	run,
+	appEnv: process.env,
+	current: installedTools,
+	ttt: () => {
+		const current = installedTools();
+		if (current === null) return null;
+		try {
+			return tttCommand(layout, current, loadActiveStack(layout, join(assetsDir, "stack.json")).stack);
+		} catch {
+			return null;
+		}
+	},
+	installTtt: () => wizard.installTtt(),
+	workFolder: () => loadStartConfig(layout, home).workFolder,
+	stackRunning: () => supervisor.state === "running",
+	// Herdr's environment is fixed for its lifetime: the stack stops and starts again, and the new start reads the key.
+	restartStack: () => supervisor.withStackStopped(async () => undefined),
+	proxyEnv: () => supervisor.engineProxyEnv([]),
+	log: (fields) => shellLog.event(fields),
+	openExternal: (url) => void shell.openExternal(url),
+	hold: holdSecret,
+	release: releaseSecret,
+});
+
 /** The most a recipe file is read for: the validator's own limit is 256 KB, so a bigger file is handed over empty and refused by the validator (`too-large` is not reached; `invalid-json` is). */
 const MAX_RECIPE_READ = 300 * 1024;
 
@@ -123,6 +199,9 @@ const wizard = new WizardController({
 	engine: engineHost,
 	supervisor,
 	accounts,
+	claude,
+	linear,
+	tttInstalled: () => new StateStore(layout).record("ttt")?.status === "ok",
 	// A function: `app.getLocale()` answers the default (en-US) before the app is ready, and the controller is built at module load.
 	osLocale: () => pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
 	pickRecipeFile: async () => {
@@ -155,7 +234,7 @@ function refreshNotices(): void {
 
 function settingsView(section: SettingsSection): SettingsView {
 	const recipe = wizard.recipe;
-	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
+	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
@@ -244,7 +323,9 @@ function stopThenExit(code: (ok: boolean) => number): void {
 	supervisor.beginQuit();
 	// A device-code login that waits ends with the app; one that is being finished (glab signing in, the entries being recorded) is waited for, so the login is recorded and never lost.
 	accounts.dispose();
-	Promise.all([accounts.settled().catch(() => undefined), engineHost.dispose().catch(() => undefined)])
+	claude.dispose();
+	linear.dispose();
+	Promise.all([accounts.settled().catch(() => undefined), claude.settled().catch(() => undefined), linear.settled().catch(() => undefined), engineHost.dispose().catch(() => undefined)])
 		.then(() => supervisor.stop())
 		.then((report) => {
 			runtimeLog.event({ event: "quit-stop", ok: report.ok, leftovers: report.leftovers.length });
@@ -303,10 +384,12 @@ if (!app.requestSingleInstanceLock()) {
 			wizardView: () => wizard.view(),
 			onWizardAction: (action) => wizard.act(action),
 			settingsView,
-			onForgeAction: (action) => wizard.forgeAction(action),
-			// Settings' Accounts rows show what the store holds now, not what it held when the app started.
+			onAccountAction: (action) => wizard.accountAction(action),
+			// Settings' Accounts rows show what the store and the CLIs hold now, not what they held when the app started.
 			onSettingsShown: (section) => {
-				if (section === "accounts") void accounts.refresh(wizard.forges).catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
+				if (section !== "accounts") return;
+				void accounts.refresh(wizard.forges).catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
+				void claude.refresh().catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
 			},
 			onSessionEnd: () => supervisor.stopForSessionEnd(),
 			log: (fields) => runtimeLog.event(fields),
