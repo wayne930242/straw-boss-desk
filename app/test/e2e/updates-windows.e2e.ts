@@ -246,7 +246,14 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		// The old program quits; the installer replaces the files; 0.0.2 starts by itself (`--force-run`).
 		await until("0.0.2 installed", 300_000, () => installedVersion() === "0.0.2");
 		await until("the new program to run from the install folder", 300_000, async () => (await platform.processes.listUnder(installDir)).length > 0);
+		// The installer starts 0.0.2 through the shell of the signed-in user, which hands it none of this process's environment: that copy runs on the default root, not on the world's. It is
+		// stopped, and 0.0.2 is started again by the test with the world's environment, on the root whose stack the update stopped.
+		const autostarted = await platform.processes.listUnder(installDir);
+		for (const p of autostarted) platform.processes.kill(p.pid);
+		await until("the autostarted 0.0.2 to be gone", 120_000, async () => (await platform.processes.listUnder(installDir)).length === 0);
+		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
 		await until("the stack back under 0.0.2", 300_000, async () => (await guiUp()) && startRecord().sb?.pid !== before.sb?.pid);
+		assert.equal(await (app as ElectronApplication).evaluate(({ app: electronApp }) => electronApp.getVersion()), "0.0.2");
 		assert.equal(existsSync(world.layout.state), true, "the data root is kept");
 		const log = readFileSync(join(world.layout.logs, "start.jsonl"), "utf8");
 		assert.match(log, /"event":"update-stop"/);

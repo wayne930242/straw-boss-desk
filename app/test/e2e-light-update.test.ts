@@ -25,27 +25,34 @@ const ALT_GIT_VERSION = isWindows ? ALT_GIT_VERSION_WIN : ALT_GIT_VERSION_MAC;
 const generationOf = realStack.generation as number;
 const PI_VERSION = (realStack.npmGlobal as Array<{ version: string }>)[0]?.version as string;
 
+/** The last line a pane writes: the file is read once it is there, not at its first byte (pi starts slowly). */
+const PANE_DONE = "PANE-DONE";
+
 /**
  * What a new pane prints for the four tools: their versions, and where Git's own programs are (the one line that differs between two macOS Git builds of the same release).
  * On Windows a pane's PATH is the registry's, machine entries first, and the hosted runner has its own Node, Git and gh there: the pane runs a small script that does what the shims and
  * launchers do (`gh.cmd`, then `paths.cmd` and its `SBD_PATH` in front), so what it prints is what the app's files name. `pi` is found by name through `tools\shims`, as a PM's pane does.
  */
-function paneCommand(world: World, script: string, out: string): string {
+function paneCommand(script: string, out: string): string {
 	if (isWindows) return `cmd /d /c "${script} > ${out} 2>&1"`;
-	return `{ gh --version; git --version; git --exec-path; node --version; pi --version; } > '${out}' 2>&1`;
+	return `{ gh --version; git --version; git --exec-path; node --version; pi --version; echo ${PANE_DONE}; } > '${out}' 2>&1`;
 }
 
-function windowsPaneScript(world: World): string {
+function windowsPaneScript(): string {
+	// ASCII only: the root of a Windows world has CJK characters, which cmd would read from a UTF-8 file as other characters. The pane's own environment names the root.
 	return [
 		"@echo off",
-		`call "${join(world.layout.tools.bin, "gh.cmd")}" --version`,
-		`set "SBD_APP_ROOT=${world.root}"`,
-		`call "${join(world.layout.tools.bin, "paths.cmd")}"`,
+		'set "SBD_APP_ROOT=%STRAW_BOSS_DESK_ROOT%"',
+		'pushd "%SBD_APP_ROOT%\\tools\\bin"',
+		'call ".\\paths.cmd"',
+		'call ".\\gh.cmd" --version',
+		"popd",
 		'set "PATH=%SBD_PATH%;%PATH%"',
 		"node --version",
 		"git --version",
 		"git --exec-path",
 		"pi --version",
+		`echo ${PANE_DONE}`,
 		"",
 	].join("\r\n");
 }
@@ -66,7 +73,7 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 	const pathsText = (name: string): string => readFileSync(join(world.layout.tools.bin, name), "utf8");
 	const pathFiles = isWindows ? ["paths.sh", "paths.cmd"] : ["paths.sh"];
 	let paneScript = "";
-	const pane = (label: string): Promise<string> => herdr.inPane(label, (out) => paneCommand(world, paneScript, out), world.home, 90_000);
+	const pane = (label: string): Promise<string> => herdr.inPane(label, (out) => paneCommand(paneScript, out), world.home, 90_000, PANE_DONE);
 
 	before(async () => {
 		world = createWorld("u");
@@ -79,7 +86,7 @@ describe("a stack update against the real tools (e2e-light, task 13)", { skip: o
 		herdr = new WorldHerdr(world);
 		await herdr.start();
 		paneScript = join(world.base, "pane-tools.cmd");
-		if (isWindows) writeFileSync(paneScript, windowsPaneScript(world));
+		if (isWindows) writeFileSync(paneScript, windowsPaneScript());
 		updater = new StackUpdater({
 			layout: world.layout,
 			shellVersion: "0.0.1",
