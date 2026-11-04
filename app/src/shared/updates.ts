@@ -44,9 +44,22 @@ export type StackUpdateState =
 	| { phase: "rolled-back"; generation: number; stage: string; category: string; restored: boolean; at: string }
 	/** `generation`, `minShell` and `tools` are filled for the reasons that name them. */
 	| { phase: "refused"; reason: StackRefusal; generation?: number; minShell?: string; tools?: string[] }
-	| { phase: "error"; kind: "network" | "other"; detail: string };
+	/** `kind` picks the sentence the page words; `detail` is the raw first line of the error, shown under Details and never as the sentence. `busy`: a program still runs from the tools folder, or another run is active. */
+	| { phase: "error"; kind: "network" | "busy" | "other"; detail: string };
 
-export type ShellRefusal = "bad-signature" | "no-signature" | "malformed-signature" | "no-keys" | "bad-key-list" | "too-large";
+export type ShellRefusal =
+	| "bad-signature"
+	| "no-signature"
+	| "malformed-signature"
+	| "no-keys"
+	| "bad-key-list"
+	| "too-large"
+	/** The signed manifest is not the one for this file: another kind, another file name, or another version than the feed announced. */
+	| "bad-manifest"
+	/** The signed version is not above the running app's. */
+	| "not-newer"
+	/** The file is not the one the manifest signs. */
+	| "hash-mismatch";
 
 export type ShellUpdateState =
 	/** This build checks nothing: no feed is configured. */
@@ -56,8 +69,8 @@ export type ShellUpdateState =
 	/** macOS: a newer version exists; **Download the new version** fetches it. */
 	| { phase: "available"; version: string }
 	| { phase: "downloading"; version: string; percent: number | null }
-	/** Windows: the installer is downloaded and the signature checked; **Restart to update** is offered. */
-	| { phase: "ready"; version: string }
+	/** Windows: the installer is downloaded and the signature checked; **Restart to update** is offered. `installFailed` is the raw reason when the last try could not start the installer (the stack was started again). */
+	| { phase: "ready"; version: string; installFailed?: string }
 	/** macOS: the dmg is downloaded, checked and shown in its folder. `folder` is the folder's name for the sentence. */
 	| { phase: "downloaded"; version: string; file: string }
 	| { phase: "refused"; version: string; reason: ShellRefusal }

@@ -5,6 +5,7 @@ import { after, describe, it } from "node:test";
 import { validateRecipe } from "../../recipe/validate.mjs";
 import type { EngineConfig, EngineEvent } from "../src/main/bootstrap/engine.ts";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
+import { parseStack } from "../src/main/bootstrap/stack.ts";
 import { StartFailureError } from "../src/main/runtime/failure.ts";
 import { WizardController, type WizardDeps } from "../src/main/wizard/controller.ts";
 import type { EngineEnd, EngineHost } from "../src/main/wizard/engine-host.ts";
@@ -91,6 +92,27 @@ function make(options: MakeOptions = {}) {
 	const controller = new WizardController(deps);
 	return { controller, layout, engine, accounts, deps, base: made.base, log, starts: () => starts };
 }
+
+describe("recipeAgainst (task 13)", () => {
+	it("validates the recipe on disk against the stack it is given, not the one the wizard holds", () => {
+		const { controller, layout, deps } = make();
+		mkdirSync(layout.recipe, { recursive: true });
+		writeFileSync(join(layout.recipe, "team.json"), example("team.strawboss.json"));
+		const held = controller.recipe;
+		assert.notEqual(held, null, "the example validates against the bundled stack");
+		const tools = held?.tools ?? [];
+		const bundled = JSON.parse(readFileSync(deps.bundledStack, "utf8"));
+		const without = parseStack({ ...bundled, optionalTools: Object.fromEntries(Object.entries(bundled.optionalTools).filter(([name]) => !tools.includes(name))) });
+		if (tools.length > 0) assert.equal(controller.recipeAgainst(without), null, "a stack that drops a tool the recipe names does not carry the recipe");
+		assert.deepEqual(controller.recipeAgainst(parseStack(bundled))?.tools ?? [], tools);
+		assert.deepEqual(controller.recipe?.tools ?? [], tools, "the wizard's own view is unchanged");
+	});
+
+	it("is null with no recipe file", () => {
+		const { controller, deps } = make();
+		assert.equal(controller.recipeAgainst(parseStack(JSON.parse(readFileSync(deps.bundledStack, "utf8")))), null);
+	});
+});
 
 const recipeFiles = (layout: { recipe: string }): string[] => (existsSync(layout.recipe) ? readdirSync(layout.recipe) : []);
 

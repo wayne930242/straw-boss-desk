@@ -8,6 +8,7 @@ import { parseStack, StackError, type PlatformKey, type Stack } from "../bootstr
 import { renameRetry, writeFileAtomic } from "../bootstrap/fsutil.ts";
 import type { ChangeLine, StackRefusal, StackUpdateState } from "../../shared/updates.ts";
 import { compareVersions, isVersion, verifyDetached, type SignatureFailure } from "./verify.ts";
+import { readRecord, recordFile, type UpdateRecord } from "./record.ts";
 
 // The stack channel (spec: Updater, `stack.json`; Precedence). The app carries its own `stack.json`; the channel offers `stack.json` and `stack.json.sig` (an Ed25519 signature over the exact
 // bytes). A candidate is applied only when its signature verifies against the built-in key list, its generation is higher than the active one, its `minShell` is at most the app's version,
@@ -164,25 +165,6 @@ function readStack(file: string): ParsedFile | null {
 	}
 }
 
-// ---- the record --------------------------------------------------------------------------------------------------------
-
-/** What `state/update.json` keeps: an apply under way (so a quit or a crash in the middle is healed at the next launch) and the last outcome the card shows again. */
-interface UpdateRecord {
-	schema: 1;
-	inFlight?: { generation: number; source: "channel" | "bundled"; at: string };
-	last?: Extract<StackUpdateState, { phase: "applied" | "rolled-back" }>;
-}
-
-function readRecord(file: string): UpdateRecord {
-	try {
-		const value: unknown = JSON.parse(readFileSync(file, "utf8"));
-		if (typeof value === "object" && value !== null && (value as { schema?: unknown }).schema === 1) return value as UpdateRecord;
-	} catch {
-		// missing or damaged: a fresh record
-	}
-	return { schema: 1 };
-}
-
 // ---- the updater -------------------------------------------------------------------------------------------------------
 
 /** How an engine run ended, as the updater needs it. `interrupted`: the app is quitting and the run was cancelled; nobody can run a rollback now. */
@@ -211,12 +193,21 @@ export interface StackUpdaterDeps {
 	runEngine(stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult>;
 	/** The supervisor's `withStackStopped`: the stack stops, `work` runs, and the stack starts again if it was running. */
 	withStackStopped<T>(work: () => Promise<T>, options?: { waitForTools?: boolean }): Promise<T>;
-	/** The optional tools the active recipe names. */
-	recipeTools(): readonly string[];
+	/**
+	 * The optional tools the recipe names, read against `stack` (the stack the PM has), never against whatever the wizard has seeded since: a bundled file that drops a tool would make
+	 * the recipe read as invalid and name nothing.
+	 */
+	recipeTools(stack: Stack): readonly string[];
 	/** The wizard re-reads `stack/active.json` after the file changed. */
 	reloadStack(): void;
 	log: RuntimeEvent;
 	now?: () => Date;
+}
+
+/** What an error thrown around an engine run is for the card: the stack could not be stopped, or an engine run was refused because another is active, or anything else. */
+function errorKindOf(error: unknown): "busy" | "other" {
+	const { name, message } = error as Error;
+	return name === "StackBusyError" || /already active/.test(message) ? "busy" : "other";
 }
 
 export class StackUpdater {
@@ -231,7 +222,7 @@ export class StackUpdater {
 	constructor(deps: StackUpdaterDeps) {
 		this.#d = deps;
 		this.#files = stackFiles(deps.layout);
-		this.#recordFile = join(deps.layout.state, "update.json");
+		this.#recordFile = recordFile(deps.layout);
 		this.#generation = readStack(this.#files.active)?.stack.generation ?? 0;
 		const last = readRecord(this.#recordFile).last;
 		this.#state = last ?? { phase: "idle", checkedAt: null };
@@ -318,7 +309,7 @@ export class StackUpdater {
 			keys: this.#d.keys,
 			shellVersion: this.#d.shellVersion,
 			active: active.stack,
-			recipeTools: this.#d.recipeTools(),
+			recipeTools: this.#d.recipeTools(active.stack),
 		});
 		this.#d.log({ event: "stack-check", verdict: verdict.kind, ...(verdict.kind === "refused" ? { refusal: verdict.refusal, ...(verdict.generation !== undefined ? { generation: verdict.generation } : {}) } : {}), active: active.stack.generation });
 		if (verdict.kind === "refused") {
@@ -355,7 +346,7 @@ export class StackUpdater {
 				this.#set({ phase: "error", kind: "other", detail: "the candidate file is missing" });
 				return;
 			}
-			const verdict = checkCandidate({ bytes, signature: sig, keys: this.#d.keys, shellVersion: this.#d.shellVersion, active: active.stack, recipeTools: this.#d.recipeTools() });
+			const verdict = checkCandidate({ bytes, signature: sig, keys: this.#d.keys, shellVersion: this.#d.shellVersion, active: active.stack, recipeTools: this.#d.recipeTools(active.stack) });
 			if (verdict.kind !== "newer") {
 				this.#d.log({ event: "stack-apply-refused", verdict: verdict.kind, ...(verdict.kind === "refused" ? { refusal: verdict.refusal } : {}) });
 				this.#set(verdict.kind === "refused" ? { phase: "refused", reason: verdict.refusal, ...(verdict.generation !== undefined ? { generation: verdict.generation } : {}) } : { phase: "idle", checkedAt: this.#now() });
@@ -377,8 +368,18 @@ export class StackUpdater {
 		const done = new Set<string>();
 		let current: string | null = null;
 		const progress = (): void => this.#set({ phase: "applying", generation, stage: current, done: done.size });
-		const promote = (): void => writeBytesAtomic(this.#files.active, candidate.bytes);
-		const demote = (): void => writeBytesAtomic(this.#files.active, previous.bytes);
+		// The marker goes first: a cut-short apply that finds it and `active.json` at this generation knows the candidate was in force (`finish`).
+		const promote = (): void => {
+			this.#writeRecord((r) => {
+				if (r.inFlight !== undefined) r.inFlight.promoted = true;
+			});
+			writeBytesAtomic(this.#files.active, candidate.bytes);
+		};
+		// A bundled file that does not finish is that shell's one try: it is recorded before the wizard is told to read the stack again, so the read does not seed it.
+		const demote = (): void => {
+			if (plan.source === "bundled") this.#refuseBundled(generation);
+			if (plan.source === "bundled") writeBytesAtomic(this.#files.active, previous.bytes);
+		};
 		writeBytesAtomic(this.#files.previous, previous.bytes);
 		this.#writeRecord((r) => {
 			r.inFlight = { generation, source: plan.source, at: this.#now() };
@@ -416,7 +417,7 @@ export class StackUpdater {
 					const back = await this.#d.runEngine(previous.raw, () => undefined);
 					if (back.interrupted === true) return { kind: "interrupted" };
 					// The old stack file is in force again whether or not the engine could make the machine match it: the next Repair works to it.
-					if (plan.source === "bundled") demote();
+					demote();
 					this.#d.reloadStack();
 					return { kind: "rolled-back", failed, restored: back.ok };
 				},
@@ -425,12 +426,12 @@ export class StackUpdater {
 		} catch (error) {
 			// The stack could not be stopped (a program still runs from the tools folder), or the work itself broke: nothing was changed or the old stack is in force.
 			this.#d.log({ event: "stack-apply-error", detail: firstLineOf((error as Error).message) });
-			if (plan.source === "bundled") demote();
+			demote();
 			this.#d.reloadStack();
 			this.#writeRecord((r) => {
 				delete r.inFlight;
 			});
-			this.#set({ phase: "error", kind: "other", detail: firstLineOf((error as Error).message) });
+			this.#set({ phase: "error", kind: errorKindOf(error), detail: firstLineOf((error as Error).message) });
 			return;
 		}
 		if (outcome.kind === "interrupted") {
@@ -451,6 +452,13 @@ export class StackUpdater {
 		this.#set(last);
 	}
 
+	/** Records that the bundled stack of `generation` is not taken up again (`UpdateRecord.bundledRolledBack`). */
+	#refuseBundled(generation: number): void {
+		this.#writeRecord((r) => {
+			r.bundledRolledBack = generation;
+		});
+	}
+
 	// ---- the launch ------------------------------------------------------------------------------------------------
 
 	/**
@@ -465,6 +473,16 @@ export class StackUpdater {
 		if (active === null) return null;
 		const bundled = readStack(bundledFile);
 		if (bundled === null || bundled.stack.generation <= active.stack.generation) return null;
+		// A bundled stack applies at the shell's first start only: one that did not finish is not run again at every launch (a newer shell, or the channel, brings the next try).
+		if (record.bundledRolledBack === bundled.stack.generation) return null;
+		// The same rule as for a downloaded candidate: a stack that drops an optional tool the recipe names could not be applied to this PM. Nothing is run, and the wizard does not seed it.
+		const dropped = this.#d.recipeTools(active.stack).filter((tool) => !(tool in bundled.stack.optionalTools));
+		if (dropped.length > 0) {
+			this.#refuseBundled(bundled.stack.generation);
+			this.#d.log({ event: "stack-bundled-refused", refusal: "recipe-tool", generation: bundled.stack.generation, tools: dropped });
+			this.#set({ phase: "refused", reason: "recipe-tool", generation: bundled.stack.generation, tools: dropped });
+			return null;
+		}
 		// The wizard seeds `active.json` from the bundled file as soon as it reads the stack; the old bytes are kept first.
 		writeBytesAtomic(this.#files.previous, active.bytes);
 		this.#writeRecord((r) => {
@@ -478,22 +496,35 @@ export class StackUpdater {
 		this.#busy = true;
 		try {
 			if (plan.kind === "heal") {
-				// An apply was cut short: the machine may be in between. The stack in force is the old one (an apply writes the new file last); the engine brings the machine to it.
+				// An apply was cut short: the machine may be in between. Either the candidate was in force already (`promoted` was set and `active.json` is at its generation: only the start
+				// or the record was cut off), or the stack in force is the old one (an apply writes the new file last) and the engine brings the machine back to it.
 				const record = readRecord(this.#recordFile);
+				const inFlight = record.inFlight;
+				const finished = inFlight?.promoted === true && plan.active.stack.generation === inFlight.generation;
 				const previous = readStack(this.#files.previous);
-				const target = record.inFlight?.source === "bundled" && previous !== null ? previous : plan.active;
-				if (record.inFlight?.source === "bundled" && previous !== null) writeBytesAtomic(this.#files.active, previous.bytes);
-				this.#d.log({ event: "stack-heal-begin", generation: target.stack.generation });
+				const bundledBack = !finished && inFlight?.source === "bundled" && previous !== null;
+				const target = bundledBack ? previous : plan.active;
+				if (bundledBack) {
+					// The bundled file's one try is spent: the old stack stays in force, and the wizard does not seed the bundled file again.
+					this.#refuseBundled(inFlight.generation);
+					writeBytesAtomic(this.#files.active, previous.bytes);
+				}
+				this.#generation = target.stack.generation;
+				this.#d.log({ event: "stack-heal-begin", generation: target.stack.generation, finished });
 				const result = await this.#d.withStackStopped(() => this.#d.runEngine(target.raw, () => undefined), { waitForTools: true }).catch((error: Error) => ({ ok: false, failed: { stage: "engine", category: firstLineOf(error.message) } }) as EngineRunResult);
 				this.#d.reloadStack();
 				if (result.interrupted === true) return;
 				const at = this.#now();
-				const last = { phase: "rolled-back", generation: record.inFlight?.generation ?? target.stack.generation, stage: "interrupted", category: "other", restored: result.ok, at } as const;
+				const last = finished
+					? ({ phase: "applied", generation: target.stack.generation, at } as const)
+					: ({ phase: "rolled-back", generation: inFlight?.generation ?? target.stack.generation, stage: "interrupted", category: "other", restored: result.ok, at } as const);
 				this.#writeRecord((r) => {
 					delete r.inFlight;
 					r.last = last;
 				});
-				this.#set(last);
+				// The candidate was in force and the engine could not confirm the machine against it: that is not a rollback, and the card says the check failed (Repair works to the new stack).
+				if (finished && !result.ok) this.#set({ phase: "error", kind: "other", detail: `the engine run after the restart stopped at ${result.failed?.stage ?? "engine"}` });
+				else this.#set(last);
 				return;
 			}
 			const bundled: ParsedFile = { bytes: plan.bundled.bytes, raw: plan.bundled.raw, stack: plan.bundled.stack };
