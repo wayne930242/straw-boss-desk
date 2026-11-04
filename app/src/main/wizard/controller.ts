@@ -198,16 +198,28 @@ export class WizardController {
 		if (this.#recipe !== null) return this.#recipe;
 		const stack = this.#stackOrNull();
 		if (stack === null) return null;
+		const recipe = this.#recipeFileAgainst(stack.stack);
+		if (recipe !== null) this.#recipe = recipe;
+		return recipe;
+	}
+
+	/**
+	 * The recipe on disk validated against `stack`, not against the stack the wizard holds (task 13): an update asks whether a stack it has not put in force would still carry the recipe,
+	 * and the wizard's own read of the stack may already have taken a bundled file that dropped a tool. Null when there is no single valid recipe file.
+	 */
+	recipeAgainst(stack: Stack): Recipe | null {
+		return this.#recipeFileAgainst(stack);
+	}
+
+	#recipeFileAgainst(stack: Stack): Recipe | null {
 		try {
 			const names = readdirSync(this.#d.layout.recipe).filter((n) => n.endsWith(".json"));
 			if (names.length !== 1) return null;
 			const result = this.#d.validate(readFileSync(join(this.#d.layout.recipe, names[0] as string), "utf8"), {
-				reservedPackages: [...stack.stack.npmGlobal.map((p) => p.name), stack.stack.profile.name, ...stack.stack.piPackages.map((p) => p.name)],
-				knownTools: Object.keys(stack.stack.optionalTools),
+				reservedPackages: [...stack.npmGlobal.map((p) => p.name), stack.profile.name, ...stack.piPackages.map((p) => p.name)],
+				knownTools: Object.keys(stack.optionalTools),
 			});
-			if (!result.ok) return null;
-			this.#recipe = result.recipe;
-			return result.recipe;
+			return result.ok ? result.recipe : null;
 		} catch {
 			return null;
 		}

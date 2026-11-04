@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { writeFileAtomic } from "../bootstrap/fsutil.ts";
 import { parseStack, type Stack } from "../bootstrap/stack.ts";
 import type { Layout } from "../paths.ts";
+import { readRecord, recordFile } from "../update/record.ts";
 
 // Which `stack.json` the engine installs from (spec: Updater, Precedence). The app carries one (`dist/assets/stack.json`, copied by `scripts/copy-assets.ts`); `stack/active.json` is the one in
 // force. The active stack is the verified one with the highest `generation`: the bundled file replaces the active one only when its generation is higher, so a downloaded stack (task 13) is
-// never lowered by an older shell. The signature check of a downloaded candidate is task 13's; the bundled file is part of the signed app.
+// never lowered by an older shell. The signature check of a downloaded candidate is task 13's; the bundled file is part of the signed app. A bundled generation that the updater rolled back
+// is not seeded again (`state/update.json`, `bundledRolledBack`): it was that shell's one try, and the old stack stays in force.
 
 export interface ActiveStack {
 	stack: Stack;
@@ -34,6 +36,8 @@ export function loadActiveStack(layout: Layout, bundledFile: string): ActiveStac
 		active = null; // damaged: the bundled file takes its place
 	}
 	if (active !== null && active.stack.generation >= bundled.stack.generation) return { ...active, seeded: false };
+	// A bundled generation the updater rolled back stays out (a damaged or missing active file leaves nothing else to run, so there the bundled file still takes its place).
+	if (active !== null && readRecord(recordFile(layout)).bundledRolledBack === bundled.stack.generation) return { ...active, seeded: false };
 	writeFileAtomic(activeFile, `${JSON.stringify(bundled.raw, null, "\t")}\n`);
 	return { ...bundled, seeded: true };
 }

@@ -7,6 +7,9 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { parseStack, platformKey, type Stack } from "../src/main/bootstrap/stack.ts";
 import { checkCandidate, changeList, MAX_STACK_BYTES, StackUpdater, stackFiles, type EngineRunResult, type StackUpdaterDeps } from "../src/main/update/stack.ts";
 import type { StackUpdateState } from "../src/shared/updates.ts";
+import { loadActiveStack } from "../src/main/wizard/stack-source.ts";
+import { compareVersions } from "../src/main/update/verify.ts";
+import { ALT_NODE_VERSION, altStack } from "./harness/alt-pins.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
 
 // The stack channel (task 13): the decision about a candidate, in the order the spec gives it, and the apply and rollback around the engine. The keys exist for the run only.
@@ -156,6 +159,12 @@ describe("changeList", () => {
 		assert.equal(by("git").length + by("gh").length + by("herdr").length, 0, "what stays is not listed");
 	});
 
+	it("shows the update fixture's Node as a rising version, not a downgrade (SA-T13-1)", () => {
+		const node = changeList(ACTIVE, parseStack(altStack(real as { tools: Record<string, any>; optionalTools: Record<string, any> }, { node: true })), key).find((l) => l.stage === "node");
+		assert.equal(node?.to, ALT_NODE_VERSION);
+		assert.ok(node?.from !== undefined && node.from !== null && node.to !== null && compareVersions(node.to, node.from) > 0, `${node?.from} to ${node?.to}`);
+	});
+
 	it("is empty for the same stack", () => {
 		assert.deepEqual(changeList(ACTIVE, ACTIVE, key), []);
 	});
@@ -184,7 +193,7 @@ interface Rig {
 	record(): Record<string, any>;
 }
 
-function makeRig(options: { recipeTools?: string[]; keys?: string[]; base?: string | null; withStackStopped?: StackUpdaterDeps["withStackStopped"]; activeBytes?: Buffer | null } = {}): Rig {
+function makeRig(options: { onRun?: () => void; onReload?: () => void; onRecipeTools?: (stack: Stack) => void; recipeTools?: string[]; keys?: string[]; base?: string | null; withStackStopped?: StackUpdaterDeps["withStackStopped"]; activeBytes?: Buffer | null } = {}): Rig {
 	const { base, root } = scratchRoot("sbd-upd-");
 	scratch.push(base);
 	const layout = testLayout(root);
@@ -218,6 +227,7 @@ function makeRig(options: { recipeTools?: string[]; keys?: string[]; base?: stri
 		},
 		runEngine: async (raw, onStage) => {
 			const generation = (raw as { generation: number }).generation;
+			options.onRun?.();
 			runs.push({ generation });
 			events.push(`engine ${generation}`);
 			onStage({ type: "start", stage: "node" });
@@ -234,8 +244,14 @@ function makeRig(options: { recipeTools?: string[]; keys?: string[]; base?: stri
 					events.push("start");
 				}
 			}),
-		recipeTools: () => options.recipeTools ?? [],
-		reloadStack: () => void rig.reloads++,
+		recipeTools: (stack) => {
+			options.onRecipeTools?.(stack);
+			return options.recipeTools ?? [];
+		},
+		reloadStack: () => {
+			rig.reloads++;
+			options.onReload?.();
+		},
 		log: (fields) => void logs.push(fields as Record<string, unknown>),
 		now: () => new Date("2026-11-04T10:00:00Z"),
 	});
@@ -491,5 +507,194 @@ describe("StackUpdater at launch: Precedence and an update that was cut short", 
 		assert.deepEqual(rig.events, ["stop", "engine 5", "start"]);
 		assert.equal(rig.record().inFlight, undefined);
 		assert.deepEqual(rig.updater.state, { phase: "rolled-back", generation: 6, stage: "interrupted", category: "other", restored: true, at: "2026-11-04T10:00:00.000Z" });
+	});
+});
+
+// ---- R13-F001, F005, F006, F007 ---------------------------------------------------------------------------------------------
+
+describe("a bundled stack that did not finish stays out of force (R13-F001)", () => {
+	const setup = (options: Parameters<typeof makeRig>[0] = {}) => {
+		let layoutRoot = "";
+		// As index.ts: the run reads the wizard's stack (engineRecipe -> wizard.recipe -> loadActiveStack) before the engine runs.
+		const rig = makeRig({ ...options, onRun: () => void loadActiveStack(testLayout(layoutRoot), bundled) });
+		layoutRoot = rig.root;
+		const bundled = join(rig.root, "bundled.json");
+		return { rig, bundled, layout: testLayout(rig.root) };
+	};
+
+	it("does not seed the failed bundled file again at the wizard's next read, and does not retry it at the next launch", async () => {
+		const { rig, bundled, layout } = setup();
+		writeFileSync(bundled, bytesOf(next(8)));
+		const plan = rig.updater.prepare(bundled);
+		assert.equal(plan?.kind, "bundled");
+		rig.script.set(8, { ok: false, failed: { stage: "pi", category: "network" } });
+		await rig.updater.finish(plan);
+		assert.equal(rig.updater.state.phase, "rolled-back");
+		assert.equal(rig.record().bundledRolledBack, 8);
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText, "right after the rollback the old stack is in force");
+		const reread = loadActiveStack(layout, bundled);
+		assert.equal(reread.seeded, false);
+		assert.equal(reread.stack.generation, 5);
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText, "the wizard's next read did not take the failed file");
+		assert.equal(rig.updater.prepare(bundled), null, "the next launch does not run it again: it applies at the shell's first start only");
+		assert.equal(JSON.parse(rig.record().last ? JSON.stringify(rig.record().last) : "{}").phase, "rolled-back");
+	});
+
+	it("lets a channel candidate of the refused generation be offered, and a newer shell's higher bundled generation be tried", async () => {
+		const { rig, bundled, layout } = setup();
+		writeFileSync(bundled, bytesOf(next(8)));
+		rig.script.set(8, { ok: false, failed: { stage: "pi", category: "network" } });
+		await rig.updater.finish(rig.updater.prepare(bundled));
+		serveSigned(rig, next(8));
+		await rig.updater.check();
+		assert.equal(rig.updater.state.phase, "available", "the old stack is in force, so generation 8 reads as newer, not as the same");
+		writeFileSync(bundled, bytesOf(next(9)));
+		assert.equal(rig.updater.prepare(bundled)?.kind, "bundled", "a higher generation is a new try");
+		assert.equal(loadActiveStack(layout, bundled).seeded, true);
+	});
+
+	it("keeps the failed file out when the stack could not be stopped, too", async () => {
+		const { rig, bundled, layout } = setup({
+			withStackStopped: async () => {
+				throw Object.assign(new Error("the stack could not be stopped: pid 42"), { name: "StackBusyError" });
+			},
+		});
+		writeFileSync(bundled, bytesOf(next(8)));
+		await rig.updater.finish(rig.updater.prepare(bundled));
+		assert.deepEqual(rig.updater.state, { phase: "error", kind: "busy", detail: "the stack could not be stopped: pid 42" });
+		assert.equal(loadActiveStack(layout, bundled).seeded, false);
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText);
+	});
+
+	it("still seeds a bundled file the updater has not refused, and one over a damaged active file", () => {
+		const { rig, bundled, layout } = setup();
+		writeFileSync(bundled, bytesOf(next(8)));
+		assert.equal(loadActiveStack(layout, bundled).seeded, true);
+		writeFileSync(rig.files.active, "damaged");
+		writeFileSync(join(rig.root, "state", "update.json"), JSON.stringify({ schema: 1, bundledRolledBack: 8 }));
+		assert.equal(loadActiveStack(layout, bundled).seeded, true, "with no active stack there is nothing else to run");
+	});
+});
+
+describe("a bundled stack that drops a tool the recipe names is refused like a downloaded one (R13-F007)", () => {
+	it("runs nothing, shows the refusal on the card, and is not seeded by the wizard", () => {
+		const rig = makeRig({ recipeTools: ["bun"] });
+		const bundled = join(rig.root, "bundled.json");
+		writeFileSync(bundled, bytesOf(stackWith((s) => ((s.generation = 8), delete s.optionalTools))));
+		assert.equal(rig.updater.prepare(bundled), null);
+		assert.deepEqual(rig.updater.state, { phase: "refused", reason: "recipe-tool", generation: 8, tools: ["bun"] });
+		assert.deepEqual(rig.runs, []);
+		assert.equal(rig.record().bundledRolledBack, 8);
+		assert.ok(rig.logs.some((l) => l.event === "stack-bundled-refused"));
+		assert.equal(loadActiveStack(testLayout(rig.root), bundled).seeded, false);
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText);
+	});
+
+	it("asks for the recipe's tools against the stack in force, not the bundled one or whatever the wizard seeded", () => {
+		const asked: number[] = [];
+		const rig = makeRig({ recipeTools: [], onRecipeTools: (stack) => void asked.push(stack.generation) });
+		const bundled = join(rig.root, "bundled.json");
+		writeFileSync(bundled, bytesOf(next(8)));
+		assert.equal(rig.updater.prepare(bundled)?.kind, "bundled", "a bundled stack that keeps every tool is planned as before");
+		assert.deepEqual(asked, [5]);
+	});
+});
+
+describe("a heal tells a finished apply from a rolled-back one (R13-F005)", () => {
+	const healRig = (inFlight: Record<string, unknown>, activeGeneration: number) => {
+		const rig = makeRig({ activeBytes: bytesOf(next(activeGeneration)) });
+		writeFileSync(join(rig.root, "state", "update.json"), JSON.stringify({ schema: 1, inFlight: { at: "2026-11-04T09:00:00Z", ...inFlight } }));
+		return rig;
+	};
+	const bundledFile = (rig: Rig, generation: number): string => {
+		const file = join(rig.root, "bundled-stack.json");
+		writeFileSync(file, bytesOf(next(generation)));
+		return file;
+	};
+
+	it("records applied when the candidate was promoted and active.json is at its generation", async () => {
+		const rig = healRig({ generation: 6, source: "channel", promoted: true }, 6);
+		const plan = rig.updater.prepare(bundledFile(rig, 5));
+		assert.equal(plan?.kind, "heal");
+		await rig.updater.finish(plan);
+		assert.deepEqual(rig.events, ["stop", "engine 6", "start"], "the engine converges to the new stack");
+		assert.deepEqual(rig.updater.state, { phase: "applied", generation: 6, at: "2026-11-04T10:00:00.000Z" });
+		assert.equal(rig.record().last.phase, "applied");
+		assert.equal(rig.record().inFlight, undefined);
+		assert.equal(rig.updater.generation, 6);
+	});
+
+	it("writes the promoted marker before the candidate's bytes become active.json, so a cut-off after it can be told", async () => {
+		const seen: Array<{ promoted: boolean | undefined; generationOnDisk: number }> = [];
+		const rig: Rig = makeRig({
+			onReload: () => void seen.push({ promoted: rig.record().inFlight?.promoted, generationOnDisk: JSON.parse(readFileSync(rig.files.active, "utf8")).generation }),
+		});
+		serveSigned(rig, next(6));
+		await rig.updater.check();
+		await rig.updater.apply();
+		// The reload that follows promote() sees active.json at the candidate and the marker set.
+		assert.deepEqual(seen, [{ promoted: true, generationOnDisk: 6 }]);
+		assert.equal(rig.record().inFlight, undefined, "and the record is cleared once the stack has started");
+	});
+
+	it("records a rollback when the apply was cut short before the candidate was promoted", async () => {
+		const rig = healRig({ generation: 6, source: "channel" }, 5);
+		await rig.updater.finish(rig.updater.prepare(bundledFile(rig, 5)));
+		assert.equal(rig.updater.state.phase, "rolled-back");
+		assert.equal((rig.updater.state as { stage: string }).stage, "interrupted");
+	});
+
+	it("does not take active.json at the failed generation for a finished apply unless the marker says it was promoted", async () => {
+		const rig = healRig({ generation: 6, source: "channel" }, 6);
+		await rig.updater.finish(rig.updater.prepare(bundledFile(rig, 5)));
+		assert.equal(rig.updater.state.phase, "rolled-back");
+	});
+
+	it("a bundled run cut short puts the old stack back, spends the bundled try, and the wizard does not seed it", async () => {
+		const rig = makeRig();
+		const bundled = bundledFile(rig, 8);
+		assert.equal(rig.updater.prepare(bundled)?.kind, "bundled");
+		// The wizard had seeded the bundled file when the app was cut short (no `promoted` marker yet).
+		writeFileSync(rig.files.active, readFileSync(bundled));
+		const heal = rig.updater.prepare(bundled);
+		assert.equal(heal?.kind, "heal");
+		await rig.updater.finish(heal);
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText);
+		assert.deepEqual(rig.events, ["stop", "engine 5", "start"]);
+		assert.equal(rig.record().bundledRolledBack, 8);
+		assert.equal(rig.updater.state.phase, "rolled-back");
+		assert.equal(loadActiveStack(testLayout(rig.root), bundled).seeded, false);
+	});
+
+	it("a bundled run that was promoted and cut off at the start is an applied one", async () => {
+		const rig = makeRig();
+		const bundled = bundledFile(rig, 8);
+		rig.updater.prepare(bundled);
+		writeFileSync(rig.files.active, readFileSync(bundled));
+		writeFileSync(join(rig.root, "state", "update.json"), JSON.stringify({ schema: 1, inFlight: { generation: 8, source: "bundled", at: "2026-11-04T09:00:00Z", promoted: true } }));
+		await rig.updater.finish(rig.updater.prepare(bundled));
+		assert.equal(rig.updater.state.phase, "applied");
+		assert.equal(JSON.parse(readFileSync(rig.files.active, "utf8")).generation, 8, "the bundled stack stays in force");
+		assert.equal(rig.record().bundledRolledBack, undefined);
+	});
+});
+
+describe("an error names its kind and keeps the raw text for Details (R13-F006)", () => {
+	it("maps a stack that cannot be stopped, and a refused engine run, to busy; anything else to other", async () => {
+		for (const [error, kind] of [
+			[Object.assign(new Error("the stack could not be stopped: a program still runs"), { name: "StackBusyError" }), "busy"],
+			[new Error("an engine run is already active"), "busy"],
+			[new Error("EPERM: operation not permitted, rename 'C:\\x'"), "other"],
+		] as const) {
+			const rig = makeRig({
+				withStackStopped: async () => {
+					throw error;
+				},
+			});
+			serveSigned(rig, next(6));
+			await rig.updater.check();
+			await rig.updater.apply();
+			assert.deepEqual(rig.updater.state, { phase: "error", kind, detail: error.message });
+		}
 	});
 });
