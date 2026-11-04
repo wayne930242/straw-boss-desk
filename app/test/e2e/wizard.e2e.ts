@@ -935,6 +935,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false }, async () => {
 		await close(first);
 		const empty = mkdtempSync("/tmp/sbd-nokc-");
+		// The saved Linear key is set aside for this launch: with no keychain in HOME, a start that decrypts the key would wait on the OS's own "no keychain" dialog, which is the OS's question and not this test's.
+		const keyFile = join(world.layout.secrets, "linear.bin");
+		const heldKey = `${keyFile}.held`;
+		if (existsSync(keyFile)) renameSync(keyFile, heldKey);
 		const app = await launch("zh-TW", { HOME: empty, STRAW_BOSS_DESK_ROOT: world.root, SBD_TEST_WSL_BASH: WSL_BASH });
 		first = app;
 		await pageOf(app, "screen.html");
@@ -951,6 +955,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			assert.equal(found.hits.length, 0, "no token is on disk");
 		}
 		await close(app);
+		if (existsSync(heldKey)) renameSync(heldKey, keyFile);
 	});
 
 	it("quits, and a later launch opens no wizard, reaches the GUI, and shows the banner in the language chosen", async () => {

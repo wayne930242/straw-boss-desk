@@ -19,13 +19,16 @@ import { hideSecrets } from "./token-search.ts";
 // plain-text fallback. Herdr's environment is fixed for its lifetime, so a key saved while the stack runs reaches panes only after a restart: the screen offers **Restart now** or **Later**.
 // It knows no Electron: the box, the stage that installs `ttt`, the command runner and the restart come in as dependencies.
 
-/** What `safeStorage` offers, as the app uses it. A test passes a stand-in; the product passes Electron's. */
+/**
+ * What `safeStorage` offers, as the app uses it: the asynchronous API (Electron 45 deprecates the synchronous one, and its first call on macOS reaches into the Keychain on the main thread). A test passes a
+ * stand-in; the product passes Electron's.
+ */
 export interface SecretBox {
-	/** `isEncryptionAvailable()`, asked each time (a test stubs it false at run time). */
-	available(): boolean;
-	encrypt(text: string): Buffer;
+	/** `isAsyncEncryptionAvailable()`, asked when the Linear screen opens and at each save and read (a test stubs it false at run time). */
+	available(): Promise<boolean>;
+	encrypt(text: string): Promise<Buffer>;
 	/** Throws when the blob cannot be decrypted (another machine, a lost Safe Storage key). */
-	decrypt(blob: Buffer): string;
+	decrypt(blob: Buffer): Promise<string>;
 }
 
 /** The result of the `ttt` stage: whether `ttt` is installed now, and the first line of why not. */
@@ -107,8 +110,8 @@ export class LinearKeyFile {
 	}
 
 	/** Encrypts and writes `key` (a temporary sibling, then a rename, mode 600). Throws when the box refuses or the disk does. */
-	write(key: string): void {
-		const blob = this.#box.encrypt(key);
+	async write(key: string): Promise<void> {
+		const blob = await this.#box.encrypt(key);
 		const file = linearFile(this.#layout);
 		mkdirSync(dirname(file), { recursive: true });
 		const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -122,10 +125,10 @@ export class LinearKeyFile {
 	}
 
 	/** The decrypted key; null when there is none; throws when the file cannot be decrypted. */
-	read(): string | null {
+	async read(): Promise<string | null> {
 		if (!this.exists) return null;
-		if (!this.#box.available()) throw new Error("the OS cannot decrypt the key: encryption is not available");
-		const key = this.#box.decrypt(readFileSync(linearFile(this.#layout)));
+		if (!(await this.#box.available())) throw new Error("the OS cannot decrypt the key: encryption is not available");
+		const key = await this.#box.decrypt(readFileSync(linearFile(this.#layout)));
 		return key === "" ? null : key;
 	}
 
@@ -151,6 +154,8 @@ export class LinearAccounts {
 	#restart: LinearRestart = { phase: "none" };
 	/** Set when a decrypt failed: the key needs to be entered again. Cleared by a save or a removal. */
 	#unreadable = false;
+	/** What the OS answered when it was last asked whether it can encrypt; null before the first question. */
+	#encryption: boolean | null = null;
 	#disposed = false;
 
 	constructor(deps: LinearAccountsDeps) {
@@ -193,7 +198,25 @@ export class LinearAccounts {
 	}
 
 	view(): LinearView {
-		return { state: this.state, flow: this.#flow, restart: this.#restart, encryption: this.#d.box.available() };
+		return { state: this.state, flow: this.#flow, restart: this.#restart, encryption: this.#encryption };
+	}
+
+	/**
+	 * Asks the OS whether it can encrypt, and tells the screen. Called when the Linear screen opens (the wizard's step, settings' Accounts), never at start: nothing reaches `safeStorage` for a PM who
+	 * does not use Linear. A box that throws counts as "cannot".
+	 */
+	async probe(): Promise<void> {
+		let answer: boolean;
+		try {
+			answer = await this.#d.box.available();
+		} catch (error) {
+			this.#d.log({ event: "linear-probe-failed", detail: loginLine(String((error as Error).message)) });
+			answer = false;
+		}
+		if (this.#encryption !== answer) {
+			this.#encryption = answer;
+			this.#emit();
+		}
 	}
 
 	#track<T>(work: Promise<T>): Promise<T> {
@@ -211,7 +234,7 @@ export class LinearAccounts {
 	 */
 	async read(): Promise<string | undefined> {
 		try {
-			const key = this.#file.read();
+			const key = await this.#file.read();
 			if (key === null) return undefined;
 			this.#hold(key);
 			if (this.#unreadable) {
@@ -250,7 +273,8 @@ export class LinearAccounts {
 			this.#set({ phase: "invalid" });
 			return;
 		}
-		if (!this.#d.box.available()) {
+		await this.probe();
+		if (this.#encryption !== true) {
 			this.#d.log({ event: "linear-save-refused", why: "encryption-unavailable" });
 			this.#set({ phase: "refused" });
 			return;
@@ -258,7 +282,7 @@ export class LinearAccounts {
 		this.#set({ phase: "saving" });
 		this.#offer({ phase: "none" });
 		try {
-			this.#file.write(key);
+			await this.#file.write(key);
 		} catch (error) {
 			this.#d.log({ event: "linear-save-failed", detail: failureLine(String((error as Error).message), key) });
 			this.#set({ phase: "save-failed", detail: failureLine(String((error as Error).message), key) });
@@ -276,7 +300,7 @@ export class LinearAccounts {
 		if (BUSY.includes(this.#flow.phase) || this.#disposed) return;
 		let key: string | null;
 		try {
-			key = this.#file.read();
+			key = await this.#file.read();
 		} catch {
 			this.#unreadable = true;
 			this.#emit();
@@ -341,11 +365,11 @@ export class LinearAccounts {
 	// ---- removing --------------------------------------------------------------------------------------------------------
 
 	/** Deletes `secrets/linear.bin`. The `.ttt` setup and the `ttt` install stay: they hold no key. Panes already open keep the key until the stack restarts, which the screen offers. */
-	signOut(): void {
+	async signOut(): Promise<void> {
 		if (BUSY.includes(this.#flow.phase)) return;
 		let key: string | null = null;
 		try {
-			key = this.#file.read();
+			key = await this.#file.read();
 		} catch {
 			key = null;
 		}

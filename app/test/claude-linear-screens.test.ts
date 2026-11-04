@@ -25,7 +25,7 @@ type Locale = "en" | "zh-TW";
 const LOCALES: Locale[] = ["en", "zh-TW"];
 
 const cv = (flow: ClaudeFlow, state: ClaudeView["state"] = "not-signed-in", storage: ClaudeView["storage"] = "keychain"): ClaudeView => ({ state, storage, flow });
-const lv = (flow: LinearFlow, state: LinearView["state"] = "not-saved", restart: LinearView["restart"] = { phase: "none" }, encryption = true): LinearView => ({ state, flow, restart, encryption });
+const lv = (flow: LinearFlow, state: LinearView["state"] = "not-saved", restart: LinearView["restart"] = { phase: "none" }, encryption: boolean | null = true): LinearView => ({ state, flow, restart, encryption });
 
 function wizardView(locale: Locale, over: Partial<WizardView>): WizardView {
 	return { step: "claude", locale, hosts: { forges: [], index: 0, current: null }, later: [], linearOffered: true, claude: cv({ phase: "idle" }), linear: lv({ phase: "idle" }), ...over } as unknown as WizardView;
@@ -134,6 +134,7 @@ describe("step 7: Claude, in every state and both languages", () => {
 const LINEAR_CASES: Array<[string, LinearView]> = [
 	["not saved", lv({ phase: "idle" })],
 	["invalid", lv({ phase: "invalid" })],
+	["encryption not asked yet", lv({ phase: "idle" }, "not-saved", { phase: "none" }, null)],
 	["encryption unavailable", lv({ phase: "idle" }, "not-saved", { phase: "none" }, false)],
 	["refused", lv({ phase: "refused" }, "not-saved", { phase: "none" }, false)],
 	["saving", lv({ phase: "saving" })],
@@ -187,6 +188,14 @@ describe("step 9: Linear, in every state and both languages", () => {
 			assert.ok(step.textContent.includes(catalogs.en.linear.refused));
 			assert.ok(step.querySelector("#later"));
 		}
+	});
+
+	it("before the OS has answered, the step waits instead of offering a field, and Later is still a choice", () => {
+		const step = drawLinear(lv({ phase: "idle" }, "not-saved", { phase: "none" }, null), "en");
+		assert.equal(step.querySelector("#linear-key"), null);
+		assert.equal(step.querySelector("#linear-save"), null);
+		assert.ok(step.textContent.includes(catalogs.en.linear.checking));
+		assert.ok(step.querySelector("#later"));
 	});
 
 	it("the restart offer has Restart now first and primary, then Later; the step's own Later is not drawn beside it", () => {

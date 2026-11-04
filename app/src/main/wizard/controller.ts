@@ -70,6 +70,8 @@ export interface WizardLinear {
 	act(action: LinearAction): Promise<void>;
 	/** Back to the start of the screen after an outcome the PM has read. */
 	reset(): void;
+	/** Asks the OS whether it can encrypt (when the Linear screen opens). */
+	probe(): Promise<void>;
 	readonly flow: LinearView["flow"];
 	readonly state: LinearView["state"];
 	onChange(listener: () => void): () => void;
@@ -448,6 +450,7 @@ export class WizardController {
 		const file = this.#file;
 		if (file.done) return;
 		if (file.step === "claude" && this.#d.claude.flow.phase === "idle" && this.#d.claude.state === "unknown") void this.#d.claude.refresh().catch((error: Error) => this.#d.log({ event: "claude-refresh-failed", detail: firstLineOf(error.message) }));
+		if (file.step === "linear") void this.#d.linear.probe().catch((error: Error) => this.#d.log({ event: "linear-probe-failed", detail: firstLineOf(error.message) }));
 		if (file.step !== "hosts") return;
 		const forge = this.forges[Math.min(file.hostsIndex, Math.max(0, this.forges.length - 1))];
 		if (forge === undefined) return;

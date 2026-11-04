@@ -651,6 +651,17 @@ describe("steps 7 and 9: Claude and Linear (task 11)", () => {
 		assert.deepEqual(off.controller.later.map((l) => l.item), ["claude", "github"]);
 	});
 
+	it("the OS is asked whether it can encrypt when the Linear step opens, not before", async () => {
+		const w = await atClaude();
+		await new Promise((r) => setImmediate(r));
+		assert.equal(w.linear.probes, 0, "the Claude step does not ask");
+		await w.controller.act({ type: "later" });
+		await w.controller.act({ type: "later" });
+		assert.equal(w.controller.step, "linear");
+		await new Promise((r) => setImmediate(r));
+		assert.equal(w.linear.probes, 1);
+	});
+
 	it("account actions are checked: a malformed one is dropped, a Linear one is dropped where Linear is not offered, a Claude one reaches the sign-in", async () => {
 		const w = await atClaude();
 		await w.controller.accountAction({ type: "claude-code", code: 5 } as never);

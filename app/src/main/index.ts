@@ -156,11 +156,19 @@ const claude = new ClaudeAccounts({
 	release: releaseSecret,
 });
 
-// The Linear key (task 11): encrypted with `safeStorage` into `secrets/linear.bin`, then `ttt` and `ttt init`. `isEncryptionAvailable` is asked at each use; a development build can be told it is false
-// (`SBD_TEST_NO_ENCRYPTION=1`, as it is told the WSL bash and the stand-in `claude`), so the refusal is proved where the OS can encrypt. A release build never reads the variable.
+// The Linear key (task 11): encrypted with `safeStorage` (the asynchronous API) into `secrets/linear.bin`, then `ttt` and `ttt init`. Whether the OS can encrypt is asked when the Linear screen opens and at
+// each save and read, never at start; a development build can be told it cannot (`SBD_TEST_NO_ENCRYPTION=1`, as it is told the WSL bash and the stand-in `claude`), so the refusal is proved where the OS can encrypt. A release build never reads the variable.
 const linear = new LinearAccounts({
 	layout,
-	box: { available: () => !(identity.kind === "dev" && process.env.SBD_TEST_NO_ENCRYPTION === "1") && safeStorage.isEncryptionAvailable(), encrypt: (text) => safeStorage.encryptString(text), decrypt: (blob) => safeStorage.decryptString(blob) },
+	box: {
+		available: async () => !(identity.kind === "dev" && process.env.SBD_TEST_NO_ENCRYPTION === "1") && (await safeStorage.isAsyncEncryptionAvailable()),
+		encrypt: (text) => safeStorage.encryptStringAsync(text),
+		// Electron says when the key has rotated and the text should be decrypted again for the current one.
+		decrypt: async (blob) => {
+			const first = await safeStorage.decryptStringAsync(blob);
+			return first.shouldReEncrypt ? (await safeStorage.decryptStringAsync(blob)).result : first.result;
+		},
+	},
 	run,
 	appEnv: process.env,
 	current: installedTools,
@@ -391,6 +399,7 @@ if (!app.requestSingleInstanceLock()) {
 				if (section !== "accounts") return;
 				void accounts.refresh(wizard.forges).catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
 				void claude.refresh().catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
+				if (wizard.linearOffered || linear.state !== "not-saved") void linear.probe();
 			},
 			onSessionEnd: () => supervisor.stopForSessionEnd(),
 			log: (fields) => runtimeLog.event(fields),

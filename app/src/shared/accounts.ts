@@ -220,7 +220,8 @@ export interface LinearView {
 	flow: LinearFlow;
 	restart: LinearRestart;
 	/** False when the OS cannot encrypt: the page says so before the PM types a key. */
-	encryption: boolean;
+	/** Whether the OS can encrypt the key; null until it has been asked (it is asked when the Linear screen opens, never at start: on macOS the first answer reaches into the Keychain). */
+	encryption: boolean | null;
 }
 
 export type LinearAction =

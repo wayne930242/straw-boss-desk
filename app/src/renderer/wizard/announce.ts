@@ -66,7 +66,7 @@ export function announcementParts(ctx: Ctx): string[] {
 		}
 		case "linear": {
 			const { flow, restart } = view.linear;
-			if (flow.phase === "refused" || (!view.linear.encryption && flow.phase === "idle")) parts.push(ctx.tr("linear.refused"));
+			if (flow.phase === "refused" || (view.linear.encryption === false && flow.phase === "idle")) parts.push(ctx.tr("linear.refused"));
 			else if (flow.phase === "invalid") parts.push(ctx.tr("linear.invalid"));
 			else if (flow.phase === "save-failed") parts.push(ctx.tr("linear.saveFailed"));
 			else if (flow.phase === "setup-failed") parts.push(ctx.tr("linear.setupFailed"));

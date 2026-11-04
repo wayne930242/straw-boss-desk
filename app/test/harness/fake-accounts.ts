@@ -95,9 +95,10 @@ export class FakeLinear implements WizardLinear {
 	flow: LinearFlow = { phase: "idle" };
 	state: LinearState = "not-saved";
 	restart: LinearView["restart"] = { phase: "none" };
-	encryption = true;
+	encryption: boolean | null = true;
 	readonly actions: LinearAction[] = [];
 	resets = 0;
+	probes = 0;
 	readonly #changed = new Set<() => void>();
 	readonly #saved = new Set<() => void>();
 	view(): LinearView {
@@ -105,6 +106,9 @@ export class FakeLinear implements WizardLinear {
 	}
 	async act(action: LinearAction): Promise<void> {
 		this.actions.push(action);
+	}
+	async probe(): Promise<void> {
+		this.probes++;
 	}
 	reset(): void {
 		this.resets++;

@@ -270,6 +270,7 @@ export const zhTW: Messages = {
 		laterNote: "你可以之後在「設定」裡連接。",
 		next: "下一步",
 		tryAgain: "再試一次",
+		checking: "正在確認這台電腦可以安全地保存金鑰…",
 		refused: "這台電腦無法加密金鑰，所以 Straw Boss 不會儲存它（否則得以純文字存放）。沒有儲存任何東西。",
 		invalid: "這看起來不像 Linear 的金鑰。請從 Linear 的頁面重新複製，不要含空白。",
 		saveFailed: "無法儲存金鑰。「詳細資料」裡有發生的情況。",

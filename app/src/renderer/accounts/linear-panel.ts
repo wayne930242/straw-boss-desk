@@ -83,8 +83,13 @@ export function linearPanel(ctx: LinearPanelCtx, view: LinearView, { trailing = 
 	const actions: HTMLElement[] = [];
 	const form = (): void => {
 		// The OS cannot encrypt: the key is refused before it is typed (no plain-text fallback), with the same sentence the refused save gives.
-		if (!view.encryption) {
+		if (view.encryption === false) {
 			body.push(refusal(h("p", {}, ctx.tr("linear.refused"))));
+			return;
+		}
+		// Not asked yet (the OS is asked when this screen opens): the field waits for the answer.
+		if (view.encryption === null) {
+			body.push(spinner(ctx, "linear.checking"));
 			return;
 		}
 		const key = keyField(ctx);

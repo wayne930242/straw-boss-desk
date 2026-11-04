@@ -268,6 +268,7 @@ export const en = {
 		laterNote: "You can connect later from Settings.",
 		next: "Next",
 		tryAgain: "Try again",
+		checking: "Checking that this computer can keep the key safely…",
 		refused: "This computer cannot encrypt the key, so Straw Boss will not save it (it would have to keep it as plain text). Nothing was saved.",
 		invalid: "That does not look like a Linear key. Copy it again from Linear's page, without spaces.",
 		saveFailed: "The key could not be saved. Details has what happened.",

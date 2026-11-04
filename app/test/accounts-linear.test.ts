@@ -21,14 +21,19 @@ const KEY = "lin_api_TESTDUMMYKEY0123456789abcdef";
 class FakeBox implements SecretBox {
 	isAvailable = true;
 	failDecrypt = false;
-	available(): boolean {
+	/** What the OS was asked, in order: "available", "encrypt", "decrypt". */
+	asked: string[] = [];
+	async available(): Promise<boolean> {
+		this.asked.push("available");
 		return this.isAvailable;
 	}
-	encrypt(text: string): Buffer {
+	async encrypt(text: string): Promise<Buffer> {
+		this.asked.push("encrypt");
 		if (!this.isAvailable) throw new Error("not available");
 		return Buffer.from(`ENC:${[...text].reverse().join("")}`);
 	}
-	decrypt(blob: Buffer): string {
+	async decrypt(blob: Buffer): Promise<string> {
+		this.asked.push("decrypt");
 		if (this.failDecrypt) throw new Error("cannot decrypt this blob");
 		return [...blob.toString().slice(4)].reverse().join("");
 	}
@@ -124,6 +129,7 @@ describe("saving the key", () => {
 		await r.linear.save(KEY);
 		assert.equal(r.linear.flow.phase, "refused");
 		assert.equal(r.linear.view().encryption, false);
+		assert.ok(!r.box.asked.includes("encrypt"), "the box was not asked to encrypt");
 		assert.equal(existsSync(linearFile(r.layout)), false);
 		assert.deepEqual(filesUnder(r.layout.secrets), []);
 		assert.equal(r.installs.length + r.calls.length, 0);
@@ -158,6 +164,42 @@ describe("saving the key", () => {
 		assert.deepEqual(kept.linear.flow, { phase: "done", initialized: "kept" });
 		assert.equal(kept.calls.length, 0, "ttt init would refuse without --force, and --force would overwrite the PM's choices");
 		assert.equal(readFileSync(tttConfigFile(kept.work), "utf8"), "mine: 1\n");
+	});
+});
+
+describe("asking the OS whether it can encrypt (task 11)", () => {
+	it("is not asked at construction, at a view, or at a read with no key saved: nothing reaches the OS for a PM who does not use Linear", async () => {
+		const r = rig();
+		assert.deepEqual(r.box.asked, []);
+		assert.equal(r.linear.view().encryption, null, "not asked yet");
+		assert.equal(await r.linear.read(), undefined);
+		r.linear.view();
+		assert.deepEqual(r.box.asked, [], "a read with no key file asks nothing");
+	});
+
+	it("is asked by probe(), once per call, and the screen is told when the answer changes", async () => {
+		const r = rig();
+		let changes = 0;
+		r.linear.onChange(() => changes++);
+		await r.linear.probe();
+		assert.equal(r.linear.view().encryption, true);
+		assert.equal(changes, 1);
+		await r.linear.probe();
+		assert.equal(changes, 1, "the same answer is not a change");
+		r.box.isAvailable = false;
+		await r.linear.probe();
+		assert.equal(r.linear.view().encryption, false);
+		assert.equal(changes, 2);
+	});
+
+	it("a box that throws counts as unable, and is logged", async () => {
+		const r = rig();
+		r.box.available = async () => {
+			throw new Error("keychain did not answer");
+		};
+		await r.linear.probe();
+		assert.equal(r.linear.view().encryption, false);
+		assert.ok(r.log.some((l) => l.event === "linear-probe-failed"));
 	});
 });
 
@@ -226,7 +268,7 @@ describe("removing the key", () => {
 	it("deletes secrets/linear.bin, keeps the ttt setup, forgets the key in the redactor and offers a restart", async () => {
 		const r = rig();
 		await r.linear.save(KEY);
-		r.linear.signOut();
+		await r.linear.signOut();
 		assert.equal(existsSync(linearFile(r.layout)), false);
 		assert.ok(existsSync(tttConfigFile(r.work)), "the setup holds no key");
 		assert.deepEqual(r.released, [KEY]);
