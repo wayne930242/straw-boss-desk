@@ -4,7 +4,7 @@ import { h } from "../dom.ts";
 import { laterLabel } from "../wizard/later.ts";
 import { sectionBox, type SettingsCtx } from "./common.ts";
 
-// Accounts (spec: Settings). Each code host has a row: its state, **Sign in again** (the checks of the code-host screens first) and **Sign out** (only entries the app owns). Task 11 fills Claude and
+// Accounts (spec: Settings). Each code host has one card: its state, **Sign in again** (the checks of the code-host screens first), **Sign out** (only entries the app owns), and the flow of either. Task 11 fills Claude and
 // Linear; until then a sign-in put off for either shows as a badge.
 
 const BADGE: Record<ForgeState, { cls: string; key: string }> = {
@@ -17,17 +17,22 @@ const BADGE: Record<ForgeState, { cls: string; key: string }> = {
 
 const BUSY = ["checking", "waiting-code", "code", "working"];
 
-function forgeRow(ctx: SettingsCtx, view: ForgeView): HTMLElement {
+/**
+ * One card per code host: its name and state, the note on the state, its buttons, and the sign-in flow (the checks, a code, a refusal, the outcome of a sign-out) open inside the same card. The
+ * note is left out while a flow speaks, since a refusal says the same thing (SA-T10-1). Parts have ids scoped to the host, so cards of several hosts never share one (T10R-F003).
+ */
+function forgeCard(ctx: SettingsCtx, view: ForgeView): HTMLElement {
 	const badge = BADGE[view.state];
 	const busy = BUSY.includes(view.flow.phase);
 	const tool = ctx.tr(`forge.tool.${view.kind}`);
 	const signedIn = view.state === "signed-in" || view.state === "left";
 	// Sign out is offered whenever something may be there to remove: it removes what the app owns and, beside a sign-in it does not own, says that one was left alone (Removing a login).
 	const canSignOut = view.state !== "not-signed-in";
-	const note = view.state === "left" ? ctx.tr("forge.changed", { host: view.host, tool }) : view.state === "foreign" ? ctx.tr("forge.foreign", { host: view.host, tool }) : null;
+	const speaking = view.flow.phase !== "idle";
+	const note = speaking ? null : view.state === "left" ? ctx.tr("forge.changed", { host: view.host, tool }) : view.state === "foreign" ? ctx.tr("forge.foreign", { host: view.host, tool }) : null;
 	return h(
 		"li",
-		{ class: "forge-row", "data-forge": view.host, "data-state": view.state },
+		{ class: "forge-card", "data-forge": view.host, "data-state": view.state },
 		h(
 			"div",
 			{ class: "forge-head" },
@@ -41,14 +46,8 @@ function forgeRow(ctx: SettingsCtx, view: ForgeView): HTMLElement {
 			),
 		),
 		note === null ? null : h("p", { class: "note forge-note" }, note),
+		speaking ? forgePanel(ctx, view, { inCard: true }) : null,
 	);
-}
-
-/** Where a sign-in stands, under the list: a panel per code host that has something to say (the checks, a code, a refusal, the outcome of a sign-out). */
-function forgePanels(ctx: SettingsCtx): HTMLElement[] {
-	return ctx.view.forges
-		.filter((f) => f.flow.phase !== "idle")
-		.map((f) => h("div", { class: "panel forge-holder", "data-forge": f.host }, h("h3", {}, ctx.tr(`later.${f.kind}`, { host: f.host })), forgePanel(ctx, f)));
 }
 
 export function accounts(ctx: SettingsCtx): HTMLElement {
@@ -57,8 +56,7 @@ export function accounts(ctx: SettingsCtx): HTMLElement {
 	return sectionBox(
 		ctx,
 		"accounts",
-		ctx.view.forges.length === 0 ? null : h("ul", { class: "accounts", id: "accounts-forges" }, ...ctx.view.forges.map((f) => forgeRow(ctx, f))),
-		...forgePanels(ctx),
+		ctx.view.forges.length === 0 ? null : h("ul", { class: "accounts", id: "accounts-forges" }, ...ctx.view.forges.map((f) => forgeCard(ctx, f))),
 		others.length === 0
 			? null
 			: h("ul", { class: "accounts", id: "accounts-later" }, ...others.map((l) => h("li", { "data-item": l.item }, h("span", {}, laterLabel(ctx.tr, l)), h("span", { class: "badge badge-blocked" }, ctx.tr("settings.accounts.notSignedIn"))))),

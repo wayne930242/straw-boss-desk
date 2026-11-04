@@ -44,7 +44,8 @@ export function announcementParts(ctx: Ctx): string[] {
 			const flow = forge.flow;
 			// The checks, a refusal, the code, a problem and the outcome each speak once.
 			if (flow.phase === "checking") parts.push(ctx.tr("forge.checking"));
-			else if (flow.phase === "store-unavailable" || flow.phase === "plain-text") parts.push(ctx.tr("forge.storeUnavailable"));
+			else if (flow.phase === "store-unavailable") parts.push(ctx.tr("forge.storeUnavailable"));
+			else if (flow.phase === "plain-text") parts.push(ctx.tr("forge.storeUnavailable"), ctx.tr(flow.removed ? "forge.plainRemoved" : "forge.plainStays", { host }));
 			else if (flow.phase === "foreign") parts.push(ctx.tr(flow.changed.length > 0 ? "forge.changed" : "forge.foreign", { host, tool }));
 			else if (flow.phase === "code") parts.push(`${ctx.tr("forge.github.codeLabel")}: ${flow.code}`);
 			else if (flow.phase === "unverified") parts.push(ctx.tr("forge.unverified", { host }));

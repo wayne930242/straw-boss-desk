@@ -195,6 +195,7 @@ export const en = {
 		checking: "Checking this computer's credential store…",
 		storeUnavailable: "This computer's credential store is not available, so Straw Boss will not sign in (it would have to keep your token as plain text).",
 		plainRemoved: "The sign-in to {host} was removed again, so no token stays on this computer as plain text.",
+		plainStays: "Straw Boss could not remove the sign-in to {host} completely, so a token may still be on this computer as plain text. Details names the file.",
 		foreign: "This computer already has a sign-in to {host} from another program, probably your own {tool} command-line tool. Straw Boss would have to replace it, so it stops here and leaves yours as it is.",
 		changed: "The sign-in to {host} that Straw Boss made was changed afterwards, by your own {tool} command-line tool or by an agent using it. Straw Boss leaves it as it is.",
 		removeByHand: "If it is not yours, remove it by hand in the system's credential manager; the guide explains how.",
@@ -206,7 +207,7 @@ export const en = {
 		timeout: "The code was not approved within 15 minutes.",
 		done: "Signed in to {host}.",
 		signedOut: "Signed out of {host}.",
-		leftAlone: "Straw Boss did not sign out of {host}: a sign-in it does not own was left alone. What stays in the credential store: {names}.",
+		leftAlone: "Straw Boss did not sign out of {host}: the sign-in on this computer was not made by it, so it was left as it is.",
 		github: {
 			lead: "Straw Boss gets a one-time code from {host}. You type it on GitHub's page and approve “GitHub CLI” there.",
 			signIn: "Sign in with GitHub",
@@ -219,7 +220,7 @@ export const en = {
 		},
 		gitlab: {
 			lead: "Sign in to {host} with a personal access token. Straw Boss keeps it in this computer's credential store, never in a file.",
-			step1: "Open the token page. The name and the “api” scope are filled in; click Create personal access token.",
+			step1: "Open the token page. The name and the “api” scope are filled in; use the create button at the bottom of the page.",
 			step2: "Copy the token and paste it below.",
 			open: "Open the token page",
 			tokenLabel: "Token",

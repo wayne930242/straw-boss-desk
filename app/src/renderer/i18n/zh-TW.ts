@@ -197,6 +197,7 @@ export const zhTW: Messages = {
 		checking: "正在檢查這台電腦的憑證儲存區…",
 		storeUnavailable: "這台電腦的憑證儲存區無法使用，所以 Straw Boss 不會登入（否則得把你的權杖以純文字存放）。",
 		plainRemoved: "已經把 {host} 的登入移除，沒有任何權杖以純文字留在這台電腦上。",
+		plainStays: "Straw Boss 沒能把 {host} 的登入完全移除，這台電腦上可能還留著以純文字存放的權杖。「詳細資料」裡有它所在的檔案。",
 		foreign: "這台電腦上已經有一個來自其他程式的 {host} 登入，很可能是你自己的 {tool} 命令列工具。Straw Boss 若要登入就得取代它，所以先在這裡停下，並保留你原有的登入。",
 		changed: "Straw Boss 建立的 {host} 登入，後來被你自己的 {tool} 命令列工具或使用它的代理程式改過。Straw Boss 不會動它。",
 		removeByHand: "如果它不是你的，請在系統的憑證管理員裡手動移除；使用指南會說明做法。",
@@ -208,7 +209,7 @@ export const zhTW: Messages = {
 		timeout: "這組代碼在 15 分鐘內沒有被核准。",
 		done: "已登入 {host}。",
 		signedOut: "已登出 {host}。",
-		leftAlone: "Straw Boss 沒有登出 {host}：有一個不屬於它的登入被原封不動留下。憑證儲存區裡留下：{names}。",
+		leftAlone: "Straw Boss 沒有登出 {host}：這台電腦上的登入不是它建立的，所以保持原樣。",
 		github: {
 			lead: "Straw Boss 會向 {host} 取得一組一次性代碼。你在 GitHub 的網頁上輸入這組代碼，並在那裡同意「GitHub CLI」。",
 			signIn: "用 GitHub 登入",
@@ -221,7 +222,7 @@ export const zhTW: Messages = {
 		},
 		gitlab: {
 			lead: "用個人存取權杖登入 {host}。Straw Boss 會把它存進這台電腦的憑證儲存區，不會寫進任何檔案。",
-			step1: "開啟權杖頁面。名稱和「api」權限已經填好，按「建立個人存取權杖」。",
+			step1: "開啟權杖頁面。名稱和「api」權限已經填好，按頁面最下方的建立按鈕。",
 			step2: "複製權杖，貼到下面的欄位。",
 			open: "開啟權杖頁面",
 			tokenLabel: "權杖",

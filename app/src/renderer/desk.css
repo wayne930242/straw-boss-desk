@@ -38,7 +38,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; overflow-wrap: a
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* A panel: the GUI's settings group. */
-.panel, .finding, .refusal, .trust-item, .path, pre, .stages li, .accounts li {
+.panel, .finding, .refusal, .trust-item, .path, pre, .stages li, .accounts > li {
 	border: 1px solid var(--line);
 	border-radius: 12px;
 }

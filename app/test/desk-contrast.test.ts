@@ -69,7 +69,7 @@ const PAGE: Chain[] = [[]];
 /** The big surfaces: the wizard's card, the settings page's two columns, the runtime page's card, strip and notice rows. */
 const CONTAINERS: Chain[] = [[".wizard"], [".card"], [".nav"], [".body"], [".strip"], [".notice"]];
 /** Surfaces drawn inside the wizard's card and the settings body. */
-const INNER = [".panel", ".finding", ".refusal", ".trust-item", ".path", ".stages li", ".accounts li", "pre"];
+const INNER = [".panel", ".finding", ".refusal", ".trust-item", ".path", ".stages li", ".accounts > li", "pre"];
 const inside = (containers: readonly string[], inner: readonly string[]): Chain[] => containers.flatMap((c) => inner.map((i): Chain => [c, i]));
 const NESTED: Chain[] = inside([".wizard", ".body"], INNER);
 const EVERYWHERE: Chain[] = [...PAGE, ...CONTAINERS, ...NESTED];
@@ -95,8 +95,8 @@ const PLACEMENTS: Placement[] = [
 	{ fg: "pre", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal", ".trust-item"])] },
 	{ fg: ".problem", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal"])] },
 	{ fg: ".warn", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding"])] },
-	{ fg: "button", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal", ".trust-item", ".accounts li"])] },
-	{ fg: "button", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal", ".accounts li"])].map((c): Chain => [...c, "button:hover:not(:disabled)"]), own: false },
+	{ fg: "button", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal", ".trust-item", ".accounts > li"])] },
+	{ fg: "button", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal", ".accounts > li"])].map((c): Chain => [...c, "button:hover:not(:disabled)"]), own: false },
 	{ fg: 'button[aria-pressed="true"]', on: [...CONTAINERS] },
 	{ fg: 'button[aria-current="true"]', on: [...CONTAINERS] },
 	{ fg: "button.primary", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal"])] },
@@ -105,13 +105,13 @@ const PLACEMENTS: Placement[] = [
 	{ fg: 'input[type="password"]', on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
 	{ fg: "::placeholder", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])].map((c): Chain => [...c, 'input[type="text"]']), own: false },
 	{ fg: ".field-label", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
-	{ fg: ".badge", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
-	{ fg: ".badge-working", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])], own: false, plus: ".badge" },
-	{ fg: ".badge-done", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
-	{ fg: ".badge-failed", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
-	{ fg: ".badge-waiting", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
-	{ fg: ".badge-skipped", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
-	{ fg: ".badge-blocked", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },
+	{ fg: ".badge", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-working", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])], own: false, plus: ".badge" },
+	{ fg: ".badge-done", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-failed", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-waiting", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-skipped", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-blocked", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
 	{ fg: "th", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
 	{ fg: ".refusal th", on: [[".wizard", ".refusal"], [".body", ".refusal"]] },
 	{ fg: "details", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".trust-item"])] },
