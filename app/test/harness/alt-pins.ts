@@ -7,13 +7,14 @@ interface Pin { version: string; url: string; sha256: string; file: string }
 const gh = (file: string, sha256: string): Pin => ({ version: "2.103.2", url: `https://github.com/cli/cli/releases/download/v2.103.2/${file}`, sha256, file });
 const bun = (file: string, sha256: string): Pin => ({ version: "1.2.22", url: `https://github.com/oven-sh/bun/releases/download/bun-v1.2.22/${file}`, sha256, file });
 
-const node = (file: string, sha256: string): Pin => ({ version: "24.22.0", url: `https://nodejs.org/dist/v24.22.0/${file}`, sha256, file });
+const node = (file: string, sha256: string): Pin => ({ version: "24.22.2", url: `https://nodejs.org/dist/v24.22.2/${file}`, sha256, file });
 // Git for the update anchor (task 13): an earlier release of the same pins. The Windows hash is the SHA256 of the downloaded PortableGit; the macOS ones match the `.sha256` files of dugite-native v2.56.0-1.
 const gitWin = (file: string, sha256: string): Pin => ({ version: "2.56.0.2", url: `https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/${file}`, sha256, file });
 const gitMac = (file: string, sha256: string): Pin => ({ version: "2.56.0-1", url: `https://github.com/desktop/dugite-native/releases/download/v2.56.0-1/${file}`, sha256, file });
 
 export const ALT_GH_VERSION = "2.103.2";
-export const ALT_NODE_VERSION = "24.22.0";
+// A newer Node than stack.json's 24.22.1, so the Updates card's change list reads as an update (SA-T13-1); the other alternates are earlier releases.
+export const ALT_NODE_VERSION = "24.22.2";
 export const ALT_GIT_VERSION_WIN = "2.56.0.2";
 export const ALT_GIT_VERSION_MAC = "2.56.0-1";
 export const ALT_BUN_VERSION = "1.2.22";
@@ -30,11 +31,11 @@ export const ALT_BUN: Record<PlatformKey, Pin> = {
 	"darwin-x64": bun("bun-darwin-x64-baseline.zip", "e7c1a0b61b6466c6da2a725b3c51864fa050a262d2489f1a109f27364c743272"),
 };
 
-// SHA256 values from nodejs.org's SHASUMS256.txt of v24.22.0.
+// SHA256 values from nodejs.org's SHASUMS256.txt of v24.22.2.
 export const ALT_NODE: Record<PlatformKey, Pin> = {
-	"win32-x64": node("node-v24.22.0-win-x64.zip", "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3"),
-	"darwin-arm64": node("node-v24.22.0-darwin-arm64.tar.gz", "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5"),
-	"darwin-x64": node("node-v24.22.0-darwin-x64.tar.gz", "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91"),
+	"win32-x64": node("node-v24.22.2-win-x64.zip", "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"),
+	"darwin-arm64": node("node-v24.22.2-darwin-arm64.tar.gz", "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a"),
+	"darwin-x64": node("node-v24.22.2-darwin-x64.tar.gz", "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52"),
 };
 
 export const ALT_GIT: Record<PlatformKey, Pin> = {

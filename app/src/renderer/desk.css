@@ -102,6 +102,7 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
 .badge-working { color: var(--accent); }
 .badge-done { color: var(--ok); background: var(--tint-ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 .badge-failed { color: var(--err-soft); background: var(--tint-err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.badge-warn { color: var(--amber); background: var(--tint-warn); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
 .badge-waiting, .badge-skipped, .badge-blocked { color: var(--dim); background: transparent; border-color: var(--line); }
 
 /* A table, as the GUI's roster: a quiet header, a full border on every cell. */

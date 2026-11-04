@@ -109,6 +109,7 @@ const PLACEMENTS: Placement[] = [
 	{ fg: ".badge-working", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])], own: false, plus: ".badge" },
 	{ fg: ".badge-done", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
 	{ fg: ".badge-failed", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
+	{ fg: ".badge-warn", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
 	{ fg: ".badge-waiting", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
 	{ fg: ".badge-skipped", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },
 	{ fg: ".badge-blocked", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts > li"])] },

@@ -90,7 +90,7 @@ describe("Updates: three cards, one action row each", () => {
 
 	it("says what a refusal is, with its reason, for every reason of both channels", () => {
 		const stackReasons: StackRefusal[] = ["bad-signature", "no-signature", "malformed-signature", "no-keys", "bad-key-list", "invalid", "older", "min-shell", "recipe-tool", "too-large"];
-		const shellReasons: ShellRefusal[] = ["bad-signature", "no-signature", "malformed-signature", "no-keys", "bad-key-list", "too-large"];
+		const shellReasons: ShellRefusal[] = ["bad-signature", "no-signature", "malformed-signature", "no-keys", "bad-key-list", "too-large", "bad-manifest", "not-newer", "hash-mismatch"];
 		for (const locale of ["en", "zh-TW"] as const) {
 			for (const reason of stackReasons) {
 				const note = card(draw(view({ stack: { phase: "refused", reason, generation: 4, minShell: "2.0.0", tools: ["bun", "tool"] } }), locale), "stack").querySelector("#update-stack-note");
@@ -118,6 +118,10 @@ describe("Updates: three cards, one action row each", () => {
 		assert.equal(en.querySelector("#update-stack-note")?.textContent, "The update to generation 6 stopped at “Coding agent” and was undone. You are on generation 5 again.");
 		assert.equal(en.querySelector("#update-stack-note")?.getAttribute("data-reason"), "pi");
 		assert.equal(en.querySelector(".badge")?.getAttribute("data-badge"), "rolled-back");
+		// SA-T13-2: a rollback is a safe recovery, so the badge is the warning tone, not the red of a refusal.
+		assert.match(en.querySelector(".badge")?.className ?? "", /\bbadge-warn\b/);
+		assert.doesNotMatch(en.querySelector(".badge")?.className ?? "", /badge-failed/);
+		assert.match(card(draw(view({ stack: { phase: "refused", reason: "older", generation: 1 } })), "stack").querySelector(".badge")?.className ?? "", /badge-failed/, "a refusal stays red");
 		const zh = card(draw(view({ generation: 5, stack: { phase: "rolled-back", generation: 6, stage: "pi", category: "registry", restored: true, at: "x" } }), "zh-TW"), "stack");
 		assert.equal(zh.querySelector("#update-stack-note")?.textContent, "更新到第 6 代時，在「代理程式」這一步停了下來，已經還原。你目前又回到第 5 代。".replace("代理程式", t("zh-TW", "install.stage.pi")));
 		const partly = card(draw(view({ stack: { phase: "rolled-back", generation: 6, stage: "pi", category: "registry", restored: false, at: "x" } })), "stack").querySelector("#update-stack-note")?.textContent;
@@ -179,6 +183,61 @@ describe("Updates: three cards, one action row each", () => {
 		const section = draw(undefined);
 		assert.equal(section.querySelectorAll("li.update-card").length, 0);
 		assert.equal(section.querySelector("#app-version")?.textContent, "Version 0.0.1");
+	});
+});
+
+describe("an error is worded from the catalog and keeps the raw text under Details (R13-F006)", () => {
+	const raw = "the stack could not be stopped: C:\\Users\\x\\tools\\node.exe still runs";
+	it("shows the sentence of its kind in the interface language and never the raw text as the sentence", () => {
+		for (const locale of ["en", "zh-TW"] as const) {
+			for (const [stack, key] of [
+				[{ phase: "error", kind: "busy", detail: raw }, "settings.updates.stack.errorBusy"],
+				[{ phase: "error", kind: "other", detail: raw }, "settings.updates.stack.errorOther"],
+				[{ phase: "error", kind: "network", detail: raw }, "settings.updates.stack.errorNetwork"],
+			] as const) {
+				const c = card(draw(view({ stack }), locale), "stack");
+				assert.equal(c.querySelector("#update-stack-note")?.textContent, t(locale, key), `${locale} ${stack.kind}`);
+				assert.equal(c.querySelector(".update-detail")?.textContent, raw);
+				assert.equal(c.querySelector("details.update-details summary")?.textContent, locale === "en" ? "Details" : "詳細資料");
+			}
+			const app = card(draw(view({ shell: { phase: "error", kind: "other", detail: raw } }), locale), "app");
+			assert.equal(app.querySelector("#update-app-note")?.textContent, t(locale, "settings.updates.app.errorOther"));
+			assert.equal(app.querySelector(".update-detail")?.textContent, raw);
+		}
+		const zh = card(draw(view({ stack: { phase: "error", kind: "busy", detail: raw } }), "zh-TW"), "stack").querySelector("#update-stack-note")?.textContent ?? "";
+		assert.doesNotMatch(zh, /[A-Za-z]{4,}/, "no English word in the zh-TW sentence");
+	});
+
+	it("shows no Details when there is no error, and the refused offer of a failed install start with its reason", () => {
+		assert.equal(card(draw(view()), "stack").querySelector(".update-details"), null);
+		const failed = card(draw(view({ shell: { phase: "ready", version: "0.0.2", installFailed: "No update filepath provided" } })), "app");
+		assert.equal(failed.querySelector("#update-app-note")?.textContent, "The installer for version 0.0.2 could not start, so nothing changed: your agents are running again. You can try again.");
+		assert.equal(failed.querySelector("#update-app-note")?.getAttribute("data-reason"), "install-failed");
+		assert.equal(failed.querySelector(".update-detail")?.textContent, "No update filepath provided");
+		assert.deepEqual(buttons(failed).map((b) => b.id), ["update-restart"], "the offer is armed again");
+	});
+});
+
+describe("the Updates copy uses the words the rest of the app uses (SA-T13-3)", () => {
+	it("calls the PM's agents 代理程式 in zh-TW wherever the English says agents, as the wizard and the other settings do", () => {
+		const walk = (value: unknown, path: string, out: Array<[string, string]>): Array<[string, string]> => {
+			if (typeof value === "string") out.push([path, value]);
+			else if (typeof value === "object" && value !== null) for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`, out);
+			return out;
+		};
+		const en = new Map(walk(catalogs.en.settings.updates, "updates", []));
+		const zh = new Map(walk(catalogs["zh-TW"].settings.updates, "updates", []));
+		let seen = 0;
+		for (const [path, text] of en) {
+			if (!/\bagents\b/.test(text)) continue;
+			seen++;
+			assert.match(zh.get(path) ?? "", /代理程式/, path);
+			assert.doesNotMatch(zh.get(path) ?? "", /助理|代理人|智慧代理|AI/, path);
+		}
+		assert.ok(seen >= 2);
+		// The rest of the catalog says it the same way.
+		const elsewhere = walk(catalogs["zh-TW"], "catalog", []).filter(([path, text]) => !path.startsWith("catalog.settings.updates") && text.includes("你的代理程式"));
+		assert.ok(elsewhere.length >= 2, "the wizard's copy uses the same term");
 	});
 });
 
