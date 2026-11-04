@@ -335,7 +335,7 @@ const stackUpdater = new StackUpdater({
 	fetchBytes,
 	runEngine: runEngineForUpdate,
 	withStackStopped: (work, options) => supervisor.withStackStopped(work, options),
-	recipeTools: () => wizard.recipe?.tools ?? [],
+	recipeTools: (stack) => wizard.recipeAgainst(stack)?.tools ?? [],
 	reloadStack: () => wizard.reloadStack(),
 	log: (fields) => runtimeLog.event(fields),
 });
@@ -352,6 +352,7 @@ const shellUpdater = new ShellUpdater({
 	reveal: (file) => shell.showItemInFolder(file),
 	// The stack stops the way a quit stops it, and the quit that electron-updater makes next finds nothing left to hold it.
 	prepareQuit: () => stopForUpdate(),
+	resumeAfterFailedInstall: () => resumeAfterFailedUpdate(),
 	log: (fields) => runtimeLog.event(fields),
 });
 
@@ -474,6 +475,18 @@ async function stopForUpdate(): Promise<void> {
 	const ok = await stopAll();
 	stopped = true;
 	runtimeLog.event({ event: "update-stop", ok });
+}
+
+/** The installer could not start (spec: Updater): the app goes on as it was before the click. The stack starts again, the engine and the supervisor take work, and the checks run again. */
+async function resumeAfterFailedUpdate(): Promise<void> {
+	stopping = false;
+	stopped = false;
+	supervisor.cancelQuit();
+	engineHost.resume();
+	updates.start();
+	runtimeLog.event({ event: "update-resume" });
+	// A start that fails shows on the runtime page through the supervisor's `failure` event.
+	await supervisor.start().catch(() => undefined);
 }
 
 if (!app.requestSingleInstanceLock()) {

@@ -782,6 +782,11 @@ export class Supervisor {
 		this.#quitting = true;
 	}
 
+	/** The quit did not happen (the installer of an update could not start): a job that stops the stack for its work starts it again, as before. */
+	cancelQuit(): void {
+		this.#quitting = false;
+	}
+
 	/**
 	 * Runs `work` with the stack stopped, and starts the stack again when it was running (T6-F006, T7-F007). Repair, a stack update, and a recipe update run npm in the
 	 * live prefixes (`tools/npm` and `<agent>/npm`) while the sb server and every pi extension run from them; the stages that install or remove a package must not

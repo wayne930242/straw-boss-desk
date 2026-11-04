@@ -1143,6 +1143,15 @@ describe("maintenance: the npm stages do not run beside a live stack (T6-F006, T
 		assert.deepEqual(w.order.slice(-2), ["cli stop", "herdr server stop"]);
 	});
 
+	it("starts the stack again after the work once the quit is cancelled (the installer of an update could not start)", async () => {
+		const w = world();
+		await w.supervisor.start();
+		w.supervisor.beginQuit();
+		w.supervisor.cancelQuit();
+		await w.supervisor.withStackStopped(async () => "worked");
+		assert.equal(w.supervisor.state, "running");
+	});
+
 	it("starts the stack again when the work throws, and does not start one that was not running", async () => {
 		const running = world();
 		await running.supervisor.start();

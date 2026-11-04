@@ -16,12 +16,13 @@ import { after, before, describe, it as nodeIt } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { platformKey } from "../../src/main/bootstrap/stack.ts";
 import { stackFiles } from "../../src/main/update/stack.ts";
+import { compareVersions } from "../../src/main/update/verify.ts";
 import { ALT_NODE_VERSION, altStack } from "../harness/alt-pins.ts";
 import { createWorld, disposeWorld, noteUserPath, realStack, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
-import { FeedServer, latestYml, makeTestKey, signature, type TestKey } from "../fixtures/feed/feed-server.ts";
+import { FeedServer, latestYml, makeTestKey, type TestKey } from "../fixtures/feed/feed-server.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
 const enabled = process.env.SBD_E2E === "1";
@@ -164,10 +165,10 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 	const stackReason = (): Promise<string | null> => noteOf("stack").getAttribute("data-reason");
 	const activeText = (): string => readFileSync(stackFiles(world.layout).active, "utf8");
 	/** The feed offers the app itself (nothing newer), so the shell channel is quiet. */
-	const offerShell = (version: string, bytes: Buffer, signer: TestKey | null, listed: Buffer = bytes): void => {
+	const offerShell = (version: string, bytes: Buffer, signer: TestKey | null, listed: Buffer = bytes, signedVersion: string = version): void => {
 		feed.put(LATEST, latestYml({ version, file: INSTALLER_NAME, bytes: listed }));
 		if (signer === null) feed.put(INSTALLER_NAME, bytes);
-		else feed.putSigned(INSTALLER_NAME, bytes, signer.privateKey);
+		else feed.putShellSigned(INSTALLER_NAME, bytes, signedVersion, signer.privateKey);
 	};
 	/** Files of that name under the scratch home: where electron-updater keeps what it downloaded. */
 	const findFiles = (dir: string, name: string, found: string[] = []): string[] => {
@@ -266,26 +267,42 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 	});
 
 	it("refuses an installer or dmg with a byte changed after its latest file was regenerated: deleted, never offered", async () => {
-		// One byte changed, the latest file written to match the new bytes (so electron-updater's SHA512 passes), and the signature of the original file, made by a key of the list: only the Ed25519 check can tell.
+		// One byte changed, the latest file written to match the new bytes (so electron-updater's SHA512 passes), and the signed manifest of the original file, made by a key of the list: only the check against the signed SHA512 can tell.
 		const original = installerBytes("0.0.3");
 		const tampered = Buffer.from(original);
 		tampered[40] = (tampered[40] as number) ^ 0xff;
 		feed.clear();
 		feed.put(LATEST, latestYml({ version: "0.0.3", file: INSTALLER_NAME, bytes: tampered }));
-		feed.put(INSTALLER_NAME, tampered);
+		feed.putShellSigned(INSTALLER_NAME, tampered, "0.0.3", keyA.privateKey, original);
 		feed.putSigned("stack.json", `${JSON.stringify(realStack, null, "\t")}\n`, keyA.privateKey);
-		feed.put(`${INSTALLER_NAME}.sig`, signature(original, keyA.privateKey));
 		await checkNow();
 		if (!isWin) {
 			await until("the app card to offer the version", 60_000, async () => (await appCard().getAttribute("data-state")) === "available");
 			await settings.locator("#update-download").click();
 		}
 		await until("the app card to refuse the file", 120_000, async () => (await appCard().getAttribute("data-state")) === "refused");
-		assert.equal(await noteOf("app").getAttribute("data-reason"), "bad-signature");
+		assert.equal(await noteOf("app").getAttribute("data-reason"), "hash-mismatch");
 		assert.equal(await settings.locator("#update-restart, #update-download, #update-reveal").count(), 0, "no action is left for a refused file");
 		assert.deepEqual(findFiles(world.home, INSTALLER_NAME).filter((f) => readFileSync(f).equals(tampered)), [], "the file that failed the check is deleted");
 		assert.equal(await app.evaluate(() => ((globalThis as { __revealed?: string[] }).__revealed ?? []).length), 0, "nothing was revealed");
 		await shotBoth("app-refused");
+	});
+
+	it("refuses a genuine, signed installer of an older release that latest.yml announces as the newer version: the version comes from the signed manifest (R13-F002)", async () => {
+		const older = installerBytes("0.0.0");
+		feed.clear();
+		// The key signed this file as 0.0.0; the unsigned latest file says 0.0.4.
+		offerShell("0.0.4", older, keyA, older, "0.0.0");
+		feed.putSigned("stack.json", `${JSON.stringify(realStack, null, "\t")}\n`, keyA.privateKey);
+		await checkNow();
+		if (!isWin) {
+			await until("the app card to offer the version", 60_000, async () => (await appCard().getAttribute("data-state")) === "available");
+			await settings.locator("#update-download").click();
+		}
+		await until("the app card to refuse the file", 120_000, async () => (await appCard().getAttribute("data-state")) === "refused");
+		assert.equal(await noteOf("app").getAttribute("data-reason"), "bad-manifest");
+		assert.deepEqual(findFiles(world.home, INSTALLER_NAME).filter((f) => readFileSync(f).equals(older)), [], "the file is deleted");
+		assert.equal(await app.evaluate(() => ((globalThis as { __revealed?: string[] }).__revealed ?? []).length), 0, "nothing was revealed");
 	});
 
 	it("offers an installer or dmg signed by the test key", async () => {
@@ -313,7 +330,11 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		await checkedStack({ ...altStack(realStack, { node: true }), generation: generation + 1 });
 		assert.equal(await stackState(), "available");
 		assert.equal(await settings.locator("#update-changes li").count(), 1);
-		assert.match((await settings.locator("#update-changes li").first().textContent()) ?? "", new RegExp(`${ALT_NODE_VERSION.replace(/\./g, "\\.")}`));
+		const change = (await settings.locator("#update-changes li").first().textContent()) ?? "";
+		assert.match(change, new RegExp(`${ALT_NODE_VERSION.replace(/\./g, "\\.")}`));
+		// SA-T13-1: the change list reads as an update, a rising version, not a downgrade.
+		const [from, to] = change.match(/\d+\.\d+\.\d+/g) ?? [];
+		assert.ok(from !== undefined && to !== undefined && compareVersions(to, from) > 0, `the Node in the change list rises: ${change}`);
 		await shotBoth("available");
 
 		// Applied in zh-TW: the page is left in that language while the apply runs, so the applying shot is a Chinese one.
