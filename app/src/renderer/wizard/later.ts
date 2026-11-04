@@ -7,7 +7,7 @@ export function laterLabel(tr: Ctx["tr"], item: LaterItem): string {
 	return "host" in item ? tr(`later.${item.item}`, { host: item.host }) : tr(`later.${item.item}`);
 }
 
-function laterStep(ctx: Ctx, step: "claude" | "hosts" | "linear", lead: string): HTMLElement {
+function laterStep(ctx: Ctx, step: "claude" | "linear", lead: string): HTMLElement {
 	return h(
 		"div",
 		{ class: "step", "data-step": step },
@@ -18,10 +18,6 @@ function laterStep(ctx: Ctx, step: "claude" | "hosts" | "linear", lead: string):
 	);
 }
 
-/** Steps 7 to 9: sign-in placeholders. Every one ends in **Later**; tasks 10 and 11 put the real sign-in beside it. */
+/** Steps 7 and 9: sign-in placeholders. Every one ends in **Later**; task 11 puts the real sign-in beside it (step 8, the code hosts, is `hosts.ts`). */
 export const claude = (ctx: Ctx): HTMLElement => laterStep(ctx, "claude", ctx.tr("claude.lead"));
-export const hosts = (ctx: Ctx): HTMLElement => {
-	const forge = ctx.view.hosts.forges[ctx.view.hosts.index];
-	return laterStep(ctx, "hosts", ctx.tr("hosts.lead", { host: forge?.host ?? "" }));
-};
 export const linear = (ctx: Ctx): HTMLElement => laterStep(ctx, "linear", ctx.tr("linear.lead"));

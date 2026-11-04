@@ -26,7 +26,7 @@ const view = (over: Partial<WizardView> = {}): WizardView => ({
 	folder: { path: "/h/StrawBoss", defaultPath: "/h/StrawBoss", problem: null },
 	install: { status: "running", stages: [{ name: "node", badge: "working" }], current: "node", failures: [], tail: [], crashed: null },
 	start: { status: "idle", failure: null },
-	hosts: { forges: [], index: 0 },
+	hosts: { forges: [], index: 0, current: null },
 	linearOffered: false,
 	later: [],
 	...over,

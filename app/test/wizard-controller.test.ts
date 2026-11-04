@@ -10,6 +10,7 @@ import { WizardController, type WizardDeps } from "../src/main/wizard/controller
 import type { EngineEnd, EngineHost } from "../src/main/wizard/engine-host.ts";
 import { readWizardFile } from "../src/main/wizard/state-file.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
+import { FakeAccounts } from "./harness/fake-accounts.ts";
 
 // The wizard's step machine (task 9): the steps in order, what is written and when, the refusals, the resume of an install, an engine that crashes, and the sign-in placeholders.
 
@@ -51,6 +52,7 @@ function make(options: MakeOptions = {}) {
 	scratch.push(made.base);
 	const layout = testLayout(made.root);
 	const engine = new FakeEngine();
+	const accounts = new FakeAccounts();
 	const log: Array<Record<string, unknown>> = [];
 	let starts = 0;
 	const deps: WizardDeps = {
@@ -76,6 +78,7 @@ function make(options: MakeOptions = {}) {
 			},
 			repairLock: () => undefined,
 		},
+		accounts,
 		osLocale: () => "en",
 		pickRecipeFile: async () => null,
 		pickFolder: async () => null,
@@ -86,7 +89,7 @@ function make(options: MakeOptions = {}) {
 		...options.pick,
 	};
 	const controller = new WizardController(deps);
-	return { controller, layout, engine, deps, base: made.base, log, starts: () => starts };
+	return { controller, layout, engine, accounts, deps, base: made.base, log, starts: () => starts };
 }
 
 const recipeFiles = (layout: { recipe: string }): string[] => (existsSync(layout.recipe) ? readdirSync(layout.recipe) : []);
@@ -407,6 +410,79 @@ describe("the sign-in steps and the end", () => {
 		assert.equal(done, 1);
 		assert.equal(readWizardFile(w.layout)?.done, true);
 		assert.equal(c.view().step, "launching");
+	});
+
+	it("the hosts step runs the checks of the forge on screen when it opens, and again for the next forge", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "later" });
+		assert.deepEqual(w.accounts.begun, ["github.com"], "the first forge's checks start with the step");
+		assert.equal(c.view().hosts.current?.flow.phase, "ready");
+		await c.act({ type: "later" });
+		assert.deepEqual(w.accounts.begun, ["github.com", "gitlab.example.com"]);
+		assert.deepEqual(w.accounts.cancelled, ["github.com"], "Later ends a sign-in that waits");
+		assert.equal(c.view().hosts.current?.host, "gitlab.example.com");
+	});
+
+	it("Next is for a sign-in that passed its verdict, and puts nothing off; Later puts the host off", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "later" });
+		await c.act({ type: "hosts-next" });
+		assert.equal(c.view().hosts.index, 0, "no Next before the sign-in is done");
+		w.accounts.setFlow("github.com", { phase: "done" });
+		await c.act({ type: "hosts-next" });
+		assert.equal(c.view().hosts.index, 1);
+		assert.deepEqual(c.later, [{ item: "claude" }], "the signed-in forge was not put off");
+		await c.act({ type: "later" });
+		assert.deepEqual(c.later, [{ item: "claude" }, { item: "gitlab", host: "gitlab.example.com" }]);
+	});
+
+	it("a sign-in that passes takes its forge off the list of sign-ins put off, in the wizard and after it", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "later" });
+		await c.act({ type: "later" });
+		await c.act({ type: "later" });
+		assert.deepEqual(c.later.map((l) => l.item), ["claude", "github", "gitlab"]);
+		let changes = 0;
+		c.onChange(() => changes++);
+		w.accounts.signedIn("github", "github.com");
+		assert.deepEqual(c.later, [{ item: "claude" }, { item: "gitlab", host: "gitlab.example.com" }]);
+		assert.deepEqual(readWizardFile(w.layout)?.later, c.later, "written to wizard.json");
+		assert.ok(changes >= 1);
+		w.accounts.signedIn("gitlab", "gitlab.example.com");
+		assert.deepEqual(c.later, [{ item: "claude" }]);
+	});
+
+	it("forge requests are honored only for a host the recipe listed, with its own kind, and in the shape the page may send", async () => {
+		const w = await atClaude();
+		const c = w.controller;
+		await c.act({ type: "forge-begin", kind: "github", host: "github.com" });
+		await c.act({ type: "forge-sign-out", kind: "gitlab", host: "gitlab.example.com" });
+		assert.deepEqual(w.accounts.actions.map((a) => a.type), ["forge-begin", "forge-sign-out"]);
+		w.accounts.actions.length = 0;
+		await c.act({ type: "forge-begin", kind: "github", host: "evil.example.org" });
+		await c.act({ type: "forge-begin", kind: "gitlab", host: "github.com" });
+		await c.forgeAction({ type: "forge-token", host: "gitlab.example.com", token: "" });
+		await c.forgeAction({ type: "forge-token", host: "gitlab.example.com", token: "x".repeat(513) });
+		await c.forgeAction({ type: "forge-start", kind: "gitlab", host: "gitlab.example.com" } as never);
+		await c.forgeAction({ type: "forge-nope", host: "github.com" } as never);
+		await c.forgeAction({ type: "forge-token", host: 7, token: "a" } as never);
+		assert.deepEqual(w.accounts.actions, []);
+		await c.forgeAction({ type: "forge-token", host: "gitlab.example.com", token: "glpat-x" });
+		assert.equal(w.accounts.actions.length, 1);
+	});
+
+	it("a relaunch on the hosts step starts the checks of the forge it stopped at", async () => {
+		const w = await atClaude();
+		await w.controller.act({ type: "later" });
+		const again = make();
+		mkdirSync(again.layout.state, { recursive: true });
+		writeFileSync(join(again.layout.state, "wizard.json"), JSON.stringify({ schema: 1, step: "hosts", done: false, later: [], hostsIndex: 0, noRecipeForges: [{ kind: "gitlab", host: "gitlab.example.com" }] }));
+		const fresh = new WizardController({ ...again.deps });
+		await fresh.resume();
+		assert.deepEqual(again.accounts.begun, ["gitlab.example.com"]);
 	});
 
 	it("an action out of turn does nothing", async () => {

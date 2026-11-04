@@ -102,6 +102,7 @@ const PLACEMENTS: Placement[] = [
 	{ fg: "button.primary", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal"])] },
 	{ fg: "button.primary", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".finding", ".refusal"])].map((c): Chain => [...c, "button.primary:hover:not(:disabled)"]), own: false },
 	{ fg: 'input[type="text"]', on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
+	{ fg: 'input[type="password"]', on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
 	{ fg: "::placeholder", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])].map((c): Chain => [...c, 'input[type="text"]']), own: false },
 	{ fg: ".field-label", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".panel"])] },
 	{ fg: ".badge", on: [...CONTAINERS, ...inside([".wizard", ".body"], [".stages li", ".accounts li"])] },

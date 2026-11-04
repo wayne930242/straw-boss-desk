@@ -14,6 +14,8 @@ export interface RuntimeLogOptions extends RotationOptions {
 	dir: string;
 	redactor: Redactor;
 	now?: () => Date;
+	/** The file name inside `dir`; `start.jsonl` for the supervisor, `shell.jsonl` for the shell's own events (the code-host sign-ins). */
+	file?: string;
 }
 
 export class RuntimeLog {
@@ -26,7 +28,7 @@ export class RuntimeLog {
 	constructor(options: RuntimeLogOptions) {
 		this.redactor = options.redactor;
 		this.#now = options.now ?? (() => new Date());
-		this.#path = join(options.dir, "start.jsonl");
+		this.#path = join(options.dir, options.file ?? "start.jsonl");
 		this.#keep = options.keep;
 		mkdirSync(options.dir, { recursive: true });
 		this.file = new RotatingFile(this.#path, {

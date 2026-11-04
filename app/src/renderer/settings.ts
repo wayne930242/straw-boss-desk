@@ -1,6 +1,6 @@
 import type { Locale } from "../shared/locale.ts";
 import { SETTINGS_SECTIONS, type SettingsSection, type SettingsView } from "../shared/wizard.ts";
-import { clear, h } from "./dom.ts";
+import { carryPasswords, clear, h, restorePasswords } from "./dom.ts";
 import { catalogs, t } from "./i18n/index.ts";
 import { accounts } from "./settings/accounts.ts";
 import { computer } from "./settings/computer.ts";
@@ -34,8 +34,10 @@ function draw(): void {
 		h("h2", {}, t(locale, "settings.title")),
 		...SETTINGS_SECTIONS.map((s) => h("button", { type: "button", class: "nav-item", "data-section": s, "aria-current": String(s === view?.section), onclick: () => ctx.act({ type: "section", section: s }) }, t(locale, `menu.${s}`))),
 	);
+	const typed = carryPasswords(body as HTMLElement);
 	clear(body as HTMLElement);
 	(body as HTMLElement).append(SECTIONS[view.section](ctx));
+	restorePasswords(body as HTMLElement, typed);
 }
 
 if (shell) {

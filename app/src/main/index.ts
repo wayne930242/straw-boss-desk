@@ -1,4 +1,4 @@
-import { app, dialog, Menu, powerMonitor, session, utilityProcess } from "electron";
+import { app, clipboard, dialog, Menu, powerMonitor, session, shell, utilityProcess } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,6 +25,9 @@ import { loadStartConfig } from "./runtime/config.ts";
 import { RuntimeLog, runtimeRedactor } from "./runtime/log.ts";
 import { attachPower } from "./runtime/power.ts";
 import { Supervisor } from "./runtime/supervisor.ts";
+import { isInstalled, readInstalled } from "./runtime/readiness.ts";
+import { ForgeAccounts } from "./accounts/session.ts";
+import { spawnLogin } from "./accounts/cli.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
 
 // The lifecycle: single instance, Chromium's profile inside the app data root, one window holding the two views the design needs, the GUI view (pi-straw-boss) and the shell
@@ -44,6 +47,8 @@ const layout = computeLayout({ root, home, platform: process.platform === "win32
 const assetsDir = join(import.meta.dirname, "..", "assets");
 const secretPatterns: unknown = JSON.parse(readFileSync(join(assetsDir, "secret-patterns.json"), "utf8"));
 const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(secretPatterns) });
+// `logs/shell.jsonl`: the shell's own events, the code-host sign-ins among them (no token, no code, no command output beyond one redacted line).
+const shellLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(secretPatterns), file: "shell.jsonl" });
 // The recipe validator is a plain module beside the recipe schema (`recipe/validate.mjs`), copied to `dist/assets/recipe` by `scripts/copy-assets.ts`; it is loaded from there, not bundled.
 const { validateRecipe } = (await import(pathToFileURL(join(assetsDir, "recipe", "validate.mjs")).href)) as { validateRecipe: ValidateRecipe };
 const platform = createPlatform();
@@ -86,6 +91,24 @@ const supervisor = new Supervisor({
 
 let desk: DeskWindow | undefined;
 
+// The code-host sign-ins (task 10): the store probe, the existing-sign-in check, the device code and token logins, the verdict, and the removal of a login.
+const accounts = new ForgeAccounts({
+	layout,
+	credentials: platform.credentials,
+	run,
+	spawn: spawnLogin,
+	appEnv: process.env,
+	current: () => {
+		const found = readInstalled(layout);
+		return isInstalled(found) ? found.current : null;
+	},
+	proxyEnv: (hosts) => supervisor.engineProxyEnv(hosts),
+	log: (fields) => shellLog.event(fields),
+	// The addresses are built by `accounts/session.ts` from a host the recipe listed: https, the host's own device page or token page.
+	openExternal: (url) => void shell.openExternal(url),
+	writeClipboard: (text) => clipboard.writeText(text),
+});
+
 /** The most a recipe file is read for: the validator's own limit is 256 KB, so a bigger file is handed over empty and refused by the validator (`too-large` is not reached; `invalid-json` is). */
 const MAX_RECIPE_READ = 300 * 1024;
 
@@ -99,6 +122,7 @@ const wizard = new WizardController({
 	validate: validateRecipe,
 	engine: engineHost,
 	supervisor,
+	accounts,
 	// A function: `app.getLocale()` answers the default (en-US) before the app is ready, and the controller is built at module load.
 	osLocale: () => pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
 	pickRecipeFile: async () => {
@@ -131,7 +155,7 @@ function refreshNotices(): void {
 
 function settingsView(section: SettingsSection): SettingsView {
 	const recipe = wizard.recipe;
-	return { locale: wizard.locale, section, later: wizard.later, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
+	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev" };
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
@@ -218,6 +242,8 @@ function stopThenExit(code: (ok: boolean) => number): void {
 	// An install running in the engine process ends first (a quit during the install resumes at the next launch: verified stages are skipped), then the stack stops.
 	// A Repair job in the queue does not start the stack again once the engine is gone (T9-F002).
 	supervisor.beginQuit();
+	// A device-code login that waits ends with the app.
+	accounts.dispose();
 	engineHost
 		.dispose()
 		.catch(() => undefined)
@@ -279,6 +305,11 @@ if (!app.requestSingleInstanceLock()) {
 			wizardView: () => wizard.view(),
 			onWizardAction: (action) => wizard.act(action),
 			settingsView,
+			onForgeAction: (action) => wizard.forgeAction(action),
+			// Settings' Accounts rows show what the store holds now, not what it held when the app started.
+			onSettingsShown: (section) => {
+				if (section === "accounts") void accounts.refresh(wizard.forges).catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
+			},
 			onSessionEnd: () => supervisor.stopForSessionEnd(),
 			log: (fields) => runtimeLog.event(fields),
 		});
@@ -286,6 +317,7 @@ if (!app.requestSingleInstanceLock()) {
 		wizard.onChange(() => {
 			desk?.pushWizard(wizard.view());
 			desk?.pushSettings();
+			if (wizard.done) refreshNotices();
 			if (wizard.locale !== shownLocale) {
 				shownLocale = wizard.locale;
 				desk?.setLocale(shownLocale);

@@ -2,6 +2,7 @@ import { BaseWindow, dialog, ipcMain, session, shell, WebContentsView, type IpcM
 import { join } from "node:path";
 import { CHANNELS, type ShellAction, type ShellState } from "../shared/shell-state.ts";
 import type { Locale } from "../shared/locale.ts";
+import { isForgeAction, type ForgeAction } from "../shared/accounts.ts";
 import { SETTINGS_SECTIONS, type SettingsAction, type SettingsSection, type SettingsView, type ShellNotice, type WizardAction, type WizardView } from "../shared/wizard.ts";
 import { dialogTitle, externalLink, guiOriginOf, guiPortOf, isGuiUrl, permissionAllowed } from "./page-security.ts";
 import { closeWindowViews, type GuiSurface } from "./gui-presenter.ts";
@@ -33,6 +34,10 @@ export interface DeskWindowDeps {
 	onWizardAction(action: WizardAction): Promise<void>;
 	/** The settings page's state. */
 	settingsView(section: SettingsSection): SettingsView;
+	/** Settings shows a section (opened, or chosen in its list): the Accounts rows ask the store again. */
+	onSettingsShown?(section: SettingsSection): void;
+	/** A request of settings' Accounts section (sign in again, sign out, the token); the wizard's own go through `onWizardAction`. */
+	onForgeAction(action: ForgeAction): Promise<void>;
 	/** Windows log off or shutdown (`session-end`): the stop that fits in the time Windows gives. */
 	onSessionEnd(): void;
 	log: RuntimeEvent;
@@ -204,6 +209,7 @@ export class DeskWindow {
 		this.#section = section;
 		this.#settingsOpen = true;
 		this.#applyState();
+		this.#d.onSettingsShown?.(section);
 	}
 
 	closeSettings(): void {
@@ -411,6 +417,7 @@ export class DeskWindow {
 			if (a.type === "close") this.closeSettings();
 			else if (a.type === "section" && (SETTINGS_SECTIONS as readonly unknown[]).includes(a.section)) this.openSettings(a.section);
 			else if (a.type === "set-locale" && (a.locale === "en" || a.locale === "zh-TW")) await this.#d.onWizardAction({ type: "set-locale", locale: a.locale });
+			else if (isForgeAction(a)) await this.#d.onForgeAction(a);
 		});
 	}
 }

@@ -10,5 +10,12 @@ html, body { height: 100%; }
 .accounts { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; }
 .accounts li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--sunken); }
 
+.accounts li.forge-row { display: block; }
+.forge-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.forge-name { flex: 1; min-width: 160px; }
+.forge-buttons { display: inline-flex; gap: 8px; }
+.forge-note { margin: 8px 0 0; }
+.forge-holder { margin: 0 0 12px; }
+
 .language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
 .language-label { color: var(--dim); margin-right: 4px; }

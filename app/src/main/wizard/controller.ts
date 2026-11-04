@@ -14,6 +14,7 @@ import type { RuntimeEvent } from "../runtime/log.ts";
 import { StartFailureError, firstLineOf } from "../runtime/failure.ts";
 import { shellFailureOf } from "../shell-state.ts";
 import type { StartResult } from "../runtime/supervisor.ts";
+import { isForgeAction, type ForgeAction, type ForgeView } from "../../shared/accounts.ts";
 import type { Locale } from "../../shared/locale.ts";
 import type { ShellFailure } from "../../shared/shell-state.ts";
 import { WIZARD_STEPS, type FolderProblem, type Forge, type LaterItem, type RecipeChoice, type RecipeRefusal, type WizardAction, type WizardStep, type WizardView } from "../../shared/wizard.ts";
@@ -37,6 +38,18 @@ export interface WizardSupervisor {
 	readonly state: string;
 }
 
+/** What the controller asks of the code-host sign-in (`accounts/session.ts`). */
+export interface WizardAccounts {
+	views(forges: readonly Forge[]): ForgeView[];
+	act(action: ForgeAction): Promise<void>;
+	/** The checks before a sign-in: the store probe, then the existing-sign-in check. */
+	begin(kind: Forge["kind"], host: string): Promise<void>;
+	cancel(host: string): void;
+	flowOf(host: string): ForgeView["flow"];
+	onChange(listener: () => void): () => void;
+	onSignedIn(listener: (kind: Forge["kind"], host: string) => void): () => void;
+}
+
 export interface WizardDeps {
 	layout: Layout;
 	home: string;
@@ -48,6 +61,7 @@ export interface WizardDeps {
 	validate: ValidateRecipe;
 	engine: EngineHost;
 	supervisor: WizardSupervisor;
+	accounts: WizardAccounts;
 	/** The language the OS asks for, when the PM has not chosen one. */
 	osLocale: () => Locale;
 	/** Opens the file dialog for a recipe and reads the file; null when the PM cancelled. Throws a plain message when the file cannot be read. */
@@ -94,6 +108,11 @@ export class WizardController {
 	constructor(deps: WizardDeps) {
 		this.#d = deps;
 		this.#file = readWizardFile(deps.layout) ?? { ...FRESH };
+		// A sign-in's progress is part of the view; one that passes takes its forge off the list of sign-ins put off, in the wizard and in settings alike.
+		deps.accounts.onChange(() => this.#emit());
+		deps.accounts.onSignedIn((kind, host) => {
+			if (this.#file.later.some((l) => l.item === kind && "host" in l && l.host === host)) this.#save({ later: this.#file.later.filter((l) => !(l.item === kind && "host" in l && l.host === host)) });
+		});
 	}
 
 	// ---- reading -----------------------------------------------------------------------------------------------------
@@ -191,6 +210,9 @@ export class WizardController {
 				? trustModelOf({ recipe: pendingRecipe, stack: stack.stack, key: platformKey(process.platform, process.arch), fileName: this.#pending?.fileName ?? file.recipeFile ?? `${pendingRecipe.id}.json`, sha256: this.#pending?.sha256 ?? "" })
 				: null;
 		const launching = file.done || (this.#launching && file.step === "done");
+		const forges = this.forges;
+		const hostsIndex = Math.min(file.hostsIndex, Math.max(0, forges.length - 1));
+		const forgeViews = forges.length === 0 ? [] : this.#d.accounts.views(forges);
 		return {
 			step: launching ? "launching" : file.step,
 			steps: [...WIZARD_STEPS],
@@ -203,7 +225,7 @@ export class WizardController {
 			folder: { path: file.workFolder ?? defaultWorkFolder(this.#d.home), defaultPath: defaultWorkFolder(this.#d.home), problem: this.#folderProblem },
 			install: this.#progress.view(),
 			start: { status: this.#startStatus, failure: this.#startFailure },
-			hosts: { forges: this.forges, index: Math.min(file.hostsIndex, Math.max(0, this.forges.length - 1)) },
+			hosts: { forges, index: hostsIndex, current: forgeViews[hostsIndex] ?? null },
 			linearOffered: this.linearOffered,
 			later: this.later,
 		};
@@ -234,6 +256,7 @@ export class WizardController {
 		const step = this.#file.step;
 		if (step === "install") await this.#runInstall();
 		else if (STEP_ORDER.indexOf(step) >= STEP_ORDER.indexOf("start")) await this.#startStack();
+		this.#syncHosts();
 	}
 
 	async scanPane(): Promise<void> {
@@ -310,10 +333,43 @@ export class WizardController {
 			case "later":
 				this.#later();
 				return;
+			case "hosts-next":
+				if (this.#at("hosts")) this.#hostsNext();
+				return;
 			case "finish":
 				if (this.#at("done")) this.#finish();
 				return;
+			case "forge-begin":
+			case "forge-start":
+			case "forge-token":
+			case "forge-cancel":
+			case "forge-open":
+			case "forge-copy-code":
+			case "forge-sign-out":
+				await this.forgeAction(action);
+				return;
 		}
+	}
+
+	/**
+	 * A request from the hosts step or from settings' Accounts. The host must be one of this recipe's, and a kind it names must be that host's kind: a page cannot make the app sign in to, or open,
+	 * a host the recipe never listed.
+	 */
+	async forgeAction(action: ForgeAction): Promise<void> {
+		// The page is a renderer: the shape is checked here, not trusted from its types.
+		if (!isForgeAction(action)) return;
+		const forge = this.forges.find((f) => f.host === action.host);
+		if (forge === undefined || ("kind" in action && action.kind !== forge.kind)) return;
+		await this.#d.accounts.act(action);
+	}
+
+	/** Starts the checks of the forge on screen when the hosts step shows it and nothing has run for it yet. */
+	#syncHosts(): void {
+		const file = this.#file;
+		if (file.done || file.step !== "hosts") return;
+		const forge = this.forges[Math.min(file.hostsIndex, Math.max(0, this.forges.length - 1))];
+		if (forge === undefined) return;
+		if (this.#d.accounts.flowOf(forge.host).phase === "idle") void this.#d.accounts.begin(forge.kind, forge.host).catch((error: Error) => this.#d.log({ event: "forge-begin-failed", detail: firstLineOf(error.message) }));
 	}
 
 	#at(step: WizardStep): boolean {
@@ -326,6 +382,7 @@ export class WizardController {
 		this.#file = next;
 		writeWizardFile(this.#d.layout, this.#file);
 		this.#emit();
+		this.#syncHosts();
 	}
 
 	#go(step: WizardStep): void {
@@ -617,13 +674,28 @@ export class WizardController {
 			this.#save({ later: addLater(file.later, { item: "claude" }), step: forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : "done", hostsIndex: 0 });
 		} else if (file.step === "hosts") {
 			const forge = forges[file.hostsIndex];
-			const later = forge === undefined ? file.later : addLater(file.later, { item: forge.kind, host: forge.host });
-			const index = file.hostsIndex + 1;
-			if (index < forges.length) this.#save({ later, hostsIndex: index });
-			else this.#save({ later, step: this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+			// A sign-in that waits (the device code, the token field) ends with the PM's choice.
+			if (forge !== undefined) this.#d.accounts.cancel(forge.host);
+			this.#advanceHosts(forge === undefined ? null : { item: forge.kind, host: forge.host });
 		} else if (file.step === "linear") {
 			this.#save({ later: addLater(file.later, { item: "linear" }), step: "done" });
 		}
+	}
+
+	/** On from the forge on screen: to the next forge, else to Linear or the end. `put` is the sign-in put off, if it was. */
+	#advanceHosts(put: LaterItem | null): void {
+		const file = this.#file;
+		const forges = this.forges;
+		const later = put === null ? file.later : addLater(file.later, put);
+		const index = file.hostsIndex + 1;
+		if (index < forges.length) this.#save({ later, hostsIndex: index });
+		else this.#save({ later, step: this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+	}
+
+	#hostsNext(): void {
+		const forge = this.forges[this.#file.hostsIndex];
+		if (forge === undefined || this.#d.accounts.flowOf(forge.host).phase !== "done") return;
+		this.#advanceHosts(null);
 	}
 
 	#finish(): void {

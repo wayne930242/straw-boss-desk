@@ -36,6 +36,23 @@ export function announcementParts(ctx: Ctx): string[] {
 			}
 			break;
 		}
+		case "hosts": {
+			const forge = view.hosts.current;
+			if (forge === null) break;
+			const { host } = forge;
+			const tool = ctx.tr(`forge.tool.${forge.kind}`);
+			const flow = forge.flow;
+			// The checks, a refusal, the code, a problem and the outcome each speak once.
+			if (flow.phase === "checking") parts.push(ctx.tr("forge.checking"));
+			else if (flow.phase === "store-unavailable" || flow.phase === "plain-text") parts.push(ctx.tr("forge.storeUnavailable"));
+			else if (flow.phase === "foreign") parts.push(ctx.tr(flow.changed.length > 0 ? "forge.changed" : "forge.foreign", { host, tool }));
+			else if (flow.phase === "code") parts.push(`${ctx.tr("forge.github.codeLabel")}: ${flow.code}`);
+			else if (flow.phase === "unverified") parts.push(ctx.tr("forge.unverified", { host }));
+			else if (flow.phase === "failed") parts.push(ctx.tr("forge.failed", { host, tool }));
+			else if (flow.phase === "timeout") parts.push(ctx.tr("forge.timeout"));
+			else if (flow.phase === "done") parts.push(ctx.tr("forge.done", { host }));
+			break;
+		}
 		default:
 	}
 	return parts;

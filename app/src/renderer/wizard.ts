@@ -1,13 +1,14 @@
 import type { Locale } from "../shared/locale.ts";
 import type { WizardView } from "../shared/wizard.ts";
-import { clear, h } from "./dom.ts";
+import { carryPasswords, clear, h, restorePasswords } from "./dom.ts";
 import { catalogs, t } from "./i18n/index.ts";
 import { announcementParts, newParts } from "./wizard/announce.ts";
 import { makeCtx, type Ctx } from "./wizard/common.ts";
 import { done, launching } from "./wizard/done.ts";
 import { folder } from "./wizard/folder.ts";
 import { install } from "./wizard/install.ts";
-import { claude, hosts, linear } from "./wizard/later.ts";
+import { hosts } from "./wizard/hosts.ts";
+import { claude, linear } from "./wizard/later.ts";
 import { recipe } from "./wizard/recipe.ts";
 import { start } from "./wizard/start.ts";
 import { trust } from "./wizard/trust.ts";
@@ -66,9 +67,12 @@ function draw(): void {
 			),
 		),
 	);
+	// A token being typed survives the redraw: carried in a local, put back, and never kept anywhere.
+	const typed = carryPasswords(root);
 	clear(root);
 	const step = render(ctx);
 	root.append(step);
+	restorePasswords(root, typed);
 	// Focus stays where the PM was; a new step starts at its heading.
 	const target = keep === null ? null : document.querySelector<HTMLElement>(keep);
 	if (view.step !== shownStep) {

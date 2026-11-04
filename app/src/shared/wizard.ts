@@ -1,3 +1,4 @@
+import type { ForgeAction, ForgeView } from "./accounts.ts";
 import type { Locale } from "./locale.ts";
 import type { ShellFailure } from "./shell-state.ts";
 
@@ -110,8 +111,8 @@ export interface WizardView {
 	folder: { path: string; defaultPath: string; problem: FolderProblem | null };
 	install: InstallView;
 	start: { status: "idle" | "starting" | "failed"; failure: ShellFailure | null };
-	/** The forges the hosts step walks through, and the one it is at. */
-	hosts: { forges: Forge[]; index: number };
+	/** The forges the hosts step walks through, the one it is at, and where its sign-in stands (null outside the step or without a forge). */
+	hosts: { forges: Forge[]; index: number; current: ForgeView | null };
 	linearOffered: boolean;
 	later: LaterItem[];
 }
@@ -134,7 +135,10 @@ export type WizardAction =
 	| { type: "start-retry" }
 	| { type: "repair" }
 	| { type: "later" }
-	| { type: "finish" };
+	/** The sign-in of the forge on screen passed: on to the next step without putting it off. */
+	| { type: "hosts-next" }
+	| { type: "finish" }
+	| ForgeAction;
 
 export const SETTINGS_SECTIONS = ["accounts", "recipe", "guidance", "updates", "computer", "diagnostics"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
@@ -146,9 +150,11 @@ export interface SettingsView {
 	locale: Locale;
 	section: SettingsSection;
 	later: LaterItem[];
+	/** The recipe's forges (the wizard's "I have no recipe" choice included) with the state of each sign-in. */
+	forges: ForgeView[];
 	recipe: RecipeSummary | null;
 	appVersion: string;
 	dev: boolean;
 }
 
-export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale };
+export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | ForgeAction;
