@@ -8,6 +8,7 @@ import type { AppPlatform } from "../paths.ts";
 import { cloneCause, ProjectGit } from "./git.ts";
 import { linkPaths, summarizeLinks } from "./links.ts";
 import type { OpenOutcome } from "./open-base.ts";
+import type { HostProbe } from "./reach.ts";
 import { plainOrigin, sameOrigin } from "./origin.ts";
 import type { ProjectRecordStore, StoredRow } from "./record.ts";
 
@@ -39,6 +40,8 @@ export interface ProjectsDeps {
 	 * Runs one row's Git work (the clone or fetch, `set-head`, the link listing) as a job of the supervisor's queue, beside the installs that also use the tools folder (R12-F002). The open as a base
 	 * is not part of it: it needs the stack running, and a trust question can hold it for minutes. Default: the work runs at once.
 	 */
+	/** Asks whether a repository's code host answers, before it is cloned or fetched (a host that is reachable only on the company network gets its own sentence). Default: not asked. */
+	probe?: HostProbe;
 	gitJob?: <T>(work: () => Promise<T>) => Promise<T>;
 	redact: Redact;
 	log: RuntimeEvent;
@@ -355,6 +358,7 @@ export class ProjectsRunner {
 				throw new RowFailed({ kind: "not-empty" });
 			}
 		}
+		await this.#reachable(spec);
 		if (reuse) {
 			this.#step(spec.folder, "fetching");
 			const fetched = await d.git.fetch(target);
@@ -367,6 +371,14 @@ export class ProjectsRunner {
 		await this.#setHead(spec, target);
 		await this.#links(spec, target);
 		return target;
+	}
+
+	/** The code host answers, or the row stops with the sentence of Network, A private code host. A certificate problem is left to Git's own words. */
+	async #reachable(spec: RepoSpec): Promise<void> {
+		const probe = this.#d.probe;
+		const host = hostOf(spec.url);
+		if (probe === undefined || host === "") return;
+		if ((await probe(host, this.#abort.signal)) === "unreachable") throw new RowFailed({ kind: "clone", cause: "network-private", host }, `${host} did not answer`);
 	}
 
 	/** Clones into a staging folder beside the target and renames it into place only when Git exited 0, so no run ever sees a half clone under the target's name. */

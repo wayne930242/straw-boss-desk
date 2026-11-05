@@ -9,6 +9,7 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
 import { callEnv, ProjectGit } from "../src/main/projects/git.ts";
 import { ProjectRecordStore } from "../src/main/projects/record.ts";
+import type { HostReach } from "../src/main/projects/reach.ts";
 import { ProjectsRunner, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
 import type { OpenOutcome } from "../src/main/projects/open-base.ts";
 import { HOME_BASE_LABEL } from "../src/main/runtime/config.ts";
@@ -565,5 +566,61 @@ describe("opening the base", () => {
 		cpSync(join(base, "remote", "web.git"), join(base, "remote", "missing.git"), { recursive: true });
 		await r.runner.retry(spec("missing"));
 		assert.equal(r.rows().missing?.phase, "done", "each row is retryable alone");
+	});
+});
+
+describe("a code host that does not answer (R12-F004)", () => {
+	beforeEach(() => bare("web", { branches: ["develop"] }));
+
+	it("stops the row before any Git runs, naming the host, and Retry goes on once the host answers", async () => {
+		const r = rig();
+		let answers: HostReach = "unreachable";
+		const asked: string[] = [];
+		const runner = new ProjectsRunner({
+			...r.deps,
+			probe: async (host) => {
+				asked.push(host);
+				return answers;
+			},
+		});
+		await runner.begin([spec("web")]);
+		const row = runner.view().rows[0];
+		assert.equal(row?.phase, "failed");
+		assert.deepEqual(row?.failure, { kind: "clone", cause: "network-private", host: "git.fixture.test" });
+		assert.deepEqual(asked, ["git.fixture.test"]);
+		assert.deepEqual(r.calls, [], "no clone, no fetch: the sentence comes before Git");
+		assert.deepEqual(r.opens, []);
+		assert.equal(existsSync(join(r.work, "web")), false);
+		// The PM connects to the company network and tries again.
+		answers = "ok";
+		await runner.retry(spec("web"));
+		assert.equal(runner.view().rows[0]?.phase, "done");
+		assert.ok(r.calls.some((c) => c[0] === "clone"));
+	});
+
+	it("asks again for a folder that is reused, and a certificate problem is left to Git's own words", async () => {
+		const first = rig();
+		await first.runner.begin([spec("web")]);
+		const r = rig("darwin", { work: first.work, stateDir: join(first.work, "..", "state-4") });
+		const down = new ProjectsRunner({ ...r.deps, probe: async () => "unreachable" });
+		await down.begin([spec("web")]);
+		assert.deepEqual(down.view().rows[0]?.failure, { kind: "clone", cause: "network-private", host: "git.fixture.test" });
+		assert.equal(r.calls.some((c) => c[0] === "fetch"), false);
+		const tls = rig("darwin", { work: first.work, stateDir: join(first.work, "..", "state-5") });
+		const inspected = new ProjectsRunner({ ...tls.deps, probe: async () => "tls" });
+		await inspected.begin([spec("web")]);
+		assert.equal(inspected.view().rows[0]?.phase, "done", "Git is asked, and says what it says");
+	});
+
+	it("does not ask about a folder that is refused before the network is needed", async () => {
+		const r = rig();
+		const asked: string[] = [];
+		const folder = join(r.work, "web");
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, "mine.txt"), "mine");
+		const runner = new ProjectsRunner({ ...r.deps, probe: async (host) => (asked.push(host), "unreachable") });
+		await runner.begin([spec("web")]);
+		assert.deepEqual(runner.view().rows[0]?.failure, { kind: "not-empty" });
+		assert.deepEqual(asked, []);
 	});
 });

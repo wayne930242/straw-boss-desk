@@ -42,6 +42,8 @@ import type { EngineConfig } from "./bootstrap/engine.ts";
 import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
 import { FetchRefused, fetchPublicText } from "./net/safe-fetch.ts";
 import { callEnv, ProjectGit, type GitExec } from "./projects/git.ts";
+import { netFetch } from "./bootstrap/download.ts";
+import { hostProbe } from "./projects/reach.ts";
 import { OpenBaseClient } from "./projects/open-base.ts";
 import { ProjectRecordStore } from "./projects/record.ts";
 import { ProjectsRunner } from "./projects/runner.ts";
@@ -239,6 +241,7 @@ const projects: ProjectsRunner = new ProjectsRunner({
 	// A row's Git runs from `tools/git` for up to 45 minutes, so it is a job of the supervisor's queue like every other user of the tools folder: Repair, an update, Apply and the Linear restart wait for it
 	// (instead of refusing as busy after 90 s), and it waits for them. The open as a base is not in the job: it needs the stack running, and a trust question can hold it for minutes (R12-F002).
 	gitJob: (work) => supervisor.withEngineJob(work),
+	probe: hostProbe(netFetch()),
 	record: new ProjectRecordStore(layout),
 	redact: (text) => runtimeLog.redactor.redact(text),
 	log: (fields) => shellLog.event(fields),

@@ -31,6 +31,7 @@ const FAILURES: ProjectFailure[] = [
 	{ kind: "other-origin" },
 	{ kind: "not-empty" },
 	{ kind: "clone", cause: "network" },
+	{ kind: "clone", cause: "network-private", host: "gitlab.moldplan.app" },
 	{ kind: "clone", cause: "auth" },
 	{ kind: "clone", cause: "not-found" },
 	{ kind: "clone", cause: "other" },
@@ -75,11 +76,20 @@ describe("the projects step: one card per repository", () => {
 				const text = step.querySelector("#project-0-note")?.textContent ?? "";
 				assert.ok(text.length > 10, `${locale} ${JSON.stringify(failure)}`);
 				assert.doesNotMatch(text, /\{[A-Za-z]+\}/, `${locale} ${JSON.stringify(failure)}`);
-				assert.ok(text.includes("Web app") || text.includes("web") || text.includes("Straw Boss"), `${locale} ${JSON.stringify(failure)} names the repository: ${text}`);
+				assert.ok(text.includes("Web app") || text.includes("web") || text.includes("Straw Boss") || (failure.kind === "clone" && failure.cause === "network-private" && text.includes(failure.host)), `${locale} ${JSON.stringify(failure)} names the repository: ${text}`);
 				if (failure.kind === "branch-missing") assert.ok(text.includes("develop"), text);
 				assert.equal(step.querySelector("#project-0-detail")?.textContent, "fatal: x");
 			}
 		}
+	});
+
+	it("names the host and the company network for a code host that does not answer, in both languages (R12-F004)", () => {
+		const failure: ProjectFailure = { kind: "clone", cause: "network-private", host: "gitlab.moldplan.app" };
+		const en = draw(view([row({ phase: "failed", failure })])).querySelector("#project-0-note")?.textContent ?? "";
+		assert.equal(en, "Could not reach gitlab.moldplan.app; it may be reachable only on the company network, so connect to that network and try again.");
+		const zh = draw(view([row({ phase: "failed", failure })]), "zh-TW").querySelector("#project-0-note")?.textContent ?? "";
+		assert.ok(zh.includes("gitlab.moldplan.app") && zh.includes("公司網路"), zh);
+		assert.equal(draw(view([row({ phase: "failed", failure })])).querySelector("li.project-card")?.getAttribute("data-reason"), "clone.network-private");
 	});
 
 	it("says the folder named Straw Boss is refused, and that another origin was left untouched", () => {

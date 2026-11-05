@@ -152,5 +152,6 @@ describe("the projects runner and the supervisor's queue (R12-F002)", () => {
 	it("the app hands the runner the supervisor's engine job queue", () => {
 		const text = readFileSync(join(import.meta.dirname, "..", "src", "main", "index.ts"), "utf8");
 		assert.match(text, /gitJob: \(work\) => supervisor\.withEngineJob\(work\)/);
+		assert.match(text, /probe: hostProbe\(netFetch\(\)\)/, "and the host probe of the projects step (R12-F004)");
 	});
 });

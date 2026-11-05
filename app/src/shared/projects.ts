@@ -14,6 +14,8 @@ export type ProjectFailure =
 	| { kind: "not-empty" }
 	/** `git clone` or `git fetch` failed: the code host did not answer, did not accept the sign-in, or has no such repository. */
 	| { kind: "clone"; cause: "network" | "auth" | "not-found" | "other" }
+	/** The code host does not resolve or does not answer before the copy starts: it may be reachable only on the company network (spec: Network, A private code host). */
+	| { kind: "clone"; cause: "network-private"; host: string }
 	/** `origin` has no branch of that name. */
 	| { kind: "branch-missing"; branch: string }
 	/** Another Git step failed (`git remote set-head`, the listing of links, the read of `origin`). */

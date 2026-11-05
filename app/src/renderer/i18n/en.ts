@@ -334,6 +334,7 @@ export const en = {
 			"not-empty": "The folder {folder} already holds other files, so {repository} was not copied. Straw Boss left the folder as it is.",
 			clone: {
 				network: "Could not reach the code host for {repository}. Check the network and try again.",
+				"network-private": "Could not reach {host}; it may be reachable only on the company network, so connect to that network and try again.",
 				auth: "The code host did not accept your sign-in for {repository}. Sign in again in Settings, Accounts, then try again.",
 				"not-found": "The code host has no project at the address for {repository}, or your account cannot see it.",
 				other: "{repository} could not be copied. Details are below if someone is helping you.",

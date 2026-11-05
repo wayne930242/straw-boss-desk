@@ -336,6 +336,7 @@ export const zhTW: Messages = {
 			"not-empty": "資料夾 {folder} 裡已經有其他檔案，所以沒有複製 {repository}。Straw Boss 沒有動這個資料夾。",
 			clone: {
 				network: "連不上 {repository} 所在的程式碼平台。請檢查網路後再試一次。",
+				"network-private": "無法連到 {host}；它可能只能在公司網路內連線，請先連上公司網路再試一次。",
 				auth: "程式碼平台不接受你為 {repository} 做的登入。請到「設定」的「帳號」重新登入，再試一次。",
 				"not-found": "程式碼平台在 {repository} 的位址上沒有專案，或你的帳號看不到它。",
 				other: "{repository} 無法複製。若有人協助你，下方有詳細資料。",

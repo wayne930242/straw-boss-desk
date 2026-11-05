@@ -28,7 +28,12 @@ export function failureKey(failure: ProjectFailure): string {
 }
 
 export const failureSentence = (ctx: RowsCtx, row: ProjectRow, failure: ProjectFailure): string =>
-	ctx.tr(`projects.failure.${failureKey(failure)}`, { repository: row.label, folder: row.folder, branch: failure.kind === "branch-missing" ? failure.branch : (row.defaultBranch ?? "") });
+	ctx.tr(`projects.failure.${failureKey(failure)}`, {
+		repository: row.label,
+		folder: row.folder,
+		branch: failure.kind === "branch-missing" ? failure.branch : (row.defaultBranch ?? ""),
+		host: failure.kind === "clone" && failure.cause === "network-private" ? failure.host : row.host,
+	});
 
 function doneSentences(ctx: RowsCtx, row: ProjectRow): string[] {
 	const out: string[] = [];
