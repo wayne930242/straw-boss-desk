@@ -114,8 +114,13 @@ export class LinearKeyFile {
 
 	/** Encrypts and writes `key` (a temporary sibling, then a rename, mode 600). Throws when the box refuses or the disk does. */
 	async write(key: string): Promise<void> {
-		const blob = await this.#box.encrypt(key);
+		this.#put(await this.#box.encrypt(key));
+	}
+
+	/** Writes `blob` in one synchronous step. With `expected`, it writes only when the file still holds exactly those bytes, and answers whether it did. */
+	#put(blob: Buffer, expected?: Buffer): boolean {
 		const file = linearFile(this.#layout);
+		if (expected !== undefined && !(existsSync(file) && readFileSync(file).equals(expected))) return false;
 		mkdirSync(dirname(file), { recursive: true });
 		const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
@@ -125,15 +130,23 @@ export class LinearKeyFile {
 			rmSync(tmp, { force: true });
 			throw error;
 		}
+		return true;
 	}
 
 	/** The decrypted key; null when there is none; throws when the file cannot be decrypted. */
 	async read(): Promise<string | null> {
 		if (!this.exists) return null;
 		if (!(await this.#box.available())) throw new Error("the OS cannot decrypt the key: encryption is not available");
-		const { result: key, shouldReEncrypt } = await this.#box.decrypt(readFileSync(linearFile(this.#layout)));
-		// Written back under the current key (R11-F006). A write that fails leaves the old blob, which still reads until the old key is dropped: the key itself was read, so this read does not fail.
-		if (shouldReEncrypt && key !== "") await this.write(key).catch(() => undefined);
+		const blob = readFileSync(linearFile(this.#layout));
+		const { result: key, shouldReEncrypt } = await this.#box.decrypt(blob);
+		// Written back under the current key (R11-F006), only while the file still holds the blob that was decrypted: a save or a sign-out that landed meanwhile is not undone (R11B-F002; the check and the rename share one synchronous step). A write that fails leaves the old blob, which still reads until the old key is dropped: the key itself was read, so this read does not fail.
+		if (shouldReEncrypt && key !== "") {
+			try {
+				this.#put(await this.#box.encrypt(key), blob);
+			} catch {
+				// the old blob stays
+			}
+		}
 		return key === "" ? null : key;
 	}
 

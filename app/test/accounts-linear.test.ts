@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -26,6 +26,8 @@ class FakeBox implements SecretBox {
 	/** Makes `encrypt` fail from now on. */
 	failEncrypt = false;
 	generation = 0;
+	/** Runs once the next `encrypt` has produced its blob, before it answers: where a test lands a save or a sign-out in the middle of a read's write-back. */
+	afterEncrypt: (() => void) | null = null;
 	/** What the OS was asked, in order: "available", "encrypt", "decrypt". */
 	asked: string[] = [];
 	async available(): Promise<boolean> {
@@ -36,7 +38,11 @@ class FakeBox implements SecretBox {
 		this.asked.push("encrypt");
 		if (!this.isAvailable || this.failEncrypt) throw new Error("not available");
 		this.generation++;
-		return Buffer.from(`ENC${this.generation}:${[...text].reverse().join("")}`);
+		const blob = Buffer.from(`ENC${this.generation}:${[...text].reverse().join("")}`);
+		const hook = this.afterEncrypt;
+		this.afterEncrypt = null;
+		hook?.();
+		return blob;
 	}
 	async decrypt(blob: Buffer): Promise<{ result: string; shouldReEncrypt: boolean }> {
 		this.asked.push("decrypt");
@@ -250,6 +256,20 @@ describe("the key for the Herdr server", () => {
 		assert.equal(await r.linear.read(), KEY, "a write that fails does not fail the read");
 		assert.deepEqual(readFileSync(linearFile(r.layout)), after, "the old blob stays");
 		assert.equal(r.linear.state, "saved");
+	});
+
+	it("R11B-F002: a save or a sign-out that lands during the re-encrypt write-back is not undone by it", async () => {
+		const r = rig();
+		await r.linear.save(KEY);
+		r.box.reEncrypt = true;
+		const saved = Buffer.from("ENC99:rewen");
+		r.box.afterEncrypt = () => writeFileSync(linearFile(r.layout), saved);
+		assert.equal(await r.linear.read(), KEY);
+		assert.deepEqual(readFileSync(linearFile(r.layout)), saved, "the newer blob stays");
+		r.box.afterEncrypt = () => rmSync(linearFile(r.layout));
+		assert.equal(await r.linear.read(), "newer");
+		assert.equal(existsSync(linearFile(r.layout)), false, "a removed key is not brought back");
+		assert.deepEqual(filesUnder(join(r.layout.root, "secrets")).filter((f) => f.endsWith(".tmp")), [], "no temporary file is left");
 	});
 
 	it("is not read when encryption has become unavailable", async () => {

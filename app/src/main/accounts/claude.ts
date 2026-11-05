@@ -103,10 +103,10 @@ export function parseSignInUrl(text: string): string | null {
 	}
 }
 
-/** True when the CLI asks to be given a code ("Paste code here if prompted >"). */
 /** The CLI's answer to a code it cannot take (`Invalid code. Please make sure the full code was copied.`): said on a line of its own while it goes on waiting. */
 export const refusesCode = (text: string): boolean => /invalid code|incorrect code|code (?:is )?(?:not valid|expired)|full code was copied/i.test(stripAnsi(text));
 
+/** True when the CLI asks to be given a code ("Paste code here if prompted >"). */
 export const asksForCode = (text: string): boolean => /paste code here/i.test(stripAnsi(text));
 
 /** The `loggedIn` field of `claude auth status --json`: true, false, or null when the output is not that JSON. */
