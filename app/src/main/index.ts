@@ -520,7 +520,14 @@ const diagnostics = new DiagnosticsService({
 	layout,
 	redactor: runtimeLog.redactor,
 	status: () => supervisor.cliStatus(),
-	downloads: () => app.getPath("downloads"),
+	// Electron throws when the OS cannot name the Downloads folder (a profile without one); the zip then goes to `Downloads` under the home folder, which the writer creates.
+	downloads: () => {
+		try {
+			return app.getPath("downloads");
+		} catch {
+			return join(home, "Downloads");
+		}
+	},
 	facts: () => ({
 		app: `${identity.productName} ${app.getVersion()} (${identity.kind} build)`,
 		platform: `${process.platform} ${arch()} ${release()}`,

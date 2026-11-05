@@ -193,7 +193,7 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		plant("state/planted.json", `{"remember":"${TOKENS[1]}"}\n`);
 		await page.locator("#diag-collect").click();
 		await page.locator('li.update-card[data-role="collect"]:not([data-state="working"])').waitFor({ timeout: 120_000 });
-		assert.equal(await page.locator('li.update-card[data-role="collect"]').getAttribute("data-state"), "done", `the collection did not finish: ${(await page.locator('li.update-card[data-role="collect"]').innerText()).replace(/\s+/g, " ")}`);
+		assert.equal(await page.locator('li.update-card[data-role="collect"]').getAttribute("data-state"), "done", `the collection did not finish: ${(await page.locator('li.update-card[data-role="collect"]').innerText()).replace(/\s+/g, " ")} :: ${(await page.locator('li.update-card[data-role="collect"] .update-detail').textContent().catch(() => null)) ?? "(no detail)"}`);
 		const revealed = await app.evaluate(() => (globalThis as { __revealed?: string[] }).__revealed ?? []);
 		assert.equal(revealed.length, 1, "the zip was shown in its folder once");
 		const file = revealed[0] as string;
