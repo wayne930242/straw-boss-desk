@@ -1,7 +1,7 @@
 import { app, clipboard, dialog, Menu, net, powerMonitor, powerSaveBlocker, safeStorage, session, shell, utilityProcess } from "electron";
 import electronUpdater from "electron-updater";
-import { spawn, type SpawnOptions } from "node:child_process";
-import { appendFileSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { arch, homedir, release } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -464,28 +464,12 @@ const recipeCard = new RecipeService({
 let pendingCleanup: { root: string; fallbackDir: string | null } | null = null;
 
 function runCleanup(): void {
-	const trace = (line: string): void => {
-		// TEMPORARY (task 14 debugging on the Windows runner): where the cleanup stops.
-		if (process.env.SBD_CLEANUP_TRACE) try { appendFileSync(process.env.SBD_CLEANUP_TRACE, `${new Date().toISOString()} ${line}\n`); } catch { /* none */ }
-	};
-	trace(`runCleanup armed=${pendingCleanup !== null}`);
 	if (pendingCleanup === null) return;
 	const spec = pendingCleanup;
 	pendingCleanup = null;
 	try {
-		const command = cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir }, platform.locate);
-		trace(`spawn ${command.file} args=${command.args.length}`);
-		spawnCleanup(command, ((file: string, args: readonly string[], options: SpawnOptions) => {
-			const out = process.env.SBD_CLEANUP_TRACE ? openSync(process.env.SBD_CLEANUP_TRACE, "a") : "ignore";
-			const child = spawn(file, args, { ...options, stdio: ["ignore", out, out] });
-			trace(`spawned pid=${child.pid}`);
-			child.on("error", (e) => trace(`child error ${e.message}`));
-			child.on("exit", (code, signal) => trace(`child exit ${code} ${signal}`));
-			return child;
-		}) as never);
-		trace("spawn returned");
-	} catch (error) {
-		trace(`threw ${(error as Error).message}`);
+		spawnCleanup(cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir }, platform.locate));
+	} catch {
 		// The marker `remove-pending` is in the root: the next launch deletes it.
 	}
 }

@@ -56,13 +56,24 @@ describe("the cleanup command", () => {
 		spawnCleanup({ file: "x", args: [], env: {} }, (file, _args, options) => {
 			calls.push({ file, options: options as Record<string, unknown> });
 			return { unref: () => void (unref = true), on: (_e, l) => void (onError = l) };
-		});
+		}, "darwin");
 		assert.equal(calls[0]?.options.detached, true);
 		assert.equal(calls[0]?.options.stdio, "ignore");
 		assert.equal(calls[0]?.options.windowsHide, true);
 		assert.equal(calls[0]?.options.cwd, tmpdir());
 		assert.ok(unref);
 		onError(new Error("ENOENT"));
+	});
+
+	it("does not start the Windows program detached: with no console at all Windows PowerShell ends before its first line (seen on the hosted runner)", () => {
+		const calls: Array<Record<string, unknown>> = [];
+		spawnCleanup({ file: "x", args: [], env: {} }, (_file, _args, options) => {
+			calls.push(options as Record<string, unknown>);
+			return { unref: () => undefined, on: () => undefined };
+		}, "win32");
+		assert.equal(calls[0]?.detached, false);
+		assert.equal(calls[0]?.stdio, "ignore");
+		assert.equal(calls[0]?.windowsHide, true);
 	});
 });
 

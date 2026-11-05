@@ -39,14 +39,11 @@ export const POSIX_SCRIPT = posixScript();
 /** PowerShell script. The values are `$env:SBD_RM_ROOT`, `$env:SBD_RM_FALLBACK` and `$env:SBD_RM_PID`. */
 export const POWERSHELL_SCRIPT = [
 	"$ErrorActionPreference = 'SilentlyContinue'",
-	"function T($m) { if ($env:SBD_CLEANUP_TRACE) { Add-Content -LiteralPath $env:SBD_CLEANUP_TRACE -Value ('ps ' + (Get-Date).ToString('HH:mm:ss.fff') + ' ' + $m) } }",
-	"T 'started'",
 	"$waitPid = 0",
 	"if (-not [int]::TryParse($env:SBD_RM_PID, [ref]$waitPid) -or $waitPid -le 0) { exit 1 }",
 	// A process that has exited can stay in the process list while some other program still holds a handle to it (the parent that started the app, a debugger): it counts as gone once `HasExited` says so.
 	"function Alive { $p = Get-Process -Id $waitPid; return ($null -ne $p -and -not $p.HasExited) }",
 	`for ($i = 0; $i -lt ${WAIT_SECONDS}; $i++) { if (-not (Alive)) { break }; Start-Sleep -Seconds 1 }`,
-	"T ('waited; alive=' + (Alive))",
 	"if (Alive) { exit 2 }",
 	"foreach ($target in @($env:SBD_RM_ROOT, $env:SBD_RM_FALLBACK)) {",
 	"  if ([string]::IsNullOrEmpty($target) -or -not [IO.Path]::IsPathRooted($target)) { continue }",
@@ -60,7 +57,6 @@ export const POWERSHELL_SCRIPT = [
 	"  $parent = Split-Path -LiteralPath $env:SBD_RM_FALLBACK -Parent",
 	"  if ((Test-Path -LiteralPath $parent) -and -not (Get-ChildItem -LiteralPath $parent -Force)) { Remove-Item -LiteralPath $parent -Force }",
 	"}",
-	"T 'done'",
 	"exit 0",
 ].join("\n");
 
@@ -100,9 +96,14 @@ export function cleanupCommand(spec: CleanupSpec, locate: Pick<Locate, "system">
 
 export type SpawnDetached = (file: string, args: readonly string[], options: SpawnOptions) => { unref(): void; on(event: "error", listener: (error: Error) => void): unknown };
 
-/** Starts the cleanup detached: no window, no inherited handles, its own working folder (the root itself must not be its cwd), and the app does not wait for it. */
-export function spawnCleanup(command: CleanupCommand, spawnFn: SpawnDetached = spawn as unknown as SpawnDetached): void {
-	const child = spawnFn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: true, env: command.env, cwd: tmpdir() });
+/**
+ * Starts the cleanup apart from the app: no window, no inherited handles, its own working folder (the root itself must not be its cwd), and the app does not wait for it.
+ *
+ * `detached` is for POSIX only. On Windows it starts the program with no console at all (`DETACHED_PROCESS`), and Windows PowerShell started that way ends before it runs its first line (seen on the
+ * hosted runner: the same command with `detached` left out deleted the folder, with it nothing happened). A Windows child does not end with its parent, so the app's exit leaves it running.
+ */
+export function spawnCleanup(command: CleanupCommand, spawnFn: SpawnDetached = spawn as unknown as SpawnDetached, platform: NodeJS.Platform = process.platform): void {
+	const child = spawnFn(command.file, command.args, { detached: platform !== "win32", stdio: "ignore", windowsHide: true, env: command.env, cwd: tmpdir() });
 	// A program that cannot start leaves the marker, and the next launch deletes the root; there is nothing else to do here.
 	child.on("error", () => {});
 	child.unref();
