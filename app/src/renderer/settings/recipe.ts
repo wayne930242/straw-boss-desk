@@ -157,7 +157,6 @@ function currentCard(ctx: SettingsCtx, view: RecipeCardView): HTMLElement {
 			h("span", { class: "update-version", id: "recipe-version" }, ctx.tr("settings.recipe.version", { version: active.version })),
 			row(replace),
 		],
-		h("p", { class: "note update-note", id: "recipe-current" }, ctx.tr("settings.recipe.current", { name: active.name, version: active.version })),
 		h("p", { class: "note update-note", id: "recipe-source" }, source),
 	);
 }
