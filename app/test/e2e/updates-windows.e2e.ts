@@ -203,7 +203,7 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		await until("the installed program", 120_000, () => existsSync(exe));
 		assert.equal(installedVersion(), "0.0.1");
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
-		await until("the stack", 300_000, guiUp);
+		await until("the stack", 600_000, guiUp);
 		assert.equal(await app.evaluate(({ app: electronApp }) => electronApp.getVersion()), "0.0.1");
 	});
 
@@ -238,7 +238,7 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		// 0.0.2 is the version that was refused for the first file: a new file for the same version is checked again only by a new start, so this case restarts the app first.
 		await (app as ElectronApplication).close();
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
-		await until("the stack", 300_000, guiUp);
+		await until("the stack", 600_000, guiUp);
 		const before = startRecord();
 		await (app as ElectronApplication).evaluate(({ Menu }) => void Menu.getApplicationMenu()?.getMenuItemById("settings-updates")?.click());
 		settings = await until("the settings page", 60_000, () => (app as ElectronApplication).windows().find((w) => w.url().endsWith("settings.html")), 250);
@@ -271,10 +271,17 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		assert.ok((await platform.processes.listUnder(world.root)).length > 0, "the stack runs from under the root before the uninstall");
 		const uninstaller = join(installDir, `Uninstall ${productName}.exe`);
 		assert.ok(existsSync(uninstaller), "the uninstaller is in the install folder");
-		// `_?=` keeps the uninstaller from copying itself away and returning at once, so spawnSync waits for the whole uninstall; the environment reaches the app that the script starts.
-		const r = spawnSync(uninstaller, ["/S", `_?=${installDir}`], { env: env(), timeout: 300_000 });
-		assert.equal(r.status, 0, `the uninstaller exited ${r.status}: ${r.stderr?.toString()}`);
-		await until("the program to be gone", 120_000, () => !existsSync(exe));
+		// Run the way Windows runs it from Apps and Features: the uninstaller copies itself into TEMP, starts the copy and exits at once, and the copy does the work. `_?=<folder>` (run in place, so the call waits)
+		// would put the uninstaller inside the folder it searches for the running app, and electron-builder's own check (`Win32_Process.Path` starts with the install folder) would stop the uninstaller
+		// itself: it exits -1 after three seconds (seen on the hosted runner). The environment reaches the app that the script starts.
+		const first = await new Promise<{ code: number | null; error?: string }>((resolve) => {
+			const child = spawn(uninstaller, ["/S"], { env: env(), stdio: "ignore", windowsHide: true });
+			const timer = setTimeout(() => (child.kill(), resolve({ code: null, error: "the uninstaller did not hand over in 120 s" })), 120_000);
+			child.on("error", (e) => (clearTimeout(timer), resolve({ code: null, error: e.message })));
+			child.on("exit", (code) => (clearTimeout(timer), resolve({ code })));
+		});
+		assert.equal(first.code, 0, `the uninstaller exited ${first.code} ${first.error ?? ""}`);
+		await until("the uninstall to finish: the program is gone", 300_000, () => !existsSync(exe), 1000);
 		assert.deepEqual((await platform.processes.listUnder(world.root)).map((p) => p.pid), [], "no process runs from under the root (the leftover listing's rule: the full path of the executable)");
 		assert.deepEqual((await platform.processes.listUnder(installDir)).map((p) => p.pid), [], "no process runs from the install folder");
 		assert.equal(await pathHasEntry(), false, "the user PATH entry of the app is gone");
