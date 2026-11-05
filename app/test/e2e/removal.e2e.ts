@@ -116,11 +116,15 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 	let sizeBefore = 0;
 
 	/** Every case below runs through this: a failure carries the removal panel's text, the app's logs and what is left of the root. */
+	let broken = false;
 	const it = (name: string, body: () => Promise<void>) =>
 		nodeIt(name, async () => {
+			// The cases build on each other (the removal, then the exit, then the next launch): after one fails, the rest would only wait out their timeouts on a state nobody reached.
+			if (broken) throw new Error("not run: an earlier case failed");
 			try {
 				await body();
 			} catch (error) {
+				broken = true;
 				const parts: string[] = [];
 				try {
 					parts.push(`panel: ${(await page.locator("#remove-panel").innerText({ timeout: 3000 })).replace(/\s+/g, " ")}`);
@@ -255,7 +259,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 	it("shows the confirmation: the root and its size, the PATH entry on Windows, the work folder that stays, and the two entries that stay with their reason; the app's own entry is not named", async () => {
 		assert.ok(sizeBefore > 1_000_000, "the root holds an installed stack");
 		await page.locator("#remove-open").click();
-		await page.locator("#remove-confirm-panel").waitFor({ timeout: 180_000 });
+		await page.locator("#remove-confirm-panel").waitFor({ timeout: 120_000 });
 		const panel = (await page.locator("#remove-confirm-panel").innerText()).replace(/\s+/g, " ");
 		assert.ok(panel.includes(world.root), "names the data root");
 		assert.match(panel, /\d+(\.\d+)? (MB|GB)/);
@@ -275,7 +279,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		assert.equal(existsSync(join(world.layout.state, "bootstrap.json")), true);
 		assert.equal(await exists(OWNED), true);
 		await page.locator("#remove-open").click();
-		await page.locator("#remove-confirm-panel").waitFor({ timeout: 180_000 });
+		await page.locator("#remove-confirm-panel").waitFor({ timeout: 120_000 });
 	});
 
 	it("removes everything but Chromium's folder: the result names what stayed, nothing failed, nothing runs from the root, and the store holds only what is not the app's", async () => {
