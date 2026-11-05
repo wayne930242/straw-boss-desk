@@ -63,4 +63,17 @@ describe("configs", () => {
     assert.ok(match, "name and description frontmatter");
     assert.ok(match[1].startsWith("Use when"));
   });
+
+  // R12-F003, R12-F011: profile 0.1.0 is on npm without the worktree exception; a changed AGENTS.md ships under a new version, and the lockfile says the same version.
+  it("carries the worktree exception in a version later than the published 0.1.0, and the lockfile agrees", () => {
+    const pkg = readJson("package.json");
+    const lock = readJson("package-lock.json");
+    const agents = readFileSync(join(profileDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /One exception: you may create a git worktree of the base's repository for a task under `"\$HOME"\/\.herdr\/worktrees\/<repo>\/<branch>`/);
+    assert.match(agents, /remove it when the task is done; nowhere else\./);
+    assert.match(agents, /never point git at another folder \(`git -C \.\.`\)/, "the rule the exception sits beside stays");
+    assert.notEqual(pkg.version, "0.1.0", "0.1.0 is published without the exception");
+    assert.equal(lock.version, pkg.version);
+    assert.equal(lock.packages[""].version, pkg.version);
+  });
 });
