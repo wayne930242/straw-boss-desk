@@ -211,7 +211,15 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 			await seeder.write(DEFAULT_CLAUDE.name, DEFAULT_CLAUDE.account, SECRET);
 		}
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
-		const url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), 500);
+		let url: string;
+		try {
+			url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), 500);
+		} catch (error) {
+			// What the shell page says (a start failure has its own screen) and what the logs end with: the only things to read when a runner's start does not come up.
+			const pages: string[] = [];
+			for (const w of app.windows()) pages.push(`${w.url().slice(-40)}: ${(await w.locator("body").innerText({ timeout: 3000 }).catch(() => "(unreadable)")).replace(/\s+/g, " ").slice(0, 700)}`);
+			throw new Error(`${(error as Error).message}\n--- diagnostics --- pages: ${pages.join(" ;; ")} ;; ${logTails(world.layout.logs).join(" ;; ")}`.slice(0, 6000), { cause: error });
+		}
 		assert.equal(await guiStatus(url), 200);
 		if (process.platform === "darwin") {
 			// This build's Safe Storage item is seeded by name through `security`, as the other entries are. Chromium would make it with an access list of its own, and the first thing a program that is not on
