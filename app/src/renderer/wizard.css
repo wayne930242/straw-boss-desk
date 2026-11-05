@@ -48,8 +48,8 @@ body { display: grid; place-items: start center; padding: 24px; }
 .stages li[data-badge="failed"] { border-color: color-mix(in srgb, var(--err) 55%, transparent); }
 
 /* Step 10: the project cards use the accounts list's frame and the update card's pieces (layout only). */
-.step[data-step="projects"] .accounts { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 6px; }
-.step[data-step="projects"] .accounts > li.project-card { display: block; padding: 10px 14px; background: var(--sunken); }
+.step[data-step="projects"] .accounts { margin: 12px 0; }
+.step[data-step="projects"] .accounts > li.project-card { display: block; padding: 10px 14px; }
 .step[data-step="projects"] .update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .step[data-step="projects"] .update-name { font-weight: 700; }
 .step[data-step="projects"] .update-version { flex: 1; min-width: 120px; }
