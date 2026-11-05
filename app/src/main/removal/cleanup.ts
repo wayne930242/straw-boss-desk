@@ -16,13 +16,13 @@ import type { Locate } from "../platform/types.ts";
 export const WAIT_SECONDS = 30;
 const RETRIES = 20;
 
-/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid. */
-export const POSIX_SCRIPT = [
+/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid. `waitSeconds` is the app's 30 s; a test passes less. */
+export const posixScript = (waitSeconds: number = WAIT_SECONDS): string => [
 	'root=$1; fallback=$2; pid=$3',
 	'case $root in /?*) ;; *) exit 1;; esac',
 	'case $pid in ""|*[!0-9]*) exit 1;; esac',
 	'i=0',
-	`while kill -0 "$pid" 2>/dev/null; do i=$((i+1)); [ "$i" -gt ${WAIT_SECONDS} ] && exit 2; sleep 1; done`,
+	`while kill -0 "$pid" 2>/dev/null; do i=$((i+1)); [ "$i" -gt ${waitSeconds} ] && exit 2; sleep 1; done`,
 	'for target in "$root" "$fallback"; do',
 	'  [ -n "$target" ] || continue',
 	'  case $target in /?*) ;; *) continue;; esac',
@@ -33,6 +33,8 @@ export const POSIX_SCRIPT = [
 	'[ -n "$fallback" ] && rmdir -- "$(dirname -- "$fallback")" 2>/dev/null',
 	'exit 0',
 ].join('\n');
+
+export const POSIX_SCRIPT = posixScript();
 
 /** PowerShell script. The values are `$env:SBD_RM_ROOT`, `$env:SBD_RM_FALLBACK` and `$env:SBD_RM_PID`. */
 export const POWERSHELL_SCRIPT = [

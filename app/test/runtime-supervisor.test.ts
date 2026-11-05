@@ -1317,3 +1317,76 @@ describe("upOnce", () => {
 		assert.deepEqual(urlEvents(w.events).map((e) => e.reason), ["start", "restart"]);
 	});
 });
+
+describe("cli.mjs status for Diagnostics (task 14)", () => {
+	const statusJson = JSON.stringify({ state: "live", primary: true, desk: true, version: "0.59.0", gui: { url: URL } });
+	/** A supervisor of this world whose runner answers `status` and records every call. */
+	const withStatus = (w: ReturnType<typeof world>, answer: { code: number | null; stdout?: string; stderr?: string; timedOut?: boolean }) => {
+		const calls: Array<{ file: string; args: readonly string[]; options: Record<string, unknown> | undefined }> = [];
+		const run: SupervisorDeps["run"] = async (file, args, options) => {
+			calls.push({ file, args, options: options as Record<string, unknown> | undefined });
+			return { code: answer.code, stdout: answer.stdout ?? "", stderr: answer.stderr ?? "", ...(answer.timedOut ? { timedOut: true } : {}) };
+		};
+		return { supervisor: new Supervisor({ ...w.deps, run }), calls };
+	};
+
+	it("runs one `status` through the installed Node and the sb CLI with the constructed environment, and hands back its output", async () => {
+		const w = world();
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: stack }));
+		const { supervisor, calls } = withStatus(w, { code: 0, stdout: statusJson });
+		assert.deepEqual(await supervisor.cliStatus(), { ok: true, stdout: statusJson });
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0]?.file, w.installed?.node);
+		assert.deepEqual(calls[0]?.args, [w.installed?.sbCli, "status"]);
+		const env = (calls[0]?.options?.env ?? {}) as Record<string, string>;
+		assert.equal(calls[0]?.options?.replaceEnv, true);
+		assert.equal(env.GH_TOKEN, undefined, "not the app's own environment");
+		assert.equal(calls[0]?.options?.timeoutMs, 60_000);
+	});
+
+	it("is not run when nothing is installed, or when the pi-straw-boss stage is not ok (the package's code would load from disk)", async () => {
+		const none = world({ install: false });
+		const a = withStatus(none, { code: 0, stdout: statusJson });
+		assert.deepEqual(await a.supervisor.cliStatus(), { ok: false, reason: "not-installed", detail: "" });
+		assert.equal(a.calls.length, 0);
+
+		const bad = world();
+		writeFileSync(join(bad.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: { ...stack, "pkg:pi-straw-boss": record("failed") } }));
+		const b = withStatus(bad, { code: 0, stdout: statusJson });
+		assert.deepEqual(await b.supervisor.cliStatus(), { ok: false, reason: "package", detail: "" });
+		assert.equal(b.calls.length, 0);
+	});
+
+	it("is not run while an engine run holds the tools", async () => {
+		const w = world();
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: stack }));
+		writeFileSync(join(w.layout.state, "engine.lock"), `${JSON.stringify({ pid: 777, startTime: "T", token: "t" })}\n`);
+		w.procs.add(777, { startTime: "T", executable: "/usr/bin/sleep" });
+		const held = withStatus(w, { code: 0, stdout: statusJson });
+		const answer = await held.supervisor.cliStatus();
+		assert.equal(answer.ok === false && answer.reason, "busy");
+		assert.equal(held.calls.length, 0);
+	});
+
+	it("says why a failing call failed: its first line, or the time limit", async () => {
+		const w = world();
+		writeFileSync(join(w.layout.state, "bootstrap.json"), JSON.stringify({ schema: 1, stages: stack }));
+		const failed = withStatus(w, { code: 3, stderr: "cannot read server.json\nmore\n" });
+		assert.deepEqual(await failed.supervisor.cliStatus(), { ok: false, reason: "failed", detail: "cannot read server.json" });
+		const slow = withStatus(w, { code: null, timedOut: true });
+		assert.deepEqual(await slow.supervisor.cliStatus(), { ok: false, reason: "failed", detail: "no answer within 60 s" });
+	});
+});
+
+describe("stop with the wait for tools (Remove all data)", () => {
+	it("stop({ waitForTools: true }) waits for a program of the tools folder to end, as Repair's stop does; a plain stop lists once", async () => {
+		const w = world();
+		await w.supervisor.start();
+		const plain = await w.supervisor.stop();
+		assert.equal(plain.ok, true);
+		const again = world();
+		await again.supervisor.start();
+		const waited = await again.supervisor.stop({ waitForTools: true });
+		assert.equal(waited.ok, true);
+	});
+});

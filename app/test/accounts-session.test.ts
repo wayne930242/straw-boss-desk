@@ -849,3 +849,84 @@ describe("resume after a stop that did not end the app (R13C-F001)", () => {
 		for (const ms of limits) assert.equal(ms, 60_000, "the deadline of the stop is gone");
 	});
 });
+
+describe("Remove all data: the survey and the sign-outs (task 14)", () => {
+	async function signedInGitlab(r: ReturnType<typeof rig>) {
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		assert.equal(phase(r, "gitlab.com"), "done");
+	}
+	const HOSTS = [{ kind: "gitlab" as const, host: "gitlab.com" }];
+
+	it("lists the hosts of the recipe and of the record once each, under the kind they were recorded with", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		assert.deepEqual(r.accounts.removalHosts([{ kind: "gitlab", host: "gitlab.com" }, { kind: "github", host: "github.com" }]), [
+			{ kind: "gitlab", host: "gitlab.com" },
+			{ kind: "github", host: "github.com" },
+		]);
+		// A recipe replaced since the login: the host is no forge of the recipe, but its entry is in the record.
+		assert.deepEqual(r.accounts.removalHosts([]), [{ kind: "gitlab", host: "gitlab.com" }]);
+	});
+
+	it("names what would stay: another program's entry as foreign, the app's own that something wrote over as changed, and its own intact one not at all", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		r.store.write("glab:gitlab.com", "someone");
+		const plain = await r.accounts.survey(HOSTS);
+		assert.deepEqual(plain, { ok: true, entries: [{ name: "glab:gitlab.com", account: "someone", host: "gitlab.com", why: "foreign" }] });
+		r.store.write("glab:gitlab.com:token", "");
+		const changed = await r.accounts.survey(HOSTS);
+		assert.ok(changed.ok);
+		assert.deepEqual(changed.ok ? changed.entries.map((e) => [e.name, e.why]).sort() : [], [["glab:gitlab.com", "foreign"], ["glab:gitlab.com:token", "changed"]]);
+	});
+
+	it("with `owned`, lists an entry the app still owns as failed; a listing that fails is a failure, not an empty answer", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		const kept = await r.accounts.survey(HOSTS, { owned: true });
+		assert.deepEqual(kept.ok ? kept.entries.map((e) => e.why) : [], ["failed"]);
+		r.store.listError = "keychain locked";
+		const refused = await r.accounts.survey(HOSTS);
+		assert.deepEqual(refused, { ok: false, detail: "keychain locked" });
+	});
+
+	it("signs out of an owned login through the CLI, and the survey then finds nothing", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		const problems = await r.accounts.removeLogins(HOSTS);
+		assert.deepEqual(problems, []);
+		assert.equal(logouts(r).length, 1);
+		assert.deepEqual(await r.accounts.survey(HOSTS, { owned: true }), { ok: true, entries: [] });
+		assert.deepEqual(readAccountsRecord(r.layout), { schema: 1, entries: [], left: [] });
+	});
+
+	it("runs no logout beside a foreign write over the owned entry, leaves that entry unchanged, and names it changed", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		r.store.write("glab:gitlab.com:token", "");
+		const written = r.store.get("glab:gitlab.com:token")?.modified;
+		assert.deepEqual(await r.accounts.removeLogins(HOSTS), []);
+		assert.equal(logouts(r).length, 0);
+		assert.equal(r.store.get("glab:gitlab.com:token")?.modified, written);
+		const after = await r.accounts.survey(HOSTS, { owned: true });
+		assert.deepEqual(after.ok ? after.entries.map((e) => [e.name, e.why]) : [], [["glab:gitlab.com:token", "changed"]]);
+	});
+
+	it("puts a sign-in that was waiting when the app stopped back to rest first, so the sign-out is not skipped", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		r.accounts.dispose();
+		assert.deepEqual(await r.accounts.removeLogins(HOSTS), []);
+		assert.equal(logouts(r).length, 1);
+		for (const call of r.cli.calls.filter((c) => c.args[1] === "logout")) assert.equal(call.timeoutMs, 60_000, "the quit's deadline is gone");
+	});
+
+	it("reports a logout that failed, with the host", async () => {
+		const r = rig({ logoutExit: 1 });
+		await signedInGitlab(r);
+		const problems = await r.accounts.removeLogins(HOSTS);
+		assert.equal(problems.length, 1);
+		assert.match(problems[0] ?? "", /^gitlab\.com: /);
+	});
+});
