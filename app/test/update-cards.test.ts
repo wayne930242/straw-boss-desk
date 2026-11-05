@@ -243,7 +243,8 @@ describe("the Updates copy uses the words the rest of the app uses (SA-T13-3)", 
 
 describe("the Updates styles", () => {
 	it("sets no colour and no border of its own: the cards use the accounts list's frame and the badge's colours", () => {
-		const css = readText(join(import.meta.dirname, "..", "src", "renderer", "settings.css"));
+		// The card parts live in desk.css, beside the card list's frame (R12-F014); settings.css keeps the update cards' own.
+		const css = ["desk.css", "settings.css"].map((f) => readText(join(import.meta.dirname, "..", "src", "renderer", f))).join("\n");
 		const rules = [...css.matchAll(/^([^{}\n]*update-[^{}\n]*)\{([^}]*)\}/gm)];
 		assert.ok(rules.length >= 5);
 		for (const [, selector, body] of rules) assert.doesNotMatch(body as string, /(^|[;\s])(color|background(-color)?|border[\w-]*)\s*:/, `${selector} sets a colour or a border`);
