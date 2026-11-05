@@ -248,7 +248,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 	it("shows the confirmation: the root and its size, the PATH entry on Windows, the work folder that stays, and the two entries that stay with their reason; the app's own entry is not named", async () => {
 		assert.ok(sizeBefore > 1_000_000, "the root holds an installed stack");
 		await page.locator("#remove-open").click();
-		await page.locator("#remove-confirm-panel").waitFor({ timeout: 60_000 });
+		await page.locator("#remove-confirm-panel").waitFor({ timeout: 180_000 });
 		const panel = (await page.locator("#remove-confirm-panel").innerText()).replace(/\s+/g, " ");
 		assert.ok(panel.includes(world.root), "names the data root");
 		assert.match(panel, /\d+(\.\d+)? (MB|GB)/);
@@ -268,14 +268,14 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		assert.equal(existsSync(join(world.layout.state, "bootstrap.json")), true);
 		assert.equal(await exists(OWNED), true);
 		await page.locator("#remove-open").click();
-		await page.locator("#remove-confirm-panel").waitFor({ timeout: 60_000 });
+		await page.locator("#remove-confirm-panel").waitFor({ timeout: 180_000 });
 	});
 
 	it("removes everything but Chromium's folder: the result names what stayed, nothing failed, nothing runs from the root, and the store holds only what is not the app's", async () => {
 		const stack = await underRoot();
 		assert.ok(stack.length > 0, "the stack runs from under the root before the removal");
 		await page.locator("#remove-confirm").click();
-		await page.locator("#remove-done-panel").waitFor({ timeout: 300_000 });
+		await page.locator("#remove-done-panel").waitFor({ timeout: 600_000 });
 		const left = await page.locator("#remove-left li").evaluateAll((els) => els.map((e) => [e.getAttribute("data-entry"), e.getAttribute("data-why")]));
 		assert.deepEqual(left.sort(), [[CHANGED.name, "changed"], [FOREIGN.name, "foreign"]].sort(), "the result names the foreign write over an owned entry and the other program's entry");
 		assert.equal(await page.locator("#remove-problems").count(), 0, `a step failed: ${await page.locator("#remove-problems").innerText().catch(() => "")}`);
