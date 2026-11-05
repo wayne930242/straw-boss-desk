@@ -733,7 +733,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			}
 		})();
 		// U13 evidence: what `herdr pane get` answers once Herdr is gone, which is the call `balance.mjs after-close` of pi-straw-boss polls (every 250 ms, for 30 s) to learn that its pane is gone.
-		// The helper calls an answer "gone" by the rule below, copied from `src/balance.mjs` of pi-straw-boss 0.59.0 (HERDR_GONE and `paneGone`). One answer is read after the stack is down and printed
+		// The helper calls an answer "gone" by the rule below, copied from `src/balance.mjs` of pi-straw-boss 0.59.4 (HERDR_GONE and `paneGone`). One answer is read after the stack is down and printed
 		// with whether the rule takes it for gone, so a macOS answer that the rule does not know is read straight from the run. (One call per run: a polling probe would itself be a program under tools.)
 		const HERDR_GONE = /\b(ENOENT|ECONNREFUSED|server_not_running)\b|os error (2|3|61|111)\b/;
 		const panesBeforeQuit = await paneIds().catch(() => [] as string[]);
@@ -767,7 +767,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		} finally {
 			sampling = false;
 			await sampler;
-			console.log(`--- what herdr answered once the app had quit and Herdr was gone, pane ${probedPane} (U13 evidence; pi-straw-boss 0.59.0's balance.mjs calls an answer "gone" on pane_not_found, ENOENT, ECONNREFUSED, server_not_running or os error 2/3/61/111) ---\n${goneAnswers}`);
+			console.log(`--- what herdr answered once the app had quit and Herdr was gone, pane ${probedPane} (U13 evidence; pi-straw-boss 0.59.4's balance.mjs calls an answer "gone" on pane_not_found, ENOENT, ECONNREFUSED, server_not_running or os error 2/3/61/111) ---\n${goneAnswers}`);
 			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit (ms after the quit began) ---\n${[...seen].map(([pid, v]) => `${pid} ${v.file}, ppid ${v.ppid}, cwd ${v.cwd}, born +${v.bornAt - began} ms, seen from +${v.first - began} to +${v.last - began} ms`).join("\n")}\n${facts()}`);
 		}
 	});

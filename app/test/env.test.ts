@@ -111,7 +111,15 @@ describe("buildEnv", () => {
 		for (const name of NEVER_CARRY) assert.equal(env[name], undefined, name);
 	});
 
-	it("PIN-F004: the second gate names every variable pi-straw-boss 0.59.0 strips as an identity", () => {
+	it("keeps pi-straw-boss's merge train off, whatever the PM's own environment says", () => {
+		for (const platform of ["darwin", "win32"] as const) {
+			const layout = fakeLayout(platform);
+			assert.equal(buildEnv({ layout, current, appEnv: {} }).STRAW_BOSS_INTEGRATION, "off", platform);
+			assert.equal(buildEnv({ layout, current, appEnv: { STRAW_BOSS_INTEGRATION: "on" } }).STRAW_BOSS_INTEGRATION, "off", `${platform}: an override from the app's environment`);
+		}
+	});
+
+	it("PIN-F004: the second gate names every variable pi-straw-boss 0.59.4 strips as an identity", () => {
 		// pi-straw-boss `IDENTITY` (chunk-DST2WCCT.mjs): a process that carries STRAW_BOSS_OWNER is ended when that owner ends, so the desk's own Herdr and sb server must never inherit one.
 		for (const name of ["PI_INTERCOM_SESSION_ID", "PI_INTERCOM_STABLE_ID", "PI_SUBAGENT_ID", "STRAW_BOSS_ROLE", "STRAW_BOSS_OWNER", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"]) {
 			assert.ok(NEVER_CARRY.includes(name), `${name} is not in NEVER_CARRY`);
