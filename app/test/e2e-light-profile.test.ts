@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { binShim } from "../src/main/bootstrap/stages/pi.ts";
+import { packageDir } from "../src/main/bootstrap/npm.ts";
 import { agentPackageDir, installedVersion } from "../src/main/bootstrap/pi-cli.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, realStack, runWorld, stateOf, stopProcessesUnder, type RunSummary, type World } from "./harness/e2e-light.ts";
 import { rpcCommands } from "./harness/rpc-commands.ts";
@@ -155,5 +157,35 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 		assert.equal(third.outcomes.profile?.status, "skipped-verified");
 		assert.deepEqual((third.outcomes.profile?.warnings ?? []).map((w) => w.kind), ["profile-file-kept"]);
 		assert.ok(existsSync(join(world.layout.agent, ".straw-boss-profile", "pending", (realStack.profile as { version: string }).version, "rules", "bash-not-powershell.md")));
+	});
+
+	// R12-F006 (task 12 anchor: "a Trust saved for the home base does not cover a clone"). The question belongs to pi: the pinned pi-straw-boss relays it to the GUI only when pi's own `ProjectTrustStore` has no
+	// saved decision for the folder or a parent (`src/trust/ask.ts`, read here as data), and the store is keyed by folder, walking up to parents and never sideways. The store and the resource test below are
+	// the pinned pi's own code, installed by this run; nothing of the app's decides it. A clone sits beside the home base (`<work>/Straw Boss`, `<work>/<folder>`), so a Trust of the base is not a Trust of it.
+	it("a Trust saved for the home base does not cover a clone that brings .pi/extensions: pi's own store has no decision for it, and it needs the question", async () => {
+		const piDir = packageDir(world.layout, "@earendil-works/pi-coding-agent");
+		const trust = (await import(pathToFileURL(join(piDir, "dist", "core", "trust-manager.js")).href)) as {
+			ProjectTrustStore: new (agentDir: string) => { get(cwd: string): boolean | null; set(cwd: string, decision: boolean | null): void };
+			hasTrustRequiringProjectResources(cwd: string): boolean;
+		};
+		const work = join(world.home, "StrawBoss");
+		const homeBase = join(work, "Straw Boss");
+		const clone = join(work, "fixture-repo");
+		mkdirSync(join(homeBase, ".pi"), { recursive: true });
+		mkdirSync(join(clone, ".pi", "extensions"), { recursive: true });
+		writeFileSync(join(clone, ".pi", "extensions", "x.ts"), "export default function () {}\n");
+		const store = new trust.ProjectTrustStore(join(world.base, "trust-agent"));
+		store.set(homeBase, true);
+		assert.equal(store.get(homeBase), true, "the home base is trusted");
+		assert.equal(store.get(join(homeBase, "sub")), true, "and a folder inside it");
+		assert.equal(store.get(clone), null, "the clone beside it has no decision: pi decides nothing and the question is asked");
+		assert.equal(trust.hasTrustRequiringProjectResources(clone), true, "its .pi/extensions is a resource that needs the question");
+		// The rule that makes the work folder the one thing the app never trusts for the PM: a decision on the parent would cover the clone.
+		store.set(work, true);
+		assert.equal(store.get(clone), true);
+		// The pinned pi-straw-boss asks the GUI exactly when the store has no decision (read as data, never run).
+		const ask = readFileSync(join(agentPackageDir(world.layout, "pi-straw-boss"), "src", "trust", "ask.ts"), "utf8");
+		assert.ok(ask.includes("new api.ProjectTrustStore(api.getAgentDir()).get(cwd)"), "its saved decision is pi's store");
+		assert.match(ask, /if \(d\.saved\(cwd\) !== null\) return false;/, "a saved decision means no question; none means the question");
 	});
 });
