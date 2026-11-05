@@ -153,6 +153,9 @@ details > pre { color: var(--text); }
 .update-version { flex: 1; min-width: 120px; }
 .update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
 .update-note, .project-card .finding, .project-card .problem { margin: 8px 0 0; min-width: 0; overflow-wrap: anywhere; }
+/* Links Windows could not make: a path wraps at its 「/」 and between paths, and breaks inside a name only when that one name is wider than the card (SA-T12-6). */
+.project-card .finding[data-role="links"] { overflow-wrap: break-word; }
+.path-item { font-family: var(--mono); font-size: 12.5px; overflow-wrap: break-word; }
 .update-details { margin: 8px 0 0; }
 .update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 

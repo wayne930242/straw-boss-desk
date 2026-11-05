@@ -12,7 +12,9 @@ import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../src/shared/projects.ts";
 import type { FetchReason, RecipeCardState, RecipeCardView, RecipeChange } from "../../src/shared/recipe-update.ts";
+import type { ForgeView } from "../../src/shared/accounts.ts";
 import type { Locale } from "../../src/shared/locale.ts";
+import type { UpdatesView } from "../../src/shared/updates.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { settingsView, wizardView } from "../harness/views.ts";
 
@@ -60,11 +62,12 @@ const CHANGES: RecipeChange[] = [
 ];
 const fetchRefusal = (fetch: FetchReason, status?: number): RecipeCardState => ({ phase: "refused", reason: "fetch", fetch, ...(status !== undefined ? { status } : {}) });
 const NOW = "2026-11-05T10:00:00.000Z";
+const SHA256 = "3f8a1c5e9b2d47f06a1e8c3b5d9f2a4c7e0b6d1a8f3c5e9b2d47f06a1e8c3b5d";
 const RECIPE_STATES: Array<[string, RecipeCardState, ProjectsView?]> = [
 	["idle", { phase: "idle", checkedAt: NOW }],
 	["never-checked", { phase: "idle", checkedAt: null }],
 	["checking", { phase: "checking" }],
-	["offered", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: CHANGES, sha256: "ab" }],
+	["offered", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: CHANGES, sha256: SHA256 }],
 	["offered-file", { phase: "offered", origin: "file", id: "other", name: "Other team", version: "2.0.0", replaces: true, changes: CHANGES.slice(0, 3), sha256: "cd" }],
 	["applying", { phase: "applying", step: "install" }],
 	["applied", { phase: "applied", version: "1.1.0", at: NOW }, projects([done({ folder: "web", label: "Web app" }), row({ folder: "docs", label: "Docs", phase: "working", step: "cloning" })])],
@@ -85,8 +88,22 @@ const RECIPE_STATES: Array<[string, RecipeCardState, ProjectsView?]> = [
 	["error-busy", { phase: "error", kind: "busy", detail: "the tools did not stop in time" }],
 	["error-busy-project", { phase: "error", kind: "busy", detail: "the tools did not stop in time" }, projects([row({ folder: "web", label: "Web app", phase: "working", step: "opening" })])],
 	["applying-waits-for-copy", { phase: "applying", step: "install" }, projects([row({ folder: "web", label: "Web app", phase: "working", step: "cloning" })])],
-	["offered-branch-default", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: [{ kind: "repo-branch", folder: "web", from: null, to: "develop" }, { kind: "repo-label", folder: "web", from: "Web", to: "Web app" }], sha256: "ab" }],
+	["offered-branch-default", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: [{ kind: "repo-branch", folder: "web", from: null, to: "develop" }, { kind: "repo-label", folder: "web", from: "Web", to: "Web app" }], sha256: SHA256 }],
+	["offered-file", { phase: "offered", origin: "file", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: [{ kind: "version", from: "1.0.0", to: "1.1.0" }], sha256: SHA256 }],
 	["projects-failed", { phase: "idle", checkedAt: NOW }, projects([failed({ kind: "other-origin" }, { folder: "web", label: "Web app" }), done({ folder: "handbook", label: "Handbook", links: { paths: [".agents/skills"], more: 0 } })])],
+];
+
+const UPDATES = (shell: UpdatesView["shell"], stack: UpdatesView["stack"] = { phase: "idle", checkedAt: NOW }): UpdatesView => ({ appVersion: "0.0.1", generation: 7, shell, stack, checking: false, checkedAt: NOW, platform: "win32" });
+const UPDATE_STATES: Array<[string, UpdatesView]> = [
+	["install-failed", UPDATES({ phase: "ready", version: "0.0.2", installFailed: "No update filepath provided, can't quit and install" })],
+	["install-failed-agents-stopped", UPDATES({ phase: "ready", version: "0.0.2", installFailed: "No update filepath provided, can't quit and install", agentsStopped: true })],
+	["installer-refused", UPDATES({ phase: "refused", version: "0.0.2", reason: "hash-mismatch" })],
+	["stack-rolled-back", UPDATES({ phase: "ready", version: "0.0.2" }, { phase: "rolled-back", generation: 8, stage: "interrupted", category: "other", restored: true, at: NOW })],
+];
+const forge = (kind: "github" | "gitlab", host: string, flow: ForgeView["flow"], state: ForgeView["state"] = "not-signed-in"): ForgeView => ({ kind, host, state, entries: [], flow });
+const FORGE_STATES: Array<[string, ForgeView[]]> = [
+	["not-signed-in", [forge("github", "github.com", { phase: "idle" }), forge("gitlab", "gitlab.com", { phase: "idle" })]],
+	["ready", [forge("github", "github.com", { phase: "ready" }), forge("gitlab", "gitlab.example.com", { phase: "ready" })]],
 ];
 
 describe("every state of the projects step and the Team recipe card (gallery)", { skip }, () => {
@@ -109,6 +126,49 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 			return out;
 		});
 		assert.deepEqual(outside, [], `${name}: elements past the right edge of their list`);
+	};
+	/**
+	 * SA-T12-6: a path wraps only after a 「/」, never inside a name that would fit on a line of its own. For every character of every `.path-item` the line it sits on is read from its rect; where the line
+	 * changes after anything but a slash, the name around that point is measured unbroken, and it must be wider than the paragraph (then there is nowhere else to break it).
+	 */
+	const pathsBreakAtSeparators = async (name: string): Promise<void> => {
+		const bad = await page.evaluate(() => {
+			const out: string[] = [];
+			for (const item of document.querySelectorAll(".path-item")) {
+				const chars: Array<{ ch: string; top: number }> = [];
+				const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+				for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+					const text = node.textContent ?? "";
+					for (let i = 0; i < text.length; i++) {
+						const range = document.createRange();
+						range.setStart(node, i);
+						range.setEnd(node, i + 1);
+						const rect = range.getClientRects()[0];
+						if (rect !== undefined) chars.push({ ch: text.charAt(i), top: Math.round(rect.top) });
+					}
+				}
+				const full = chars.map((c) => c.ch).join("");
+				const paragraph = item.closest("p") as HTMLElement;
+				for (let i = 1; i < chars.length; i++) {
+					if (Math.abs((chars[i] as { top: number }).top - (chars[i - 1] as { top: number }).top) <= 4 || (chars[i - 1] as { ch: string }).ch === "/") continue;
+					const start = full.lastIndexOf("/", i - 1) + 1;
+					const slash = full.indexOf("/", i);
+					const segment = full.slice(start, slash === -1 ? full.length : slash + 1);
+					const probe = document.createElement("span");
+					probe.className = "path-item";
+					probe.style.whiteSpace = "nowrap";
+					probe.style.position = "absolute";
+					probe.style.visibility = "hidden";
+					probe.textContent = segment;
+					paragraph.appendChild(probe);
+					const width = probe.getBoundingClientRect().width;
+					probe.remove();
+					if (width <= paragraph.clientWidth) out.push(`${full}: broke inside "${segment}" (${Math.round(width)}px fits in ${paragraph.clientWidth}px)`);
+				}
+			}
+			return out;
+		});
+		assert.deepEqual(bad, [], `${name}: a path broke mid-name`);
 	};
 	const settled = async (locale: Locale): Promise<void> => {
 		const deadline = Date.now() + 10_000;
@@ -204,6 +264,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				await page.locator("#recipe-cards").waitFor({ timeout: 10_000 });
 				assert.equal(await page.locator('li[data-role="update"]').getAttribute("data-state"), state.phase, name);
 				await insideList(`recipe ${name} ${locale}`);
+				await pathsBreakAtSeparators(`recipe ${name} ${locale}`);
 				await sound(`recipe ${name} ${locale}`);
 				await shot(`recipe-${name}`, locale);
 			}
@@ -220,8 +281,35 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				assert.equal(await page.evaluate(() => document.body.dataset.step), "projects");
 				assert.equal(await page.locator("li.project-card").count(), view.rows.length, name);
 				await insideList(`projects ${name} ${locale}`);
+				await pathsBreakAtSeparators(`projects ${name} ${locale}`);
 				await sound(`projects ${name} ${locale}`);
 				await shot(`projects-${name}`, locale);
+			}
+		}
+	});
+
+	it("draws the Updates card after a failed installer start and the Accounts cards of a host that is not signed in, in both languages (carry-ins: one Sign in per host)", async () => {
+		await load("settings", settingsView({ locale: "zh-TW", section: "updates", updates: UPDATE_STATES[0]?.[1] as UpdatesView }));
+		await page.waitForLoadState("domcontentloaded");
+		for (const [name, updates] of UPDATE_STATES) {
+			for (const locale of LOCALES) {
+				await push("settings", settingsView({ locale, section: "updates", updates }));
+				await settled(locale);
+				await page.locator("#update-app-note").waitFor({ timeout: 10_000 });
+				await sound(`updates ${name} ${locale}`);
+				await shot(`updates-${name}`, locale);
+			}
+		}
+		for (const [name, forges] of FORGE_STATES) {
+			for (const locale of LOCALES) {
+				await push("settings", settingsView({ locale, section: "accounts", forges, claude: { state: "not-signed-in", storage: "keychain", flow: { phase: "idle" } } }));
+				await settled(locale);
+				await page.locator("#accounts-forges").waitFor({ timeout: 10_000 });
+				// One Sign in per host: the header's until the checks pass, then the flow's own.
+				const counts = await page.evaluate(() => [...document.querySelectorAll("li.forge-card")].map((card) => card.querySelectorAll(".forge-sign-in-again, [data-role=\"sign-in\"]").length));
+				assert.deepEqual(counts, forges.map(() => 1), `accounts ${name} ${locale}: one sign-in button per host`);
+				await sound(`accounts ${name} ${locale}`);
+				await shot(`accounts-${name}`, locale);
 			}
 		}
 	});

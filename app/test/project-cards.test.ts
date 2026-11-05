@@ -111,6 +111,31 @@ describe("the projects step: one card per repository", () => {
 		assert.equal(draw(view([row({ phase: "done", opened: true, links: { paths: [], more: 0 } })])).querySelector('[data-role="links"]'), null);
 	});
 
+	it("wraps a path only after a 「/」 or between paths: each path is one node with a break offered after each slash, and the sentence reads the same (SA-T12-6)", () => {
+		const paths = [".agents/skills/a-very-long-skill-folder", ".pi/extensions/x/index", ".claude/commands"];
+		const links = { paths, more: 2 };
+		for (const locale of ["en", "zh-TW"] as const) {
+			const node = draw(view([row({ label: "Web app", phase: "done", opened: true, links })]), locale).querySelector('[data-role="links"]');
+			assert.ok(node);
+			const items = node.querySelectorAll(".path-item");
+			assert.deepEqual(items.map((i) => i.textContent), paths, `${locale}: every path, whole, in order`);
+			for (const item of items) {
+				const isBreak = (c: object): boolean => (c as { tagName?: string }).tagName?.toLowerCase() === "wbr";
+				const breaks = item.childNodes.filter(isBreak).length;
+				assert.equal(breaks, (item.textContent.match(/\//g) ?? []).length, `${locale}: a break after each slash of ${item.textContent}`);
+				// A break is offered after a slash and never before the text that follows it: each wbr sits right after text that ends in 「/」.
+				item.childNodes.forEach((c, i) => {
+					if (isBreak(c)) assert.match(item.childNodes[i - 1]?.textContent ?? "", /\/$/);
+				});
+			}
+			const text = node.textContent ?? "";
+			assert.ok(text.includes(paths[0] as string) && (locale === "en" ? text.includes("2 more") : text.includes("另外 2 個")), text);
+			assert.equal(text.includes("\u0001"), false, "no marker is left in the sentence");
+		}
+		const zh = draw(view([row({ phase: "done", opened: true, links })]), "zh-TW").querySelector('[data-role="links"]');
+		assert.ok(zh?.childNodes.some((c) => (c as { tagName?: string }).tagName?.toLowerCase() === "wbr"), "a break is offered after each 、 too");
+	});
+
 	it("says done differently for a fresh clone, a reused folder and a head-only run", () => {
 		const text = (r: Partial<ProjectRow>) => draw(view([row({ phase: "done", opened: true, ...r })])).querySelector("#project-0-note")?.textContent ?? "";
 		assert.match(text({}), /Copied to web and opened/);

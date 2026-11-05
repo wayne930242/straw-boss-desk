@@ -46,11 +46,28 @@ function doneSentences(ctx: RowsCtx, row: ProjectRow): string[] {
 	return out;
 }
 
-/** The sentence about links Windows could not make: the paths, at most ten, then how many more. */
-function linksSentence(ctx: RowsCtx, row: ProjectRow): string | null {
+/** Marks where a path goes in the sentence, until the sentence is split around it. */
+const PATH_MARK = /\u0001(\d+)\u0001/;
+
+/** A path as one unit that wraps only after a 「/」, so a line break never falls inside a name (SA-T12-6); a segment wider than the card still breaks, since there is nowhere else to break it. */
+function pathNode(path: string): HTMLElement {
+	const parts = path.split(/(?<=\/)/);
+	return h("span", { class: "path-item" }, ...parts.flatMap((part, i) => (i < parts.length - 1 ? [part, h("wbr")] : [part])));
+}
+
+/** The sentence about links Windows could not make: the paths, at most ten, then how many more. Each path is its own node, and a break is offered after each 「/」 and each separator between paths. */
+function linksNode(ctx: RowsCtx, row: ProjectRow, id: string): HTMLElement | null {
 	if (row.links === null || row.links.paths.length === 0) return null;
-	const paths = row.links.more > 0 ? [...row.links.paths, ctx.tr("projects.linksMore", { n: row.links.more })] : row.links.paths;
-	return ctx.tr("projects.links", { repository: row.label, paths: listOf(ctx.locale, paths) });
+	const marks = row.links.paths.map((_, i) => `\u0001${i}\u0001`);
+	const items = row.links.more > 0 ? [...marks, ctx.tr("projects.linksMore", { n: row.links.more })] : marks;
+	const text = ctx.tr("projects.links", { repository: row.label, paths: listOf(ctx.locale, items) });
+	const children = text.split(new RegExp(PATH_MARK.source, "g")).flatMap((piece, i) => {
+		// `split` with one group alternates text and the captured index.
+		if (i % 2 === 1) return [pathNode(row.links?.paths[Number(piece)] ?? "")];
+		// The ideographic comma between paths is a break the line may take; the text around it is left to the browser.
+		return piece.split(/(?<=、)/).flatMap((part) => (part.endsWith("、") ? [part, h("wbr")] : [part]));
+	});
+	return h("p", { class: "finding update-note", id, "data-role": "links" }, ...children);
 }
 
 export function projectCard(ctx: RowsCtx, row: ProjectRow, index: number): HTMLElement {
@@ -67,7 +84,7 @@ export function projectCard(ctx: RowsCtx, row: ProjectRow, index: number): HTMLE
 				: row.phase === "done"
 					? doneSentences(ctx, row).join(" ")
 					: failure;
-	const links = linksSentence(ctx, row);
+	const links = linksNode(ctx, row, `project-${index}-links`);
 	return h(
 		"li",
 		{ class: "project-card", "data-role": "project", "data-folder": row.folder, "data-state": row.phase, ...(row.failure !== null ? { "data-reason": failureKey(row.failure) } : {}) },
@@ -80,7 +97,7 @@ export function projectCard(ctx: RowsCtx, row: ProjectRow, index: number): HTMLE
 			retry === null ? null : h("span", { class: "update-buttons" }, retry),
 		),
 		sentence === null || sentence === "" ? null : h("p", { class: row.phase === "failed" ? "problem" : "note update-note", id: `project-${index}-note` }, sentence),
-		links === null ? null : h("p", { class: "finding update-note", id: `project-${index}-links`, "data-role": "links" }, links),
+		links,
 		row.phase === "failed" && row.detail !== ""
 			? h("details", { class: "update-details" }, h("summary", {}, ctx.tr("projects.details")), h("p", { class: "note update-detail", id: `project-${index}-detail` }, row.detail))
 			: null,
