@@ -281,6 +281,7 @@ describe("the key for the Herdr server", () => {
 		};
 		assert.equal(await r.linear.read(), undefined, "no key, no throw");
 		assert.equal(r.linear.state, "not-saved", "the row does not ask for the key again");
+		assert.equal(r.log.some((e) => e.event === "linear-key-unreadable"), false, "a sign-out is not logged as an unreadable key, and the row is not marked unreadable");
 	});
 
 	it("is not read when encryption has become unavailable", async () => {
