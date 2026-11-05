@@ -150,7 +150,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				const full = chars.map((c) => c.ch).join("");
 				const paragraph = item.closest("p") as HTMLElement;
 				for (let i = 1; i < chars.length; i++) {
-					if (Math.abs((chars[i] as { top: number }).top - (chars[i - 1] as { top: number }).top) <= 4 || (chars[i - 1] as { ch: string }).ch === "/") continue;
+					if (Math.abs((chars[i] as { top: number }).top - (chars[i - 1] as { top: number }).top) <= 4 || ["/", "-"].includes((chars[i - 1] as { ch: string }).ch)) continue;
 					const start = full.lastIndexOf("/", i - 1) + 1;
 					const slash = full.indexOf("/", i);
 					const segment = full.slice(start, slash === -1 ? full.length : slash + 1);
