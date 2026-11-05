@@ -236,6 +236,9 @@ const projects: ProjectsRunner = new ProjectsRunner({
 	workFolder: () => loadStartConfig(layout, home).workFolder,
 	git: new ProjectGit(gitExec, (fields) => shellLog.event(fields), () => projects.signal),
 	openBase: (input, hooks) => openBaseClient.open(input, hooks),
+	// A row's Git runs from `tools/git` for up to 45 minutes, so it is a job of the supervisor's queue like every other user of the tools folder: Repair, an update, Apply and the Linear restart wait for it
+	// (instead of refusing as busy after 90 s), and it waits for them. The open as a base is not in the job: it needs the stack running, and a trust question can hold it for minutes (R12-F002).
+	gitJob: (work) => supervisor.withEngineJob(work),
 	record: new ProjectRecordStore(layout),
 	redact: (text) => runtimeLog.redactor.redact(text),
 	log: (fields) => shellLog.event(fields),

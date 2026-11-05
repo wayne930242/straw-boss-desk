@@ -179,6 +179,20 @@ describe("the clone and the default branch (task 12 anchor)", () => {
 		assert.equal(r.rows().plain?.phase, "done");
 	});
 
+	it("a label-only change renames the row and runs nothing: no Git, no second open", async () => {
+		const r = rig();
+		await r.runner.begin([spec("web", { label: "Web" })]);
+		r.calls.length = 0;
+		r.opens.length = 0;
+		await r.runner.update([spec("web", { label: "Web" })], [spec("web", { label: "Web app" })]);
+		assert.equal(r.rows().web?.label, "Web app");
+		assert.equal(r.rows().web?.phase, "done");
+		assert.equal(r.rows().web?.opened, true);
+		assert.deepEqual(r.calls, []);
+		assert.deepEqual(r.opens, []);
+		assert.equal(r.record.read()?.rows[0]?.label, "Web app", "and the record keeps the new label");
+	});
+
 	it("a repository the update adds is cloned and opened; one it drops leaves the list and stays on disk", async () => {
 		const r = rig();
 		await r.runner.begin([spec("web", { defaultBranch: "develop" })]);

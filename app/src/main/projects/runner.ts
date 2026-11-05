@@ -174,7 +174,12 @@ export class ProjectsRunner {
 			const was = old.get(spec.folder);
 			if (was === undefined || was.url !== spec.url) plan.push({ spec, mode: "full" });
 			else if ((was.defaultBranch ?? null) !== (spec.defaultBranch ?? null)) plan.push({ spec, mode: "head" });
-			else if (!this.#rows.has(spec.folder)) this.#rows.set(spec.folder, { ...fresh(spec), url: spec.url });
+			else {
+				const kept = this.#rows.get(spec.folder);
+				if (kept === undefined) this.#rows.set(spec.folder, { ...fresh(spec), url: spec.url });
+				// A label-only change renames the row and nothing else: no Git runs, and a base that is open keeps the name it was opened with.
+				else if (kept.label !== spec.label) this.#rows.set(spec.folder, { ...kept, label: spec.label });
+			}
 		}
 		this.#keepOnly(after);
 		for (const { spec, mode } of plan) {

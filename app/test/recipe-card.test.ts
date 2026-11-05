@@ -76,10 +76,35 @@ describe("Team recipe: cards", () => {
 		assert.equal(section.querySelector("#recipe-source")?.textContent, "From recipes.example.com");
 	});
 
-	it("puts Replace in the recipe's card as its primary action, and Check now in the update's card", () => {
+	it("makes Replace a secondary button beside the update card's primary one: Check now, or Apply for an offer (SA-T12-4)", () => {
 		const section = draw(card({ phase: "idle", checkedAt: null }));
-		assert.deepEqual(buttons(cardOf(section, "recipe")).map((b) => [b.id, b.className, b.textContent]), [["recipe-replace", "primary", "Replace with another file…"]]);
+		assert.deepEqual(buttons(cardOf(section, "recipe")).map((b) => [b.id, b.className, b.textContent]), [["recipe-replace", "", "Replace with another file…"]]);
 		assert.deepEqual(buttons(cardOf(section, "update")).map((b) => [b.id, b.className, b.textContent]), [["recipe-check", "primary", "Check now"]]);
+		const offer = draw(card({ phase: "offered", origin: "url", id: "team", name: "Team", version: "1.1.0", replaces: false, changes: [], sha256: "ab" }));
+		assert.equal(buttons(offer).filter((b) => b.className === "primary").length, 1, "one primary on the page");
+		assert.equal(buttons(cardOf(offer, "recipe"))[0]?.className, "");
+	});
+
+	it("keeps Replace primary where no other action on the page is: a recipe without an address to ask, and no recipe at all", () => {
+		const noAddress = draw(card({ phase: "idle", checkedAt: null }, { active: { ...active, updateHost: null } }));
+		assert.equal(buttons(noAddress).filter((b) => b.className === "primary").length, 1);
+		assert.equal(buttons(cardOf(noAddress, "recipe"))[0]?.className, "primary");
+		const none = draw(card({ phase: "idle", checkedAt: null }, { active: null }));
+		assert.equal(buttons(cardOf(none, "recipe"))[0]?.className, "primary");
+	});
+
+	it("says which project copy an update waits for, and which one a busy refusal is about", () => {
+		const row = (step: "cloning" | "opening" | "queued"): RecipeCardView["projects"] => ({ rows: [{ folder: "web", label: "Web app", host: "g.example.com", defaultBranch: null, phase: "working", step, reused: false, opened: false, links: null, failure: null, detail: "" }], running: true, held: false });
+		const waiting = draw(card({ phase: "applying", step: "install" }, { projects: row("cloning") }));
+		assert.match(waiting.querySelector("#recipe-update-note")?.textContent ?? "", /Waiting for Web app to finish copying/);
+		const plain = draw(card({ phase: "applying", step: "install" }));
+		assert.equal(plain.querySelector("#recipe-update-note")?.textContent, catalogs.en.settings.recipe.applying.install);
+		const busy = draw(card({ phase: "error", kind: "busy", detail: "x" }, { projects: row("opening") }));
+		assert.match(busy.querySelector("#recipe-update-note")?.textContent ?? "", /Web app is still being copied or opened/);
+		const generic = draw(card({ phase: "error", kind: "busy", detail: "x" }));
+		assert.equal(generic.querySelector("#recipe-update-note")?.textContent, catalogs.en.settings.recipe.errorBusy);
+		const zh = draw(card({ phase: "error", kind: "busy", detail: "x" }, { projects: row("opening") }), "zh-TW");
+		assert.match(zh.querySelector("#recipe-update-note")?.textContent ?? "", /Web app 還在複製或開啟/);
 	});
 
 	it("has no Check now for a recipe without an address to ask, and says so", () => {
@@ -133,7 +158,9 @@ describe("Team recipe: an offered update", () => {
 		assert.ok(texts.includes("Signs in to GitLab at gitlab.example.com"));
 		assert.ok(texts.includes("New project Web: copied from github.com into the folder web"));
 		assert.ok(texts.includes("New project Api: copied from github.com into the folder api, starting branch develop"));
-		assert.ok(texts.includes("web: starting branch the code host's own becomes develop"));
+		assert.ok(texts.includes("web: starting branch changes from the code host's default to develop"));
+		const zh = draw(card(offered()), "zh-TW").querySelectorAll("#recipe-changes li").map((l) => l.textContent);
+		assert.ok(zh.includes("web：起始分支從程式碼平台的預設改成 develop"), "SA-T12-3");
 		assert.ok(texts.includes("Package pi-z: 1.0.0 becomes 1.1.0. It installs third-party code."));
 		assert.ok(texts.some((t) => t.startsWith("The team instructions change.")));
 		assert.ok(texts.includes("The team instructions are removed"));

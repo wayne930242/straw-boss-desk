@@ -36,7 +36,6 @@ function details(tr: Tr, raw: string | undefined): HTMLElement | null {
 function changeItem(ctx: SettingsCtx, change: RecipeChange): HTMLElement {
 	const tr = ctx.tr;
 	const none = tr("settings.recipe.change.none");
-	const branch = (value: string | null): string => value ?? tr("settings.recipe.change.defaultBranch");
 	const key = (name: string, vars?: Record<string, string | number>): string => tr(`settings.recipe.change.${name}`, vars);
 	let text: string;
 	switch (change.kind) {
@@ -57,7 +56,8 @@ function changeItem(ctx: SettingsCtx, change: RecipeChange): HTMLElement {
 			text = key("repo-removed", { folder: change.folder });
 			break;
 		case "repo-branch":
-			text = key("repo-branch", { folder: change.folder, from: branch(change.from), to: branch(change.to) });
+			// A branch change that starts or ends at "the code host's default" is one sentence of its own: built from a fragment it reads as broken Chinese (SA-T12-3).
+			text = change.from === null ? key("repo-branch-fromDefault", { folder: change.folder, to: change.to ?? "" }) : change.to === null ? key("repo-branch-toDefault", { folder: change.folder, from: change.from }) : key("repo-branch", { folder: change.folder, from: change.from, to: change.to });
 			break;
 		case "repo-url":
 			text = key("repo-url", { folder: change.folder, host: change.host });
@@ -114,6 +114,12 @@ function refusedSentence(ctx: SettingsCtx, state: Extract<RecipeCardState, { pha
 const BADGE_KEY: Record<RecipeCardState["phase"], string> = { idle: "idle", checking: "checking", offered: "offered", applying: "applying", applied: "applied", kept: "kept", refused: "refused", failed: "failed", error: "error" };
 const BADGE: Record<RecipeCardState["phase"], BadgeKind> = { idle: "done", checking: "working", offered: "working", applying: "working", applied: "done", kept: "quiet", refused: "failed", failed: "warn", error: "failed" };
 
+/** The label of the project whose Git or whose opening is on its way, or null. The update's install waits for a project copy (one job queue), and a busy refusal can come from a base still opening. */
+function runningProject(view: RecipeCardView, steps: readonly string[]): string | null {
+	const row = view.projects.rows.find((r) => r.phase === "working" && r.step !== null && steps.includes(r.step));
+	return row?.label ?? null;
+}
+
 function sentence(ctx: SettingsCtx, view: RecipeCardView): string {
 	const tr = ctx.tr;
 	const state = view.state;
@@ -126,8 +132,11 @@ function sentence(ctx: SettingsCtx, view: RecipeCardView): string {
 			return tr("settings.recipe.checking");
 		case "offered":
 			return tr(state.origin === "file" ? (state.replaces ? "settings.recipe.offeredReplace" : "settings.recipe.offeredFile") : state.replaces ? "settings.recipe.offeredReplace" : "settings.recipe.offered", { name: state.name, version: state.version });
-		case "applying":
-			return tr(`settings.recipe.applying.${state.step}`);
+		case "applying": {
+			// The install runs after a project copy that is under way ends (they share one queue): until then the agents still run, and the sentence names the copy.
+			const copying = state.step === "install" ? runningProject(view, ["cloning", "fetching", "head", "links"]) : null;
+			return copying === null ? tr(`settings.recipe.applying.${state.step}`) : tr("settings.recipe.applying.waitCopy", { repository: copying });
+		}
 		case "applied":
 			return tr("settings.recipe.applied", { version: state.version });
 		case "kept":
@@ -136,8 +145,11 @@ function sentence(ctx: SettingsCtx, view: RecipeCardView): string {
 			return refusedSentence(ctx, state);
 		case "failed":
 			return tr(state.restored ? "settings.recipe.failed" : "settings.recipe.failedPartly", { stage: stageLabel(ctx, state.stage) });
-		case "error":
-			return tr(state.kind === "busy" ? "settings.recipe.errorBusy" : "settings.recipe.errorOther");
+		case "error": {
+			if (state.kind !== "busy") return tr("settings.recipe.errorOther");
+			const running = runningProject(view, ["queued", "cloning", "fetching", "head", "links", "opening"]);
+			return running === null ? tr("settings.recipe.errorBusy") : tr("settings.recipe.errorBusyProject", { repository: running });
+		}
 	}
 }
 
@@ -146,7 +158,9 @@ function sentence(ctx: SettingsCtx, view: RecipeCardView): string {
 function currentCard(ctx: SettingsCtx, view: RecipeCardView): HTMLElement {
 	const active = view.active;
 	const busy = view.state.phase === "applying" || view.state.phase === "checking";
-	const replace = button("recipe-replace", ctx.tr("settings.recipe.replace"), () => ctx.act({ type: "recipe-replace" }), { primary: true, disabled: !view.enabled || busy });
+	// Replace is secondary while the update card beside it has the page's primary action (Apply or Check now); a recipe with no address to ask has none, so Replace is then the page's one (SA-T12-4).
+	const updateHasPrimary = view.state.phase === "offered" || (active !== null && active.updateHost !== null);
+	const replace = button("recipe-replace", ctx.tr("settings.recipe.replace"), () => ctx.act({ type: "recipe-replace" }), { primary: !updateHasPrimary, disabled: !view.enabled || busy });
 	if (active === null) return card("recipe", "none", [h("span", { class: "update-name" }, ctx.tr("settings.recipe.card.name")), row(replace)], h("p", { class: "note update-note", id: "recipe-current" }, ctx.tr("settings.recipe.none")));
 	const source = active.source.kind === "file" ? ctx.tr("settings.recipe.source.file", { fileName: active.source.fileName }) : ctx.tr("settings.recipe.source.url", { host: active.source.host });
 	return card(
