@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync as readDir, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync as readDir, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -418,6 +418,102 @@ describe("an interrupted clone (R12-F001)", () => {
 		assert.equal(r.rows().web?.phase, "done");
 		assert.ok(existsSync(join(r.work, "web", ".git")));
 		assert.deepEqual(readDir(r.work), ["web"]);
+	});
+});
+
+describe("the folder a clone lands in (R12B-F005 to F007)", () => {
+	beforeEach(() => bare("web"));
+
+	it("keeps a finished clone whose rename failed, and renames it into place on the next run without downloading again (R12B-F005)", async () => {
+		const r = rig();
+		const target = join(r.work, "web");
+		// A folder with the PM's own file appears while Git works, so the rename into place cannot happen.
+		const racing = new ProjectGit(
+			async (args, options) => {
+				const result = await run("git", args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) });
+				if (args[0] === "clone") {
+					mkdirSync(target, { recursive: true });
+					writeFileSync(join(target, "mine.txt"), "the PM's file");
+				}
+				return result;
+			},
+			() => undefined,
+		);
+		const runner = new ProjectsRunner({ ...r.deps, git: racing });
+		await runner.begin([spec("web")]);
+		assert.deepEqual(runner.view().rows[0]?.failure, { kind: "not-empty" }, "the PM's folder is named for what it is");
+		assert.equal(readFileSync(join(target, "mine.txt"), "utf8"), "the PM's file");
+		const kept = readDir(r.work).filter((n) => n.startsWith(".web.sbd-partial-"));
+		assert.equal(kept.length, 2, `the finished clone and its marker stay: ${kept.join(", ")}`);
+		// Another run while the folder is still the PM's keeps the clone too, and still does not download.
+		await runner.retry(spec("web"));
+		assert.equal(readDir(r.work).filter((n) => n.startsWith(".web.sbd-partial-")).length, 2);
+		// The PM clears the folder; the retry renames the finished clone and downloads nothing.
+		removeTree(target);
+		const calls: string[] = [];
+		const quiet = new ProjectGit(
+			async (args, options) => (calls.push(args[0] ?? ""), run("git", args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) })),
+			() => undefined,
+		);
+		const again = new ProjectsRunner({ ...r.deps, git: quiet });
+		await again.retry(spec("web"));
+		await again.begin([spec("web")]);
+		assert.equal(again.view().rows[0]?.phase, "done", JSON.stringify(again.view().rows[0]));
+		assert.equal(calls.includes("clone"), false, "no second download");
+		assert.ok(existsSync(join(target, "README.md")));
+		assert.deepEqual(readDir(r.work), ["web"], "the staging folder and its marker are gone");
+	});
+
+	it("a kept clone of another address is removed, not renamed into place (R12B-F005)", async () => {
+		bare("other");
+		const r = rig();
+		mkdirSync(r.work, { recursive: true });
+		const staging = join(r.work, ".web.sbd-partial-0123456789ab");
+		git(r.work, "clone", "-q", "https://git.fixture.test/other.git", staging);
+		writeFileSync(`${staging}.done`, "");
+		await r.runner.begin([spec("web")]);
+		assert.equal(r.rows().web?.phase, "done");
+		assert.equal(existsSync(join(r.work, "web", "README.md")), true);
+		assert.deepEqual(readDir(r.work), ["web"]);
+		assert.match(git(join(r.work, "web"), "config", "--get", "remote.origin.url"), /web\.git/);
+	});
+
+	it("reuses a finished clone of an empty repository, because its origin has no commit either; a clone of a repository that has one is still refused (R12B-F006)", async () => {
+		execFileSync("git", ["init", "-q", "--bare", join(base, "remote", "empty.git")], { env });
+		const r = rig();
+		r.open.outcome = { ok: false, cause: "refused", reason: "nothing to open yet" };
+		await r.runner.begin([spec("empty")]);
+		assert.deepEqual(r.rows().empty?.failure, { kind: "open", cause: "refused" });
+		assert.ok(existsSync(join(r.work, "empty", ".git")));
+		// Retry: the clone is there, has no commit, and neither has its origin.
+		r.open.outcome = { ok: true };
+		r.calls.length = 0;
+		await r.runner.retry(spec("empty"));
+		assert.equal(r.rows().empty?.phase, "done", JSON.stringify(r.rows().empty));
+		assert.equal(r.rows().empty?.reused, true);
+		assert.equal(r.calls.some((c) => c[0] === "clone"), false);
+		// Once the team pushes a first commit, the same folder is fetched as any other.
+		const seed = join(base, "seed-empty");
+		mkdirSync(seed, { recursive: true });
+		git(seed, "init", "-q", "-b", "main");
+		writeFileSync(join(seed, "README.md"), "first\n");
+		git(seed, "add", "-A");
+		git(seed, "commit", "-q", "-m", "first");
+		git(seed, "push", "-q", join(base, "remote", "empty.git"), "main");
+		await r.runner.retry(spec("empty"));
+		assert.equal(r.rows().empty?.phase, "done");
+	});
+
+	it("a target that links to an empty folder is refused before any download (R12B-F007)", async () => {
+		const r = rig();
+		mkdirSync(r.work, { recursive: true });
+		const real = join(r.work, "..", "elsewhere");
+		mkdirSync(real, { recursive: true });
+		symlinkSync(real, join(r.work, "web"), "junction");
+		await r.runner.begin([spec("web")]);
+		assert.deepEqual(r.rows().web?.failure, { kind: "not-empty" });
+		assert.equal(r.calls.some((c) => c[0] === "clone"), false, "nothing was downloaded");
+		assert.deepEqual(readDir(real), []);
 	});
 });
 
