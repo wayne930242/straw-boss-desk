@@ -53,6 +53,14 @@ export class ProjectGit {
 		return this.#run(["remote", "set-head", "origin", branch], QUICK_MS, dir);
 	}
 
+	/** True when `HEAD` names a commit. A clone that was cut short has none (Git exits 1 and says nothing), and a folder like that is not a repository to reuse. Throws when Git cannot say. */
+	async hasCommit(dir: string): Promise<boolean> {
+		const result = await this.#run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], QUICK_MS, dir);
+		if (result.code === 0) return true;
+		if (result.code === 1) return false;
+		throw new Error(`git rev-parse failed (exit ${result.code}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
+	}
+
 	/** The staged entries under the folders pi reads, for the symlink check (Windows only). */
 	linkEntries(dir: string): Promise<RunResult> {
 		return this.#run(linkListing(), QUICK_MS, dir);

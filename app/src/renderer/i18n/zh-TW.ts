@@ -313,6 +313,7 @@ export const zhTW: Messages = {
 		details: "詳細資料",
 		target: "資料夾：{folder}",
 		step: {
+			queued: "等正在進行的設定結束…",
 			cloning: "複製中…",
 			fetching: "更新中…",
 			head: "選擇起始分支…",

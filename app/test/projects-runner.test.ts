@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync as readDir, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -47,6 +47,8 @@ before(() => {
 after(() => {
 	for (const d of scratch) removeTree(d);
 });
+
+const run = execRunner();
 
 let n = 0;
 /** A bare repository `remote/<name>.git` with the given branches (`main` is the server's HEAD) and files on `main`. */
@@ -255,6 +257,128 @@ describe("an existing folder", () => {
 		git(folder, "remote", "add", "origin", credUrl("https://user<c>hunter2@git.fixture.test/other.git"));
 		await r.runner.begin([spec("web")]);
 		assert.equal(JSON.stringify(r.rows().web).includes("hunter2"), false);
+	});
+});
+
+describe("an interrupted clone (R12-F001)", () => {
+	beforeEach(() => bare("web", { branches: ["develop"] }));
+
+	/** The partial folder a killed `git clone` leaves: `.git` with the origin set, no commit, no files. */
+	const partial = (dir: string, url: string): void => {
+		mkdirSync(dir, { recursive: true });
+		git(dir, "init", "-q", "-b", "main");
+		git(dir, "remote", "add", "origin", url);
+	};
+
+	it("clones into a staging folder beside the target and renames it into place only after Git succeeded: the target does not exist while Git runs", async () => {
+		const r = rig();
+		const seen: Array<{ target: boolean; staging: string }> = [];
+		const git2 = new ProjectGit(
+			async (args, options) => {
+				if (args[0] === "clone") seen.push({ target: existsSync(join(r.work, "web")), staging: String(args[args.length - 1]) });
+				return run("git", args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) });
+			},
+			() => undefined,
+		);
+		const runner = new ProjectsRunner({ ...r.deps, git: git2 });
+		await runner.begin([spec("web")]);
+		assert.equal(runner.view().rows[0]?.phase, "done");
+		assert.equal(seen.length, 1);
+		assert.equal(seen[0]?.target, false, "the target is not there while Git works");
+		assert.match(seen[0]?.staging ?? "", /[\\/]\.web\.sbd-partial-[0-9a-f]{12}$/, "Git clones into a sibling named by the app");
+		assert.notEqual(seen[0]?.staging, join(r.work, "web"));
+		assert.deepEqual(readDir(r.work).sort(), ["web"], "nothing of the staging folder is left");
+	});
+
+	it("a clone killed partway leaves no folder under the target's name; the retry clones in full, and the base then has its files", { skip: process.platform === "win32" ? "the killed upload-pack's children outlive the test on Windows; the staging name and rename are covered by the other cases" : false }, async () => {
+		const r = rig();
+		const abort = new AbortController();
+		const slow = new ProjectGit(
+			async (args, options) => {
+				// The reviewer's repro: a slow upload-pack, and the clone ended with an uncatchable signal (the runner's SIGKILL on abort or on the time limit).
+				const slowed = args[0] === "clone" ? ["clone", "--upload-pack=sleep 2; git upload-pack", ...args.slice(1)] : args;
+				if (args[0] === "clone") setTimeout(() => abort.abort(), 700);
+				return run("git", slowed, { env, replaceEnv: true, timeoutMs: options.timeoutMs, signal: abort.signal, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) });
+			},
+			() => undefined,
+		);
+		const runner = new ProjectsRunner({ ...r.deps, git: slow });
+		await runner.begin([spec("web", { defaultBranch: "develop" })]);
+		assert.equal(runner.view().rows[0]?.phase, "failed");
+		assert.equal(existsSync(join(r.work, "web")), false, "no folder under the target's name");
+		assert.deepEqual(readDir(r.work), [], "and the staging folder is gone");
+		assert.deepEqual(r.opens, []);
+		// The next run (a Retry, or the step after a relaunch) clones fresh.
+		await new Promise((resolve) => setTimeout(resolve, 2500));
+		const again = rig("darwin", { work: r.work, stateDir: join(r.work, "..", "state-2") });
+		await again.runner.begin([spec("web", { defaultBranch: "develop" })]);
+		assert.equal(again.rows().web?.phase, "done", JSON.stringify(again.rows().web));
+		assert.equal(again.rows().web?.reused, false, "cloned, not reused");
+		assert.ok(existsSync(join(r.work, "web", "README.md")), "the base has its files");
+		assert.equal(head(join(r.work, "web")), "refs/remotes/origin/develop");
+	});
+
+	it("a staging folder this app left behind is removed by the next run; a folder it did not make is never touched", async () => {
+		const r = rig();
+		mkdirSync(r.work, { recursive: true });
+		const mine = join(r.work, ".web.sbd-partial-0123456789ab");
+		partial(mine, "https://git.fixture.test/web.git");
+		writeFileSync(join(mine, "half.txt"), "half");
+		// Look-alikes that carry no app-made name, or belong to another repository, or are files: all stay.
+		const others = [join(r.work, ".web.sbd-partial-notes"), join(r.work, ".web.sbd-partial-0123456789abc"), join(r.work, ".plain.sbd-partial-0123456789ab"), join(r.work, ".web.old"), join(r.work, "web.sbd-partial-0123456789ab")];
+		for (const other of others) {
+			mkdirSync(other, { recursive: true });
+			writeFileSync(join(other, "keep.txt"), "keep");
+		}
+		writeFileSync(join(r.work, ".web.sbd-partial-fedcba987654"), "a file, not a folder");
+		await r.runner.begin([spec("web")]);
+		assert.equal(r.rows().web?.phase, "done");
+		assert.equal(existsSync(mine), false, "the app's own leftover is gone");
+		for (const other of others) assert.equal(readFileSync(join(other, "keep.txt"), "utf8"), "keep", `${other} is untouched`);
+		assert.ok(existsSync(join(r.work, ".web.sbd-partial-fedcba987654")), "a file with that name is not removed");
+	});
+
+	it("a failed clone removes its staging folder and leaves the target absent", async () => {
+		const r = rig();
+		await r.runner.begin([spec("missing")]);
+		assert.equal(r.rows().missing?.phase, "failed");
+		assert.equal(r.rows().missing?.failure?.kind, "clone");
+		assert.deepEqual(readDir(r.work), []);
+	});
+
+	it("does not reuse a folder whose repository has the right origin but no commit: it is reported as not empty and left untouched", async () => {
+		const r = rig();
+		const folder = join(r.work, "web");
+		partial(folder, "https://git.fixture.test/web.git");
+		const before = readFileSync(join(folder, ".git", "config"), "utf8");
+		await r.runner.begin([spec("web", { defaultBranch: "develop" })]);
+		const row = r.rows().web;
+		assert.equal(row?.phase, "failed");
+		assert.deepEqual(row?.failure, { kind: "not-empty" });
+		assert.equal(readFileSync(join(folder, ".git", "config"), "utf8"), before);
+		assert.equal(r.calls.some((c) => c[0] === "fetch" || c[0] === "clone" || c[0] === "remote"), false, "no fetch, clone or set-head ran");
+		assert.deepEqual(r.opens, []);
+		// Trying again says the same, and still touches nothing.
+		await r.runner.retry(spec("web", { defaultBranch: "develop" }));
+		assert.deepEqual(r.rows().web?.failure, { kind: "not-empty" });
+	});
+
+	it("reuses a folder that has a commit and the same origin, as before", async () => {
+		const r = rig();
+		await r.runner.begin([spec("web")]);
+		const again = rig("darwin", { work: r.work, stateDir: join(r.work, "..", "state-3") });
+		await again.runner.begin([spec("web")]);
+		assert.equal(again.rows().web?.reused, true);
+		assert.ok(again.calls.some((c) => c[0] === "rev-parse"));
+	});
+
+	it("a clone into a folder the PM made empty still works: the empty folder is replaced by the finished clone", async () => {
+		const r = rig();
+		mkdirSync(join(r.work, "web"), { recursive: true });
+		await r.runner.begin([spec("web")]);
+		assert.equal(r.rows().web?.phase, "done");
+		assert.ok(existsSync(join(r.work, "web", ".git")));
+		assert.deepEqual(readDir(r.work), ["web"]);
 	});
 });
 

@@ -1,8 +1,8 @@
 // What the projects step and the Team recipe card are told about the repositories of a recipe (spec: First run, step 10; Projects: the default branch; Projects: symlinks in a repository
 // (Windows)). Plain data, so it crosses the IPC boundary and the renderer imports only this file. Main sends phases, causes and values; the pages word them from the catalog.
 
-/** What a row is doing while it works. */
-export type ProjectStep = "cloning" | "fetching" | "head" | "links" | "opening";
+/** What a row is doing while it works. `queued`: it waits for the install or update that has the tools folder to end (the supervisor's queue). */
+export type ProjectStep = "queued" | "cloning" | "fetching" | "head" | "links" | "opening";
 
 /** Why a row ended failed. The page words each; none carries a value beyond the repository's folder and the branch the recipe names. */
 export type ProjectFailure =

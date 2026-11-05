@@ -1,6 +1,8 @@
 import type { RuntimeEvent } from "../runtime/log.ts";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { removeTree, renameRetry } from "../bootstrap/fsutil.ts";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../shared/projects.ts";
 import type { AppPlatform } from "../paths.ts";
 import { cloneCause, ProjectGit } from "./git.ts";
@@ -12,7 +14,8 @@ import type { ProjectRecordStore, StoredRow } from "./record.ts";
 // The projects step and the repository half of a recipe update (spec: First run, step 10; Projects: the default branch; Projects: symlinks in a repository (Windows); team-profile section 5).
 // For each repository of the recipe, one at a time (the GUI opens one base at a time): clone into `<work folder>/<folder>`, or fetch a folder that is there already with the same `origin`; any
 // other folder stops that repository with a plain message and is left untouched; then `git remote set-head origin <defaultBranch>` when the recipe gives one; on Windows the list of links; then the
-// open as a base. A row that fails does not stop the others, and each can be retried alone. A recipe update runs only what changed (`update`).
+// open as a base. A clone goes into a staging folder beside its target and is renamed into place only when Git has finished, so a clone that is cut short (a quit, the time limit, a crash)
+// never leaves a half repository under the name a later run would reuse (R12-F001). A row that fails does not stop the others, and each can be retried alone. A recipe update runs only what changed (`update`).
 
 /** The part of a recipe's repository this step needs (`recipe/validate.d.mts` `Recipe["repos"]`). */
 export interface RepoSpec {
@@ -32,6 +35,11 @@ export interface ProjectsDeps {
 	/** Opens `dir` as a base. `onTrust` says when a project trust question holds the opening. */
 	openBase(input: { dir: string; label: string; deploy: string }, hooks: { onTrust(asking: boolean): void; signal: AbortSignal }): Promise<OpenOutcome>;
 	record: ProjectRecordStore;
+	/**
+	 * Runs one row's Git work (the clone or fetch, `set-head`, the link listing) as a job of the supervisor's queue, beside the installs that also use the tools folder (R12-F002). The open as a base
+	 * is not part of it: it needs the stack running, and a trust question can hold it for minutes. Default: the work runs at once.
+	 */
+	gitJob?: <T>(work: () => Promise<T>) => Promise<T>;
 	redact: Redact;
 	log: RuntimeEvent;
 	/** Test hooks of the file system reads. */
@@ -49,6 +57,10 @@ const hostOf = (url: string): string => {
 		return "";
 	}
 };
+
+/** The folder a clone is made in before it takes its name: `.<folder>.sbd-partial-<12 hex digits>`, beside the target. The validator's folder rule never makes such a name for a repository. */
+const stagingName = (folder: string): string => `.${folder}.sbd-partial-${randomBytes(6).toString("hex")}`;
+const isStagingOf = (folder: string, name: string): boolean => name.startsWith(`.${folder}.sbd-partial-`) && /^[0-9a-f]{12}$/.test(name.slice(`.${folder}.sbd-partial-`.length));
 
 const fresh = (spec: RepoSpec): ProjectRow => ({
 	folder: spec.folder,
@@ -220,11 +232,21 @@ export class ProjectsRunner {
 		this.#patch(folder, { phase: "working", step });
 	}
 
+	#job<T>(work: () => Promise<T>): Promise<T> {
+		return (this.#d.gitJob ?? ((w) => w()))(async () => {
+			// A row that waited in the queue while the app was quitting does not start.
+			if (this.#abort.signal.aborted) throw new RowFailed({ kind: "interrupted" });
+			return work();
+		});
+	}
+
 	async #run(spec: RepoSpec, mode: "full" | "head"): Promise<void> {
 		if (this.#abort.signal.aborted) return;
-		this.#patch(spec.folder, { phase: "working", step: mode === "head" ? "head" : null, failure: null, detail: "" });
+		this.#patch(spec.folder, { phase: "working", step: "queued", failure: null, detail: "" });
 		try {
-			await (mode === "head" ? this.#headOnly(spec) : this.#full(spec));
+			// A head-only run changes nothing else and opens nothing; when the folder is no repository yet it runs in full.
+			const headDone = mode === "head" && (await this.#job(() => this.#headOnly(spec)));
+			if (!headDone) await this.#open(spec, await this.#job(() => this.#prepare(spec)));
 			this.#patch(spec.folder, { phase: "done", step: null, failure: null, detail: "" });
 		} catch (error) {
 			if (error instanceof RowFailed) {
@@ -248,11 +270,13 @@ export class ProjectsRunner {
 		return target;
 	}
 
-	async #headOnly(spec: RepoSpec): Promise<void> {
+	/** An update that changed only `defaultBranch`. True when `set-head` ran; false when the folder is no repository yet, so the row runs in full. */
+	async #headOnly(spec: RepoSpec): Promise<boolean> {
 		const target = this.#targetOf(spec);
 		const exists = this.#d.exists ?? existsSync;
-		if (!exists(join(target, ".git"))) return this.#full(spec);
+		if (!exists(join(target, ".git"))) return false;
 		await this.#setHead(spec, target);
+		return true;
 	}
 
 	async #setHead(spec: RepoSpec, target: string): Promise<void> {
@@ -262,12 +286,33 @@ export class ProjectsRunner {
 		const result = await this.#d.git.setHead(target, branch);
 		if (result.code === 0) return;
 		const line = result.stderr.trim().split(/\r?\n/)[0] ?? "";
-		// `git remote set-head` checks that `refs/remotes/origin/<branch>` exists after the fetch: its refusal is a branch `origin` does not have.
+		// `git remote set-head` checks that `refs/remotes/origin/<branch>` exists after the fetch: its refusal is a branch `origin` does not have. Git runs in the C locale for this call (`ProjectGit`), so the words are Git's English.
 		if (/Not a valid ref/i.test(result.stderr)) throw new RowFailed({ kind: "branch-missing", branch }, line);
 		throw new RowFailed({ kind: "git", step: "head" }, line);
 	}
 
-	async #full(spec: RepoSpec): Promise<void> {
+	/** Removes the staging folders of this repository that an earlier run left (a quit or a crash in the middle of a clone). Only a folder with the name this app gives a staging folder is touched. */
+	#clearLeftovers(work: string, folder: string): void {
+		const listDir = this.#d.listDir ?? ((p: string) => readdirSync(p));
+		let names: string[];
+		try {
+			names = listDir(work);
+		} catch {
+			return;
+		}
+		for (const name of names.filter((n) => isStagingOf(folder, n))) {
+			const path = join(work, name);
+			try {
+				const stat = lstatSync(path);
+				if (stat.isDirectory() && !stat.isSymbolicLink()) removeTree(path);
+			} catch (error) {
+				this.#d.log({ event: "project-leftover-kept", folder, detail: (error as Error).message.slice(0, 200) });
+			}
+		}
+	}
+
+	/** The Git half of a row in full: the folder is checked, then cloned or fetched, then `set-head` and the link listing. Returns the folder that is ready to open. */
+	async #prepare(spec: RepoSpec): Promise<string> {
 		if (spec.folder.normalize("NFC").toLowerCase() === "straw boss") throw new RowFailed({ kind: "reserved-folder" });
 		const d = this.#d;
 		const exists = d.exists ?? existsSync;
@@ -280,6 +325,7 @@ export class ProjectsRunner {
 			throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message);
 		}
 		const target = this.#targetOf(spec);
+		this.#clearLeftovers(work, spec.folder);
 		let reuse = false;
 		if (exists(target)) {
 			if (!isDirectory(target)) throw new RowFailed({ kind: "not-empty" });
@@ -291,6 +337,14 @@ export class ProjectsRunner {
 					throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
 				}
 				if (origin === null || !sameOrigin(origin, spec.url)) throw new RowFailed({ kind: "other-origin" }, origin === null ? "the folder's repository has no origin" : `origin is ${plainOrigin(origin)}`);
+				// A repository without a commit is what a clone leaves when it is killed; the app now clones into a staging folder, so one here came from elsewhere or from an older version, and is left alone.
+				let committed: boolean;
+				try {
+					committed = await d.git.hasCommit(target);
+				} catch (error) {
+					throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
+				}
+				if (!committed) throw new RowFailed({ kind: "not-empty" }, "the folder's repository has no commit");
 				reuse = true;
 			} else if (listDir(target).length > 0) {
 				throw new RowFailed({ kind: "not-empty" });
@@ -302,14 +356,36 @@ export class ProjectsRunner {
 			if (fetched.code !== 0) throw new RowFailed({ kind: "clone", cause: cloneCause(fetched) }, fetched.stderr.trim().split(/\r?\n/)[0] ?? "");
 			this.#patch(spec.folder, { reused: true });
 		} else {
-			this.#step(spec.folder, "cloning");
-			const cloned = await d.git.clone(spec.url, target, work);
-			if (cloned.code !== 0) throw new RowFailed({ kind: "clone", cause: cloneCause(cloned) }, cloned.stderr.trim().split(/\r?\n/)[0] ?? "");
+			await this.#clone(spec, target, work);
 			this.#patch(spec.folder, { reused: false });
 		}
 		await this.#setHead(spec, target);
 		await this.#links(spec, target);
-		await this.#open(spec, target);
+		return target;
+	}
+
+	/** Clones into a staging folder beside the target and renames it into place only when Git exited 0, so no run ever sees a half clone under the target's name. */
+	async #clone(spec: RepoSpec, target: string, work: string): Promise<void> {
+		const d = this.#d;
+		this.#step(spec.folder, "cloning");
+		const staging = join(work, stagingName(spec.folder));
+		try {
+			const cloned = await d.git.clone(spec.url, staging, work);
+			if (cloned.code !== 0) throw new RowFailed({ kind: "clone", cause: cloneCause(cloned) }, cloned.stderr.trim().split(/\r?\n/)[0] ?? "");
+			try {
+				// An empty folder the PM made is the one thing that may stand in the way (rename onto a folder fails on Windows); `rmdir` refuses a folder that holds anything.
+				if ((d.exists ?? existsSync)(target)) rmdirSync(target);
+				renameRetry(staging, target);
+			} catch (error) {
+				throw new RowFailed({ kind: "clone", cause: "other" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
+			}
+		} finally {
+			try {
+				removeTree(staging);
+			} catch (error) {
+				d.log({ event: "project-leftover-kept", folder: spec.folder, detail: (error as Error).message.slice(0, 200) });
+			}
+		}
 	}
 
 	/** Windows only: lists the links the checkout could not make. Where the platform makes links, no Git process runs for it. */

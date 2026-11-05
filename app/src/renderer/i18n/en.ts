@@ -311,6 +311,7 @@ export const en = {
 		details: "Details",
 		target: "Folder: {folder}",
 		step: {
+			queued: "Waiting for the setup that is running to end…",
 			cloning: "Copying…",
 			fetching: "Bringing it up to date…",
 			head: "Choosing the starting branch…",
