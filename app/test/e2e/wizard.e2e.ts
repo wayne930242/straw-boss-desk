@@ -1126,7 +1126,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			await checkNow();
 			assert.equal(await stateOf(), "offered", "a higher version is");
 			await s.locator("#recipe-apply").click();
-			await until("the update to apply", 900_000, async () => ["applied", "failed", "error"].includes(await stateOf()), 1000);
+			await until("the update to apply", 900_000, async () => ["applied", "failed", "error"].includes(await stateOf()), 1000).catch(async (error: Error) => {
+				const events = logEvents().slice(-25).map((e) => JSON.stringify(e).slice(0, 260));
+				throw new Error(`${error.message}; the card says ${await updateCard.innerText()}; last events: ${events.join(" / ")}`);
+			});
 			assert.equal(await stateOf(), "applied", await updateCard.innerText());
 			const active = readdirSync(world.layout.recipe).map((f) => JSON.parse(readFileSync(join(world.layout.recipe, f), "utf8")) as { version: string });
 			assert.deepEqual(active.map((r) => r.version), ["1.2.0"]);

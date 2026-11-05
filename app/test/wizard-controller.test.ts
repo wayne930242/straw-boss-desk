@@ -876,6 +876,7 @@ describe("a recipe update accepted from settings (task 12)", () => {
 		w.engine.scripts.push(() => ({ kind: "done" as const, ok: true, outcomes: [okOutcome("node")] }));
 		assert.deepEqual(await w.controller.installRecipe(), { ok: true });
 		assert.equal(stackStopOptions.length, stops + 1, "the stop ran around the engine");
+		assert.deepEqual(stackStopOptions.at(-1), { waitForTools: true }, "the stop waits out a program that is still ending");
 		w.engine.scripts.push((_c, emit) => {
 			emit({ kind: "stage", stage: "opt:glab", status: "failed" } as never);
 			return { kind: "done" as const, ok: false, outcomes: [{ ...okOutcome("opt:glab"), status: "failed" as const, failure: { stage: "opt:glab", category: "network" as const, sentence: "x", detail: "ENOTFOUND", params: {} } }] };

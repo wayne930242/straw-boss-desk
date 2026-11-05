@@ -644,7 +644,8 @@ export class WizardController {
 	 * Throws when the stack cannot be stopped.
 	 */
 	async installRecipe(): Promise<{ ok: true } | { ok: false; stage: string; category: string }> {
-		const result = await this.#d.supervisor.withStackStopped(() => this.#runEngine({}));
+		// The stop waits out a program of the tools folder that is still ending (a pane's pi leaves a 30 s helper, and the projects step opened panes), as Repair and a stack update do.
+		const result = await this.#d.supervisor.withStackStopped(() => this.#runEngine({}), { waitForTools: true });
 		if (result.ok) return { ok: true };
 		const first = this.#progress.view().failures[0];
 		return { ok: false, stage: first?.stage ?? "install", category: first?.category ?? "other" };
