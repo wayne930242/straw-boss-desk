@@ -21,6 +21,7 @@ const HOSTS: Record<string, string[]> = {
 	"mixed.fetch-test.example": ["93.184.216.34", "192.168.0.9"],
 	"mapped.fetch-test.example": ["::ffff:127.0.0.1"],
 	"nothing.fetch-test.example": [],
+	"dual.fetch-test.example": ["2606:4700:4700::1111", "93.184.216.34"],
 };
 
 const ca = createTestCa("fetch", Object.keys(HOSTS));
@@ -291,6 +292,30 @@ describe("other refusals", () => {
 				throw new Error("no store");
 			},
 		});
+	});
+
+	it("tries the next checked address when a connection cannot be made, and only then (R12-F008)", async () => {
+		const dialled: string[] = [];
+		route = (_request, response) => response.writeHead(200).end("v4");
+		const dial: FetchDeps["dial"] = (address) => (dialled.push(address), address.includes(":") ? { host: "127.0.0.1", port: 9 } : { host: "127.0.0.1", port });
+		const got = await fetchPublicText("https://dual.fetch-test.example/r.json", deps({ dial }));
+		assert.equal(got.text, "v4");
+		assert.deepEqual(dialled, ["2606:4700:4700::1111", "93.184.216.34"]);
+		assert.equal(seen.length, 1);
+		// Every address failing is still one network refusal.
+		await expectRefused("https://dual.fetch-test.example/r.json", "network", { dial: () => ({ host: "127.0.0.1", port: 9 }) });
+		// A refusal that is not a failed connection (an untrusted certificate) ends the hop; the addresses after it are not tried.
+		dialled.length = 0;
+		await expectRefused("https://dual.fetch-test.example/r.json", "network", { dial: (address) => (dialled.push(address), { host: "127.0.0.1", port }), ca: undefined });
+		assert.deepEqual(dialled, ["2606:4700:4700::1111"]);
+	});
+
+	it("puts the lookup under the same limit as the request (R12-F008)", async () => {
+		const started = Date.now();
+		const error = await expectRefused("https://recipes.fetch-test.example/r.json", "network", { timeoutMs: 300, resolve: () => new Promise<string[]>(() => undefined) });
+		assert.ok(Date.now() - started < 3000, "gave up near the limit");
+		assert.match(error.detail ?? "", /lookup/);
+		assert.equal(seen.length, 0);
 	});
 
 	it("gives up on a server that never answers", async () => {
