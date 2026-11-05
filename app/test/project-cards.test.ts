@@ -120,6 +120,9 @@ describe("the projects step: one card per repository", () => {
 			const items = node.querySelectorAll(".path-item");
 			assert.deepEqual(items.map((i) => i.textContent), paths, `${locale}: every path, whole, in order`);
 			for (const item of items) {
+				// Each name between slashes is a box of its own, so a hyphen inside it is never where the line breaks (CIN-F006; the box itself is desk.css).
+				const names = item.querySelectorAll(".path-name").map((n) => n.textContent);
+				assert.deepEqual(names, item.textContent.split(/(?<=\/)/), `${locale}: one box per name of ${item.textContent}`);
 				const isBreak = (c: object): boolean => (c as { tagName?: string }).tagName?.toLowerCase() === "wbr";
 				const breaks = item.childNodes.filter(isBreak).length;
 				assert.equal(breaks, (item.textContent.match(/\//g) ?? []).length, `${locale}: a break after each slash of ${item.textContent}`);
@@ -134,6 +137,20 @@ describe("the projects step: one card per repository", () => {
 		}
 		const zh = draw(view([row({ phase: "done", opened: true, links })]), "zh-TW").querySelector('[data-role="links"]');
 		assert.ok(zh?.childNodes.some((c) => (c as { tagName?: string }).tagName?.toLowerCase() === "wbr"), "a break is offered after each 、 too");
+	});
+
+	it("reads the whole links sentence with the spaces beside 「和」 that Traditional Chinese puts between Chinese and a path (CIN-F005, SA-T12-2)", () => {
+		const sentence = (paths: string[], more: number): string => draw(view([row({ label: "Web app", phase: "done", opened: true, links: { paths, more } })]), "zh-TW").querySelector('[data-role="links"]')?.textContent ?? "";
+		assert.ok(sentence([".agents/skills", ".claude/commands"], 0).includes("：.agents/skills 和 .claude/commands。"), sentence([".agents/skills", ".claude/commands"], 0));
+		// "and N more" is Chinese text: the space is on the Latin side of 「和」 only.
+		assert.ok(sentence([".agents/g"], 4).includes("：.agents/g 和另外 4 個。"), sentence([".agents/g"], 4));
+		// Three or more: 、 between, 「和」 before the last, which is a path or the Chinese "and N more".
+		assert.ok(sentence(["a/b", ".pi/x", ".claude/c"], 0).includes("：a/b、.pi/x 和 .claude/c。"), sentence(["a/b", ".pi/x", ".claude/c"], 0));
+		assert.ok(sentence(["a/b", ".pi/x"], 2).includes("：a/b、.pi/x 和另外 2 個。"), sentence(["a/b", ".pi/x"], 2));
+		assert.ok(sentence([".agents/skills"], 0).includes("：.agents/skills。"));
+		// English joins with its own words.
+		const en = draw(view([row({ label: "Web app", phase: "done", opened: true, links: { paths: [".agents/skills", ".claude/commands"], more: 0 } })])).querySelector('[data-role="links"]')?.textContent ?? "";
+		assert.ok(en.includes(": .agents/skills and .claude/commands."), en);
 	});
 
 	it("says done differently for a fresh clone, a reused folder and a head-only run", () => {

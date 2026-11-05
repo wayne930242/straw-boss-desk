@@ -35,21 +35,34 @@ export async function currentLocale(shell: { readonly locale: Locale; getLocale(
 // A path or file name such as `.agents/skills` is Latin text too: it may start with a dot, a slash or an underscore (SA-T12-2).
 const LATIN_OR_DIGIT = /[A-Za-z0-9._/\\]/;
 
+/** One piece of a joined list: an item as given, or the text the language puts between items. */
+export interface ListPart {
+	type: "element" | "literal";
+	value: string;
+}
+
+/**
+ * Items joined the way the language joins a list, in pieces: the items (in order, `type: "element"`) and what goes between them. A caller that wraps each item in a node of its own reads the pieces
+ * instead of searching the joined text for the items.
+ */
+export function listParts(locale: Locale, items: readonly string[]): ListPart[] {
+	const parts = new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).formatToParts(items);
+	return parts.map((part, i) => {
+		if (locale !== "zh-TW" || part.type !== "literal") return part;
+		// The separator's own spaces go (the ICU data may carry them): after a full-width 「）」 a space shows as a gap before 「、」 or 「和」 (SA-11).
+		const word = part.value.trim();
+		if (!word.includes("和")) return { type: part.type, value: word };
+		const before = parts[i - 1]?.value.slice(-1) ?? "";
+		const after = parts[i + 1]?.value.charAt(0) ?? "";
+		return { type: part.type, value: `${LATIN_OR_DIGIT.test(before) ? " " : ""}${word}${LATIN_OR_DIGIT.test(after) ? " " : ""}` };
+	});
+}
+
 /**
  * Items joined the way the language joins a list: "A, B, and C" in English, "A、B和C" in Traditional Chinese. Traditional Chinese puts a space between Chinese and a Latin letter or digit
  * (「和 Linear」), and the full-width 、 and parentheses carry their own, so the only join that needs one is 「和」 beside a Latin or digit neighbour (SA-09).
  */
-export function listOf(locale: Locale, items: readonly string[]): string {
-	const parts = new Intl.ListFormat(locale, { type: "conjunction", style: "long" }).formatToParts(items);
-	return parts
-		.map((part, i) => {
-			if (locale !== "zh-TW" || part.type !== "literal") return part.value;
-			// The separator's own spaces go (the ICU data may carry them): after a full-width 「）」 a space shows as a gap before 「、」 or 「和」 (SA-11).
-			const word = part.value.trim();
-			if (!word.includes("和")) return word;
-			const before = parts[i - 1]?.value.slice(-1) ?? "";
-			const after = parts[i + 1]?.value.charAt(0) ?? "";
-			return `${LATIN_OR_DIGIT.test(before) ? " " : ""}${word}${LATIN_OR_DIGIT.test(after) ? " " : ""}`;
-		})
+export const listOf = (locale: Locale, items: readonly string[]): string =>
+	listParts(locale, items)
+		.map((part) => part.value)
 		.join("");
-}

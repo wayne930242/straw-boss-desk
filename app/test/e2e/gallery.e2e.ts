@@ -68,7 +68,7 @@ const RECIPE_STATES: Array<[string, RecipeCardState, ProjectsView?]> = [
 	["never-checked", { phase: "idle", checkedAt: null }],
 	["checking", { phase: "checking" }],
 	["offered", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: CHANGES, sha256: SHA256 }],
-	["offered-file", { phase: "offered", origin: "file", id: "other", name: "Other team", version: "2.0.0", replaces: true, changes: CHANGES.slice(0, 3), sha256: "cd" }],
+	["offered-file-other-team", { phase: "offered", origin: "file", id: "other", name: "Other team", version: "2.0.0", replaces: true, changes: CHANGES.slice(0, 3), sha256: "cd" }],
 	["applying", { phase: "applying", step: "install" }],
 	["applied", { phase: "applied", version: "1.1.0", at: NOW }, projects([done({ folder: "web", label: "Web app" }), row({ folder: "docs", label: "Docs", phase: "working", step: "cloning" })])],
 	["kept", { phase: "kept", version: "1.1.0" }],
@@ -129,7 +129,8 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 	};
 	/**
 	 * SA-T12-6: a path wraps only after a 「/」, never inside a name that would fit on a line of its own. For every character of every `.path-item` the line it sits on is read from its rect; where the line
-	 * changes after anything but a slash or a hyphen (the browser's own break after a hyphen is no split of a word), the name around that point is measured unbroken, and it must be wider than the paragraph (then there is nowhere else to break it).
+	 * changes after anything but a slash, the name around that point is measured unbroken, and it must be wider than the paragraph (then there is nowhere else to break it). A break after a hyphen inside a
+	 * name that fits is a split like any other (CIN-F006).
 	 */
 	const pathsBreakAtSeparators = async (name: string): Promise<void> => {
 		const bad = await page.evaluate(() => {
@@ -150,7 +151,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				const full = chars.map((c) => c.ch).join("");
 				const paragraph = item.closest("p") as HTMLElement;
 				for (let i = 1; i < chars.length; i++) {
-					if (Math.abs((chars[i] as { top: number }).top - (chars[i - 1] as { top: number }).top) <= 4 || ["/", "-"].includes((chars[i - 1] as { ch: string }).ch)) continue;
+					if (Math.abs((chars[i] as { top: number }).top - (chars[i - 1] as { top: number }).top) <= 4 || (chars[i - 1] as { ch: string }).ch === "/") continue;
 					const start = full.lastIndexOf("/", i - 1) + 1;
 					const slash = full.indexOf("/", i);
 					const segment = full.slice(start, slash === -1 ? full.length : slash + 1);

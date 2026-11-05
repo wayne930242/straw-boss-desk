@@ -153,9 +153,11 @@ details > pre { color: var(--text); }
 .update-version { flex: 1; min-width: 120px; }
 .update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
 .update-note, .project-card .finding, .project-card .problem { margin: 8px 0 0; min-width: 0; overflow-wrap: anywhere; }
-/* Links Windows could not make: a path wraps at its 「/」 and between paths, and breaks inside a name only when that one name is wider than the card (SA-T12-6). */
+/* Links Windows could not make: a path wraps at its 「/」 and between paths, and breaks inside a name only when that one name is wider than the card (SA-T12-6). Each name between slashes is an
+   unbreakable box: a hyphen inside a name that fits on a line is no place to break, and a name wider than the card is capped at the card's width and breaks inside (CIN-F006). */
 .project-card .finding[data-role="links"] { overflow-wrap: break-word; }
 .path-item { font-family: var(--mono); font-size: 12.5px; overflow-wrap: break-word; }
+.path-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .update-details { margin: 8px 0 0; }
 .update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 
