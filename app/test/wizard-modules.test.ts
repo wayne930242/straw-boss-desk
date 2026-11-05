@@ -72,6 +72,22 @@ describe("the stack source", () => {
 		assert.equal(loadActiveStack(w.layout, realStackFile).seeded, true);
 	});
 
+	it("replaces a root seeded at generation 5, which has no Claude Agent SDK pin, with the bundled generation 6 that has it (R11B-F001)", () => {
+		const w = world();
+		const bundled = JSON.parse(readFileSync(realStackFile, "utf8")) as { generation: number; piPackages: Array<{ name: string }> };
+		const sdk = "@anthropic-ai/claude-agent-sdk";
+		assert.ok(bundled.generation > 5, "the pin that added the SDK is above generation 5");
+		assert.ok(bundled.piPackages.some((p) => p.name === sdk));
+		mkdirSync(w.layout.stack, { recursive: true });
+		const seeded = { ...bundled, generation: 5, piPackages: bundled.piPackages.filter((p) => p.name !== sdk) };
+		writeFileSync(join(w.layout.stack, "active.json"), JSON.stringify(seeded));
+		const loaded = loadActiveStack(w.layout, realStackFile);
+		assert.equal(loaded.seeded, true);
+		assert.equal(loaded.stack.generation, bundled.generation);
+		const written = JSON.parse(readFileSync(join(w.layout.stack, "active.json"), "utf8")) as { piPackages: Array<{ name: string }> };
+		assert.ok(written.piPackages.some((p) => p.name === sdk));
+	});
+
 	it("throws when the bundled file is missing", () => {
 		const w = world();
 		assert.throws(() => loadActiveStack(w.layout, join(w.base, "nope.json")), /bundled stack\.json is missing/);

@@ -14,8 +14,9 @@ import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
 
 // The stack channel (task 13): the decision about a candidate, in the order the spec gives it, and the apply and rollback around the engine. The keys exist for the run only.
 
-const realText = readFileSync(new URL("../../stack.json", import.meta.url), "utf8");
-const real = JSON.parse(realText) as Record<string, any>;
+// The channel tests count generations from a fixed 5 (the active stack), whatever generation the repo's pin has reached.
+const real: Record<string, any> = { ...JSON.parse(readFileSync(new URL("../../stack.json", import.meta.url), "utf8")), generation: 5 };
+const realText = `${JSON.stringify(real, null, "\t")}\n`;
 const key = platformKey(process.platform, process.arch);
 const ACTIVE = parseStack(real);
 const SHELL = "0.0.1";
