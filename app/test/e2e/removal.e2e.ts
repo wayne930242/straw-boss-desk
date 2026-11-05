@@ -331,11 +331,23 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 			const alive = (() => { try { process.kill(appPid ?? 0, 0); return true; } catch { return false; } })();
 			const fromInstall = (await platform.processes.listUnder(dirname(packaged?.executable ?? ""))).map((p) => p.pid);
 			let locked = "";
-			if (isWin && existsSync(join(world.root, "electron"))) {
-				const r = spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", `Remove-Item -LiteralPath '${join(world.root, "electron").replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable e; ($e | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' || '`], { encoding: "utf8", timeout: 60_000 });
-				locked = (r.stdout || r.stderr || "").trim().slice(0, 600);
+			if (isWin) {
+				const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
+				const script = [
+					`$root = ${q(world.root)}`,
+					"$o = @()",
+					"$o += 'listing: ' + ((Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name + '(' + $_.Attributes + ',' + $_.Length + ')' }) -join ', ')",
+					`foreach ($id in @(${[appPid ?? 0, ...shells].join(",")})) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p) { $o += ('pid ' + $id + ' ' + $p.ProcessName + ' started ' + $p.StartTime.ToString('HH:mm:ss') + ' exited ' + $p.HasExited + ' cpu ' + $p.CPU) } else { $o += ('pid ' + $id + ' gone') } }`,
+					"$o += 'now ' + (Get-Date).ToString('HH:mm:ss')",
+					"Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable e",
+					"$o += 'delete: ' + (($e | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' || ')",
+					"$o += 'root exists after: ' + (Test-Path -LiteralPath $root)",
+					"$o -join ' ;; '",
+				].join("\n");
+				const r = spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 90_000 });
+				locked = (r.stdout || r.stderr || "").trim().slice(0, 1500);
 			}
-			error = new Error(`${(error as Error).message}; app pid ${appPid} alive: ${alive}; install-folder pids: [${fromInstall.join(",")}]; delete says: ${locked || "(n/a)"}`, { cause: error });
+			error = new Error(`${(error as Error).message}; app pid ${appPid} alive: ${alive}; install-folder pids: [${fromInstall.join(",")}]; probe: ${locked || "(n/a)"}`, { cause: error });
 			throw new Error(`${(error as Error).message}; powershell pids: [${shells.join(",")}]; root: ${existsSync(world.root) ? readdirSync(world.root).join(",") : "(gone)"}`, { cause: error });
 		}
 		assert.ok(Date.now() - started <= 60_000, `the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
