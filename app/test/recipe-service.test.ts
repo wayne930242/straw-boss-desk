@@ -298,6 +298,21 @@ describe("the timer checks (PIN0590-F002)", () => {
 		assert.equal(r.service.view().state.phase, "offered");
 	});
 
+	it("skips the first check once the PM has chosen a file with Replace, so it cannot clear the offer of that file (CIN-F010)", async () => {
+		const r = rig({ picked: { name: "other.json", text: text({ id: "other", name: "Other", version: "2.0.0", updateUrl: undefined }) } });
+		r.service.start();
+		await r.service.replace();
+		const chosen = offered(r);
+		assert.equal(chosen.origin, "file");
+		r.fetched.length = 0;
+		r.timers[0]?.();
+		await settle();
+		assert.deepEqual(r.service.view().state, chosen, "the card still shows the file the PM chose");
+		assert.equal(r.fetched.length, 0, "no fetch");
+		await r.service.apply();
+		assert.deepEqual(r.accepted.map((a) => a.id), ["other"], "and Apply applies that file");
+	});
+
 	it("still runs the first check when nothing else has", async () => {
 		const r = rig();
 		r.service.start();

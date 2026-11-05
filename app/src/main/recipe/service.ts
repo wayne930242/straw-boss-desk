@@ -63,7 +63,7 @@ export class RecipeService {
 	#state: RecipeCardState;
 	#offer: { intake: Accepted; origin: "url" | "file" } | null = null;
 	#busy = false;
-	/** A check or an apply has run in this process, so the launch's first timer check has nothing left to do. */
+	/** A check, an apply or a Replace has run in this process, so the launch's first timer check has nothing left to do. */
 	#touched = false;
 	#timers: unknown[] = [];
 
@@ -176,6 +176,8 @@ export class RecipeService {
 	async replace(): Promise<void> {
 		if (this.#busy || !this.#d.enabled()) return;
 		this.#busy = true;
+		// The PM is at the card: the launch's first timer check must not clear the offer that the chosen file is about to make (CIN-F010).
+		this.#touched = true;
 		try {
 			let picked: { name: string; text: string } | null;
 			try {
