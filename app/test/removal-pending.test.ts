@@ -11,14 +11,14 @@ after(() => {
 	for (const b of bases) rmSync(b, { recursive: true, force: true });
 });
 function world() {
-	const base = realpathSync(mkdtempSync(join(tmpdir(), "sbd-pend-")));
+	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-pend-")));
 	bases.push(base);
 	const home = join(base, "home");
 	const root = join(base, "root 測試");
 	mkdirSync(join(root, "electron"), { recursive: true });
 	mkdirSync(home, { recursive: true });
 	writeFileSync(join(root, "electron", "Local State"), "x");
-	const id = rootId(realpathSync(root));
+	const id = rootId(realpathSync.native(root));
 	const fallback = join(home, FALLBACK_PARENT, id);
 	mkdirSync(join(fallback, "agent"), { recursive: true });
 	return { base, home, root, id, fallback, platform: process.platform };

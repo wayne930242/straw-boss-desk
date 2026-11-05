@@ -94,8 +94,7 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 					parts.push("cards: (unreadable)");
 				}
 				parts.push(...logTails(world.layout.logs));
-				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`;
-				throw error;
+				throw new Error(`${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`, { cause: error });
 			}
 		});
 
@@ -193,7 +192,8 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		plant("logs/planted.jsonl", `{"event":"planted","token":"${TOKENS[0]}","note":"glab ${TOKENS[1]} claude ${TOKENS[2]}"}\n`);
 		plant("state/planted.json", `{"remember":"${TOKENS[1]}"}\n`);
 		await page.locator("#diag-collect").click();
-		await page.locator('li.update-card[data-role="collect"][data-state="done"]').waitFor({ timeout: 120_000 });
+		await page.locator('li.update-card[data-role="collect"]:not([data-state="working"])').waitFor({ timeout: 120_000 });
+		assert.equal(await page.locator('li.update-card[data-role="collect"]').getAttribute("data-state"), "done", `the collection did not finish: ${(await page.locator('li.update-card[data-role="collect"]').innerText()).replace(/\s+/g, " ")}`);
 		const revealed = await app.evaluate(() => (globalThis as { __revealed?: string[] }).__revealed ?? []);
 		assert.equal(revealed.length, 1, "the zip was shown in its folder once");
 		const file = revealed[0] as string;

@@ -1,6 +1,7 @@
-import { closeSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
+import { renameRetry } from "../bootstrap/fsutil.ts";
 
 // A zip writer with no dependency (spec: Decisions, Archive extraction: the app has no archive library; `tar` is for extraction). Diagnostics are text files of a few megabytes at most, so each
 // entry is deflated whole and written at once, and the archive is written to a temporary name and renamed when complete, so a half-written zip never carries the final name.
@@ -139,7 +140,8 @@ export class ZipWriter {
 			end.writeUInt32LE(start, 16);
 			this.#write(end);
 			closeSync(this.#fd);
-			renameSync(this.#tmp, this.#path);
+			// Antivirus or the indexer may still hold a file that was just written (Windows): the rename waits a moment, as every other atomic write of the app does.
+			renameRetry(this.#tmp, this.#path);
 		} catch (error) {
 			this.abort();
 			throw error;

@@ -133,8 +133,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 					parts.push("root: (unreadable)");
 				}
 				parts.push(...logTails(world.layout.logs));
-				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`;
-				throw error;
+				throw new Error(`${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`, { cause: error });
 			}
 		});
 

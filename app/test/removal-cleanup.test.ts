@@ -14,7 +14,7 @@ after(() => {
 	for (const b of bases) rmSync(b, { recursive: true, force: true });
 });
 const scratch = (): string => {
-	const b = realpathSync(mkdtempSync(join(tmpdir(), "sbd-clean-")));
+	const b = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-clean-")));
 	bases.push(b);
 	return b;
 };

@@ -33,7 +33,7 @@ interface Rig {
 }
 
 function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[] }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean } = {}): Rig {
-	const base = realpathSync(mkdtempSync(join(tmpdir(), "sbd-rm-")));
+	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-rm-")));
 	bases.push(base);
 	const home = join(base, "home");
 	const root = join(base, "sbd 測試");
