@@ -14,16 +14,8 @@ html, body { height: 100%; }
 .forge-buttons { display: inline-flex; gap: 8px; }
 .forge-note { margin: 8px 0 0; }
 
-/* Updates: three cards in the accounts list's frame, each with one row of actions (layout only; the colours are the list's and the badge's). */
-.accounts > li.update-card, .accounts > li.project-card { display: block; }
-.update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.update-name { font-weight: 700; }
-.update-version { flex: 1; min-width: 120px; }
-.update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
-.update-note { margin: 8px 0 0; }
+/* Updates: the card parts are in desk.css beside the accounts list's frame; these are the update cards' own. */
 .update-changes-box { margin: 8px 0 0; }
-.update-details { margin: 8px 0 0; }
-.update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 .update-changes { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
 
 .language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
@@ -31,6 +23,4 @@ html, body { height: 100%; }
 
 /* The Team recipe card: the change list's long text (the team's instructions, in full) and the projects it sets up. */
 .change-text { max-height: 240px; overflow: auto; }
-.project-card .finding { margin: 8px 0 0; }
-.project-card .problem { margin: 8px 0 0; }
 #recipe-refusals { margin: 8px 0 0; }

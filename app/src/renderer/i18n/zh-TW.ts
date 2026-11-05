@@ -305,7 +305,7 @@ export const zhTW: Messages = {
 		title: "你團隊的專案",
 		lead: "Straw Boss 會把每個專案複製到你的工作資料夾，放在 Straw Boss 資料夾旁邊，並把它開成工作區，讓你的代理程式可以在裡面工作。",
 		running: "正在複製並開啟專案，可能需要幾分鐘。",
-		held: "有專案正在詢問是否信任它自帶的設定。設定結束後，請在 Straw Boss 視窗裡回答；排在它後面的專案會在那之後開啟。",
+		held: "有專案正在詢問是否信任它自帶的設定。設定結束後，請在 Straw Boss 視窗裡回答；排在它後面的專案會在那之後開啟。在你回答之前，視窗不會開啟其他東西。",
 		allDone: "所有專案都準備好了。",
 		someFailed: "有些專案沒有完成。你可以逐一再試，或先繼續，之後到「設定」的「團隊配方」處理。",
 		next: "下一步",
@@ -327,7 +327,7 @@ export const zhTW: Messages = {
 			branch: "起始分支是 {branch}。",
 			headOnly: "起始分支現在是 {branch}。",
 		},
-		trust: "正在等你在 Straw Boss 視窗裡回答：這個專案詢問是否信任它自帶的設定。",
+		trust: "正在等你在 Straw Boss 視窗裡回答：這個專案詢問是否信任它自帶的設定。在你回答之前，視窗不會開啟其他東西。",
 		links: "在 {repository} 裡，下列是 Windows 在這裡無法建立的連結，所以 pi 看不到它們：{paths}。要修正得從專案本身下手：請它的負責人把每個連結換成實際的檔案。",
 		linksMore: "另外 {n} 個",
 		failure: {

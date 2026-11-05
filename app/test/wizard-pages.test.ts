@@ -50,6 +50,9 @@ describe("lists and parentheses follow the language (SA-04)", () => {
 		assert.equal(listOf("zh-TW", ["Claude", "第二項"]), "Claude 和第二項", "Chinese after 和 needs none");
 		assert.equal(listOf("zh-TW", ["第一項", "第二項"]), "第一項和第二項");
 		assert.equal(listOf("zh-TW", ["甲", "乙", "7 號"]), "甲、乙和 7 號", "a digit counts as Latin");
+		assert.equal(listOf("zh-TW", [".agents/skills", ".claude/commands"]), ".agents/skills 和 .claude/commands", "a path that starts with a dot is Latin (SA-T12-2)");
+		assert.equal(listOf("zh-TW", [".agents/skills", ".pi/x", "/opt/y"]), ".agents/skills、.pi/x 和 /opt/y");
+		assert.equal(listOf("zh-TW", [".pi/x", "另外 3 個"]), ".pi/x 和另外 3 個");
 		assert.equal(listOf("en", ["Claude", "Linear"]), "Claude and Linear", "English is left to Intl.ListFormat");
 	});
 

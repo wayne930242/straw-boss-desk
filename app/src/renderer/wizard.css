@@ -47,13 +47,5 @@ body { display: grid; place-items: start center; padding: 24px; }
 .stages li[data-badge="working"] { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .stages li[data-badge="failed"] { border-color: color-mix(in srgb, var(--err) 55%, transparent); }
 
-/* Step 10: the project cards use the accounts list's frame and the update card's pieces (layout only). */
+/* Step 10: the project cards are the shared card list (desk.css); only the list's margin is the step's. */
 .step[data-step="projects"] .accounts { margin: 12px 0; }
-.step[data-step="projects"] .accounts > li.project-card { display: block; padding: 10px 14px; }
-.step[data-step="projects"] .update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.step[data-step="projects"] .update-name { font-weight: 700; }
-.step[data-step="projects"] .update-version { flex: 1; min-width: 120px; }
-.step[data-step="projects"] .update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
-.step[data-step="projects"] .update-note, .step[data-step="projects"] .finding, .step[data-step="projects"] .problem { margin: 8px 0 0; }
-.step[data-step="projects"] .update-details { margin: 8px 0 0; }
-.step[data-step="projects"] .update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }

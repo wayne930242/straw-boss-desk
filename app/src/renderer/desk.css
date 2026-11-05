@@ -142,8 +142,19 @@ details > pre { color: var(--text); }
 }
 
 /* A list of cards (settings' accounts, updates and projects, and the wizard's projects step): one card per item, in the settings frame. */
-.accounts { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; }
-.accounts > li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--sunken); }
+.accounts { list-style: none; margin: 0 0 16px; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.accounts > li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--sunken); min-width: 0; overflow-wrap: anywhere; }
+
+/* The parts of an update or project card, shared by settings' Team recipe and the wizard's projects step (layout only; the colours are the list's and the badge's). A long path or address wraps inside the card
+   and the warning box in it, however long the unbroken text is (SA-T12-1). */
+.accounts > li.update-card, .accounts > li.project-card { display: block; }
+.update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.update-name { font-weight: 700; }
+.update-version { flex: 1; min-width: 120px; }
+.update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
+.update-note, .project-card .finding, .project-card .problem { margin: 8px 0 0; min-width: 0; overflow-wrap: anywhere; }
+.update-details { margin: 8px 0 0; }
+.update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 
 /* The code-host sign-in panel (the wizard's step 8 and settings' Accounts): layout only, every colour comes from the shared components above. */
 .forge-panel { margin: 8px 0; }

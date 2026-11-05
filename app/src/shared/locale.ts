@@ -32,7 +32,8 @@ export async function currentLocale(shell: { readonly locale: Locale; getLocale(
 	}
 }
 
-const LATIN_OR_DIGIT = /[A-Za-z0-9]/;
+// A path or file name such as `.agents/skills` is Latin text too: it may start with a dot, a slash or an underscore (SA-T12-2).
+const LATIN_OR_DIGIT = /[A-Za-z0-9._/\\]/;
 
 /**
  * Items joined the way the language joins a list: "A, B, and C" in English, "A、B和C" in Traditional Chinese. Traditional Chinese puts a space between Chinese and a Latin letter or digit

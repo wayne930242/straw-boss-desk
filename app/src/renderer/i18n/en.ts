@@ -303,7 +303,7 @@ export const en = {
 		title: "Your team's projects",
 		lead: "Straw Boss copies each project into your work folder, beside the Straw Boss folder, and opens it so your agents can work in it.",
 		running: "Copying and opening projects. This can take a few minutes.",
-		held: "A project is asking whether to trust its own settings. You answer in the Straw Boss window when setup is over; the projects after it open then.",
+		held: "A project is asking whether to trust its own settings. You answer in the Straw Boss window when setup is over; the projects after it open then. Until you answer, the window opens nothing else.",
 		allDone: "Every project is ready.",
 		someFailed: "Some projects did not finish. You can try each again, or go on and do it later in Settings, Team recipe.",
 		next: "Next",
@@ -325,7 +325,7 @@ export const en = {
 			branch: "Its starting branch is {branch}.",
 			headOnly: "Its starting branch is now {branch}.",
 		},
-		trust: "Waiting for your answer in the Straw Boss window: this project asks whether to trust the settings it comes with.",
+		trust: "Waiting for your answer in the Straw Boss window: this project asks whether to trust the settings it comes with. Until you answer, the window opens nothing else.",
 		links: "In {repository}, these are links that Windows cannot create here, so pi does not see them: {paths}. The fix is in the repository: ask its owners to replace each link with the real files.",
 		linksMore: "{n} more",
 		failure: {
