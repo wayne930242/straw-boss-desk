@@ -321,36 +321,23 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		await page.locator("#remove-quit").click();
 		await closed;
 		const started = Date.now();
-		try {
-			await until("the data root to be gone", 90_000, () => !existsSync(world.root), 500);
-		} catch (error) {
-			// What the root holds, whether the app's pid is still alive, which programs run from the Windows PowerShell folder (the detached cleanup is one) and from the install folder, by executable path,
-			// and what a delete of the Chromium folder says (the file that is locked).
-			const where = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell");
-			const shells = isWin ? (await platform.processes.listUnder(where)).filter((p) => p.pid !== process.pid).map((p) => p.pid) : [];
-			const alive = (() => { try { process.kill(appPid ?? 0, 0); return true; } catch { return false; } })();
-			const fromInstall = (await platform.processes.listUnder(dirname(packaged?.executable ?? ""))).map((p) => p.pid);
-			let locked = "";
-			if (isWin) {
-				const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
-				const script = [
-					`$root = ${q(world.root)}`,
-					"$o = @()",
-					"$o += 'listing: ' + ((Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name + '(' + $_.Attributes + ',' + $_.Length + ')' }) -join ', ')",
-					`foreach ($id in @(${[appPid ?? 0, ...shells].join(",")})) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p) { $o += ('pid ' + $id + ' ' + $p.ProcessName + ' started ' + $p.StartTime.ToString('HH:mm:ss') + ' exited ' + $p.HasExited + ' cpu ' + $p.CPU) } else { $o += ('pid ' + $id + ' gone') } }`,
-					"$o += 'now ' + (Get-Date).ToString('HH:mm:ss')",
-					"Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable e",
-					"$o += 'delete: ' + (($e | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' || ')",
-					"$o += 'root exists after: ' + (Test-Path -LiteralPath $root)",
-					"$o -join ' ;; '",
-				].join("\n");
-				const r = spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 90_000 });
-				locked = (r.stdout || r.stderr || "").trim().slice(0, 1500);
+		// Timeline of the cleanup, for the failure message: when the root's folders vanish and which shells run from the Windows PowerShell folder (the detached cleanup is one), by executable path.
+		const where = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell");
+		const timeline: string[] = [];
+		const seconds = () => Math.round((Date.now() - started) / 1000);
+		let lastShells = 0;
+		while (existsSync(world.root) && Date.now() - started < 240_000) {
+			if (isWin && Date.now() - lastShells >= 4_000) {
+				const shells = (await platform.processes.listUnder(where)).filter((p) => p.pid !== process.pid).map((p) => p.pid);
+				timeline.push(`${seconds()}s root=[${existsSync(world.root) ? readdirSync(world.root).join(",") : "gone"}] shells=[${shells.join(",")}]`);
+				lastShells = Date.now();
 			}
-			error = new Error(`${(error as Error).message}; app pid ${appPid} alive: ${alive}; install-folder pids: [${fromInstall.join(",")}]; probe: ${locked || "(n/a)"}`, { cause: error });
-			throw new Error(`${(error as Error).message}; powershell pids: [${shells.join(",")}]; root: ${existsSync(world.root) ? readdirSync(world.root).join(",") : "(gone)"}`, { cause: error });
+			await sleep(500);
 		}
-		assert.ok(Date.now() - started <= 60_000, `the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
+		timeline.push(`${seconds()}s root ${existsSync(world.root) ? "still there" : "gone"}`);
+		if (existsSync(world.root)) assert.fail(`the root stayed 240 s after the exit; app pid ${appPid}; timeline: ${timeline.join(" | ")}`);
+		console.log(`cleanup timeline: ${timeline.join(" | ")}`);
+		assert.ok(Date.now() - started <= 60_000, `${timeline.join(" | ")}: the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
 		assert.equal(existsSync(join(world.home, ".straw-boss-desk")), false, "no fallback folder");
 		assert.deepEqual(await stopProcessesUnder(world.root, { log: () => undefined }), [], "nothing of the app runs from under the root");
 		app = undefined;
