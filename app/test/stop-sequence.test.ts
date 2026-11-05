@@ -110,7 +110,7 @@ describe("stop sequence", () => {
 		assert.match(body(source, "stopThenExit"), /stopAll\(\)/);
 		assert.match(body(source, "stopAll"), /stopSequence\(stopParts\(\)\)/);
 		// Remove all data stops through the same parts, so it ends the same sign-ins and the same engine.
-		assert.match(source, /stopSequenceReport\(stopParts\(\)/);
+		assert.match(source, /stopForRemoval\(stopParts\(\)\)/);
 		assert.match(body(source, "stopParts"), /\bupdates\b[^]*\baccounts\b[^]*\bclaude\b[^]*\blinear\b[^]*\bengineHost\b/);
 	});
 
