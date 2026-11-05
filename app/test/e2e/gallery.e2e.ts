@@ -36,8 +36,12 @@ const PROJECT_STATES: Array<[string, ProjectsView]> = [
 	["branch-missing", projects([failed({ kind: "branch-missing", branch: "develop" }, { folder: "web", label: "Web app", defaultBranch: "develop" })])],
 	["reserved-folder", projects([failed({ kind: "reserved-folder" }, { folder: "Straw Boss", label: "Docs" })])],
 	["symlinks", projects([done({ folder: "web", label: "Web app", links: { paths: [".agents/skills", ".claude/commands"], more: 0 } }), done({ folder: "api", label: "Api", links: { paths: [".agents/a", ".agents/b", ".agents/c", ".agents/d", ".agents/e", ".agents/f", ".agents/g", ".agents/h", ".agents/i", ".agents/j"], more: 3 } })])],
+	// SA-T12-1: long, unbroken link paths and a long address must wrap inside the card, the warning box and the panel.
+	["symlinks-long", projects([done({ folder: "web", label: "Web app with a very long name that goes on", links: { paths: [".agents/skills/a-very-long-skill-folder-name-that-does-not-break-anywhere/and-then-another-nested-folder", ".claude/commands/an-equally-long-command-folder-name-without-any-break-in-it/with-a-file", ".pi/extensions/yet-another-long-extension-folder-name/index", ".agents/a", ".agents/b", ".agents/c", ".agents/d", ".agents/e", ".agents/f", ".agents/g"], more: 4 } })])],
 	["trust-held", projects([row({ folder: "web", label: "Web app", phase: "trust" }), row({ folder: "api", label: "Api" })])],
 	["clone-network", projects([failed({ kind: "clone", cause: "network" }, { folder: "web", label: "Web app", detail: "fatal: unable to access 'https://github.com/acme/web.git/': Could not resolve host: github.com" })])],
+	["clone-network-private", projects([failed({ kind: "clone", cause: "network-private", host: "gitlab.moldplan.app" }, { folder: "web", label: "Web app", host: "gitlab.moldplan.app" })])],
+	["queued", projects([row({ folder: "web", label: "Web app", phase: "working", step: "queued" }), row({ folder: "api", label: "Api" })])],
 	["clone-auth", projects([failed({ kind: "clone", cause: "auth" }, { folder: "web", label: "Web app" })])],
 	["clone-not-found", projects([failed({ kind: "clone", cause: "not-found" }, { folder: "web", label: "Web app" })])],
 	["open-refused", projects([failed({ kind: "open", cause: "settings-unsafe" }, { folder: "web", label: "Web app" }), failed({ kind: "open", cause: "gui-unavailable" }, { folder: "api", label: "Api" })])],
@@ -79,6 +83,9 @@ const RECIPE_STATES: Array<[string, RecipeCardState, ProjectsView?]> = [
 	["refused-not-newer", { phase: "refused", reason: "not-newer", version: "0.9.0" }],
 	["refused-unreadable", { phase: "refused", reason: "unreadable" }],
 	["error-busy", { phase: "error", kind: "busy", detail: "the tools did not stop in time" }],
+	["error-busy-project", { phase: "error", kind: "busy", detail: "the tools did not stop in time" }, projects([row({ folder: "web", label: "Web app", phase: "working", step: "opening" })])],
+	["applying-waits-for-copy", { phase: "applying", step: "install" }, projects([row({ folder: "web", label: "Web app", phase: "working", step: "cloning" })])],
+	["offered-branch-default", { phase: "offered", origin: "url", id: "team", name: "Team recipe", version: "1.1.0", replaces: false, changes: [{ kind: "repo-branch", folder: "web", from: null, to: "develop" }, { kind: "repo-label", folder: "web", from: "Web", to: "Web app" }], sha256: "ab" }],
 	["projects-failed", { phase: "idle", checkedAt: NOW }, projects([failed({ kind: "other-origin" }, { folder: "web", label: "Web app" }), done({ folder: "handbook", label: "Handbook", links: { paths: [".agents/skills"], more: 0 } })])],
 ];
 
@@ -90,6 +97,18 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 	const shot = async (name: string, locale: Locale): Promise<void> => {
 		mkdirSync(screenshotDir, { recursive: true });
 		await page.screenshot({ path: join(screenshotDir, `${name}-${locale}.png`), fullPage: true });
+	};
+	/** SA-T12-1: no card, and nothing inside a card, sticks out past the list that holds it (a long unbroken path used to push the card wider than the panel). */
+	const insideList = async (name: string): Promise<void> => {
+		const outside = await page.evaluate(() => {
+			const out: string[] = [];
+			for (const list of document.querySelectorAll("ul.accounts")) {
+				const edge = list.getBoundingClientRect().right + 1;
+				for (const el of list.querySelectorAll("li, li *")) if (el.getBoundingClientRect().right > edge) out.push(`${el.tagName}.${el.className}`);
+			}
+			return out;
+		});
+		assert.deepEqual(outside, [], `${name}: elements past the right edge of their list`);
 	};
 	const settled = async (locale: Locale): Promise<void> => {
 		const deadline = Date.now() + 10_000;
@@ -184,6 +203,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				await settled(locale);
 				await page.locator("#recipe-cards").waitFor({ timeout: 10_000 });
 				assert.equal(await page.locator('li[data-role="update"]').getAttribute("data-state"), state.phase, name);
+				await insideList(`recipe ${name} ${locale}`);
 				await sound(`recipe ${name} ${locale}`);
 				await shot(`recipe-${name}`, locale);
 			}
@@ -199,6 +219,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				await settled(locale);
 				assert.equal(await page.evaluate(() => document.body.dataset.step), "projects");
 				assert.equal(await page.locator("li.project-card").count(), view.rows.length, name);
+				await insideList(`projects ${name} ${locale}`);
 				await sound(`projects ${name} ${locale}`);
 				await shot(`projects-${name}`, locale);
 			}
