@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
+import { _electron as electron, type ElectronApplication, type Locator, type Page } from "playwright-core";
 import { en } from "../../src/renderer/i18n/en.ts";
 import { format, t } from "../../src/renderer/i18n/index.ts";
 import { zhTW } from "../../src/renderer/i18n/zh-TW.ts";
@@ -187,6 +187,19 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 				}
 			});
 	const eventsNamed = (event: string, cli?: string) => logEvents().filter((e) => e.event === event && (cli === undefined || e.cli === cli));
+	/**
+	 * What to print when a project card did not end done (CIN-F002): its text, its Details (a closed `<details>` hides them from `innerText`, which is why two Windows failures left no reason), and
+	 * the last `project-*` events of the runtime log, which carry the server's reason and the step it failed at.
+	 */
+	const projectProblem = async (card: Locator): Promise<string> => {
+		const text = await card.innerText().catch(() => "(the card is gone)");
+		const details = await card.locator(".update-detail").evaluateAll((items) => items.map((i) => i.textContent ?? "")).catch(() => [] as string[]);
+		const events = logEvents()
+			.filter((e) => typeof e.event === "string" && e.event.startsWith("project-") && e.event !== "project-git")
+			.slice(-8)
+			.map((e) => JSON.stringify(e).slice(0, 400));
+		return `${text} | details: ${JSON.stringify(details)} | last project events: ${events.join(" / ")}`;
+	};
 	const panelOf = (p: Page, host: string, phase?: string) => p.locator(`.forge-panel[data-forge="${host}"]${phase === undefined ? "" : `[data-phase="${phase}"]`}`);
 	const waitPhase = (p: Page, host: string, phase: string, ms = 60_000) => panelOf(p, host, phase).waitFor({ timeout: ms });
 	const rowOf = (p: Page, host: string, state?: string) => p.locator(`li.forge-card[data-forge="${host}"]${state === undefined ? "" : `[data-state="${state}"]`}`);
@@ -729,7 +742,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const card = page.locator('li.project-card[data-folder="hello-world"]');
 		await card.waitFor({ timeout: 60_000 });
 		await until("the repository to be copied and opened", 600_000, async () => (await card.getAttribute("data-state")) === "done" || (await card.getAttribute("data-state")) === "failed", 500);
-		assert.equal(await card.getAttribute("data-state"), "done", await card.innerText());
+		assert.equal(await card.getAttribute("data-state"), "done", await projectProblem(card));
 		assert.equal(await page.locator("#projects-next").isDisabled(), false);
 		assert.equal(await page.locator('[data-role="links"]').count(), 0, "the public repository has no link Windows cannot make");
 		const clone = join(workFolderNow(), "hello-world");
@@ -1136,7 +1149,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			const spoon = s.locator('li.project-card[data-folder="spoon-knife"]');
 			await spoon.waitFor({ timeout: 120_000 });
 			await until("the new repository to be copied and opened", 600_000, async () => ["done", "failed"].includes((await spoon.getAttribute("data-state")) ?? ""), 500);
-			assert.equal(await spoon.getAttribute("data-state"), "done", await spoon.innerText());
+			assert.equal(await spoon.getAttribute("data-state"), "done", await projectProblem(spoon));
 			assert.ok(existsSync(join(workFolderNow(), "spoon-knife", ".git")));
 			assert.ok((await new WorldHerdr(world).cli(["workspace", "list"])).stdout.includes("Spoon Knife"), "the new repository is a base");
 			assert.equal(eventsNamed("project-git").filter((e) => Array.isArray(e.args) && e.args[0] === "clone" && JSON.stringify(e.args).includes("Hello-World")).length, 1, "the repository that did not change was not cloned again");
@@ -1157,8 +1170,9 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		} finally {
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
+			// A test that failed must not leave its app running: the next launch would meet the single-instance lock and fail with `electron.launch: WebSocket error: read ECONNRESET`.
+			for (const a of apps) await close(a);
 		}
-		for (const a of apps) await close(a);
 	});
 
 	it("a launch that cannot start shows the failure screen, in both languages", async () => {

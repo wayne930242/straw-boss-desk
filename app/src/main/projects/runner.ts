@@ -85,10 +85,13 @@ const fresh = (spec: RepoSpec): ProjectRow => ({
 class RowFailed extends Error {
 	readonly failure: ProjectFailure;
 	readonly line: string;
-	constructor(failure: ProjectFailure, line = "") {
+	/** The step the GUI server says an opening failed at. */
+	readonly step: string | undefined;
+	constructor(failure: ProjectFailure, line = "", step?: string) {
 		super(failure.kind);
 		this.failure = failure;
 		this.line = line;
+		this.step = step;
 	}
 }
 
@@ -265,7 +268,15 @@ export class ProjectsRunner {
 				this.#d.log({ event: "project-failed", folder: spec.folder, failure: "interrupted" });
 				this.#patch(spec.folder, { phase: "failed", step: null, failure: { kind: "interrupted" }, detail: "" });
 			} else if (error instanceof RowFailed) {
-				this.#d.log({ event: "project-failed", folder: spec.folder, failure: error.failure.kind, ...("cause" in error.failure ? { cause: error.failure.cause } : {}) });
+				// The reason is what the row's Details shows (redacted); without it in the log, a failed open leaves only its cause (CIN-F002).
+				this.#d.log({
+					event: "project-failed",
+					folder: spec.folder,
+					failure: error.failure.kind,
+					...("cause" in error.failure ? { cause: error.failure.cause } : {}),
+					...(error.step !== undefined ? { step: error.step } : {}),
+					...(error.line !== "" ? { detail: this.#d.redact(error.line).slice(0, 300) } : {}),
+				});
 				this.#patch(spec.folder, { phase: "failed", step: null, failure: error.failure, detail: this.#d.redact(error.line).slice(0, 300) });
 			} else {
 				const line = (error as Error).message.split(/\r?\n/)[0] ?? "";
@@ -506,9 +517,15 @@ export class ProjectsRunner {
 				},
 			);
 		let outcome = await openOnce();
-		// A job that was queued behind this row's Git (Apply, Repair, a stack update, the Linear restart) stops the stack as soon as the Git job ends, which can be just as the open starts. The window
-		// then has nothing to answer; once the queue has drained and the stack runs again, the open is made once more under the same id (R12B-F002).
-		if (!outcome.ok && outcome.cause === "gui-unavailable" && this.#d.gitJob !== undefined && !this.#abort.signal.aborted) {
+		// The open is made once more, never twice (a second failure is the row's), after the queue has drained, under the same id. Two failures are worth it:
+		// - A job that was queued behind this row's Git (Apply, Repair, a stack update, the Linear restart) stops the stack as soon as the Git job ends, which can be just as the open starts. The
+		//   window then has nothing to answer; the stack runs again once the queue has drained (R12B-F002).
+		// - The server made the workspace and its pi did not start or join the net in time (the Windows runner's cold tools right after an Apply). The server closes the workspace it made when an
+		//   opening fails, so the repeat does not hold two; the pi is warm by then (CIN-F002).
+		const windowGone = !outcome.ok && outcome.cause === "gui-unavailable" && this.#d.gitJob !== undefined;
+		const piLate = !outcome.ok && outcome.cause === "refused" && (outcome.step === "start" || outcome.step === "join");
+		if (!outcome.ok && (windowGone || piLate) && !this.#abort.signal.aborted) {
+			this.#d.log({ event: "project-open-repeat", folder: spec.folder, cause: outcome.cause, ...(outcome.step !== undefined ? { step: outcome.step } : {}), detail: this.#d.redact(outcome.reason).slice(0, 300) });
 			await this.#job(async () => undefined);
 			this.#step(spec.folder, "opening");
 			outcome = await openOnce();
@@ -517,7 +534,7 @@ export class ProjectsRunner {
 			this.#patch(spec.folder, { opened: true });
 			return;
 		}
-		throw new RowFailed({ kind: "open", cause: outcome.cause }, outcome.reason);
+		throw new RowFailed({ kind: "open", cause: outcome.cause }, outcome.reason, outcome.step);
 	}
 }
 

@@ -90,6 +90,15 @@ describe("the call", () => {
 		assert.equal((await client().open(input, hooks()) as { cause: string }).cause, "refused");
 	});
 
+	it("carries the step the server says the opening failed at, and nothing when it names none (CIN-F002)", async () => {
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "The pi in pane 3 did not join the net within 60 s\nsecond line", step: "join" });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "The pi in pane 3 did not join the net within 60 s", step: "join" });
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "pi did not join" });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "pi did not join" });
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "x", step: 7 });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "x" });
+	});
+
 	it("waits out busy and tries again, and gives up as busy after its limit", async () => {
 		let n = 0;
 		onOpen = (respond) => (++n < 3 ? respond(429, { error: "busy", reason: "Another opening" }) : respond(200, {}));
