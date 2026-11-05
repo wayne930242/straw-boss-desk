@@ -6,7 +6,7 @@ import type { Locate } from "../platform/types.ts";
 // The detached cleanup of **Remove all data** (spec: Uninstall and data). Chromium holds files in `<root>/electron` open while the app runs (on Windows `Local State`, cookies, caches), so the app
 // deletes everything else, writes `<root>/remove-pending`, and starts this program, which waits up to 30 s for the app's pid to end and then deletes `<root>` and the fallback folder.
 //
-// Deviation from the spec's text, which says `cmd /c` on Windows: the Windows cleanup is PowerShell (`-EncodedCommand`, as every other Windows call of the app), because `cmd /c` has no
+// Deviation from the spec's text, which says `cmd /c` on Windows: the Windows cleanup is PowerShell (`-EncodedCommand`, as every other Windows call of the app, started through `cmd /c start`), because `cmd /c` has no
 // positional parameters, and a root written into its command text meets the quoting rules of `&`, `^` and `%` (the T6-F001 class of fault). The root, the fallback folder and the pid reach
 // the program in its environment, as UTF-16 on Windows, never in a file and never in a command text. On macOS they are the positional parameters of `/bin/sh -c`, as the spec says.
 //

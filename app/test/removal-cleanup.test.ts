@@ -46,6 +46,10 @@ describe("the cleanup command", () => {
 		assert.ok(!c.args.join(" ").includes("測試"));
 	});
 
+	it("counts a process as gone once it has exited, even while another program still holds a handle to it", () => {
+		assert.match(POWERSHELL_SCRIPT, /\$null -ne \$p -and -not \$p\.HasExited/);
+	});
+
 	it("refuses a relative root and a pid that is not one", () => {
 		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 1, root: "data", fallbackDir: null }, mac), /absolute/);
 		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 0, root: "/data", fallbackDir: null }, mac), /pid/);
