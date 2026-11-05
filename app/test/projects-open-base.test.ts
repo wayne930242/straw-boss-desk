@@ -8,7 +8,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { OpenBaseClient, readGuiRecord } from "../src/main/projects/open-base.ts";
 
-// The open-base call, against a stand-in of the endpoints pi-straw-boss 0.58.2 serves (`src/spawn.ts`): the same path under the page token, the same headers the kit's `gui-client.mjs` sends
+// The open-base call, against a stand-in of the endpoints pi-straw-boss 0.59.0 serves (`src/spawn.ts`): the same path under the page token, the same headers the kit's `gui-client.mjs` sends
 // (Host, Origin, the CSRF value), the progress question while the opening is on its way, and the server's answers (409 settings_unsafe, 400 not_allowed, 429 busy). Nothing of the package runs.
 
 let server: Server;
