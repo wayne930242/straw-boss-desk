@@ -182,7 +182,7 @@ jobs:
           SBD_UPDATE_INSTALLERS: ${{ runner.temp }}/installers
         run: |
           set -o pipefail
-          node --test --test-concurrency=1 --test-timeout=2400000 test/e2e/updates-windows.e2e.ts 2>&1 | tee "$RUNNER_TEMP/update-installer.log"
+          node --test --test-force-exit --test-concurrency=1 --test-timeout=2400000 test/e2e/updates-windows.e2e.ts 2>&1 | tee "$RUNNER_TEMP/update-installer.log"
 
       - name: Annotate the failing lines
         if: failure()
@@ -238,7 +238,7 @@ jobs:
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: |
           set -o pipefail
-          node --test --test-concurrency=1 --test-timeout=2400000 test/e2e/diagnostics.e2e.ts 2>&1 | tee "$RUNNER_TEMP/diagnostics.log"
+          node --test --test-force-exit --test-concurrency=1 --test-timeout=2400000 test/e2e/diagnostics.e2e.ts 2>&1 | tee "$RUNNER_TEMP/diagnostics.log"
 
       - name: Annotate the failing lines
         if: failure()
@@ -294,7 +294,7 @@ jobs:
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
         run: |
           set -o pipefail
-          node --test --test-concurrency=1 --test-timeout=2400000 test/e2e/removal.e2e.ts 2>&1 | tee "$RUNNER_TEMP/remove-data.log"
+          node --test --test-force-exit --test-concurrency=1 --test-timeout=2400000 test/e2e/removal.e2e.ts 2>&1 | tee "$RUNNER_TEMP/remove-data.log"
 
       - name: Annotate the failing lines
         if: failure()

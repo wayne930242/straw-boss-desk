@@ -242,7 +242,8 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 	});
 
 	after(async () => {
-		await app?.close().catch(() => undefined);
+		// A window that does not close must not hold the job: the apps of this root are stopped by the world's disposal below.
+		await Promise.race([app?.close().catch(() => undefined), sleep(30_000)]);
 		for (const e of [OWNED, CHANGED, FOREIGN]) await seeder?.remove(e.name, e.account).catch(() => undefined);
 		if (process.platform === "darwin") {
 			await seeder?.remove(DEFAULT_CLAUDE.name, DEFAULT_CLAUDE.account).catch(() => undefined);

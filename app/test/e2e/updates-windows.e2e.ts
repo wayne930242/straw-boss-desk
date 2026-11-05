@@ -171,7 +171,7 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 	});
 
 	after(async () => {
-		await app?.close().catch(() => undefined);
+		await Promise.race([app?.close().catch(() => undefined), sleep(30_000)]);
 		// A running copy is stopped the way the uninstaller does it, by the second instance, then the program is uninstalled and the scratch folder deleted.
 		if (existsSync(exe)) {
 			await new Promise<void>((resolve) => {

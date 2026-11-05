@@ -160,7 +160,7 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 	});
 
 	after(async () => {
-		await app?.close().catch(() => undefined);
+		await Promise.race([app?.close().catch(() => undefined), sleep(30_000)]);
 		const userPathBefore = world?.userPathBefore;
 		const real = world?.realUserPath;
 		const userPath = world?.userPath;
