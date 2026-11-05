@@ -2,7 +2,7 @@
 // work folder, driven through the Computer section.
 //   - seeded in the real store (names under `.example.test`, so they can never be anyone's sign-in): an entry the app made and owns (recorded with its time), one the app made and something else then wrote over
 //     (`changed`), one another program made (`foreign`); on macOS also the app's `Claude Code-credentials-<8 hex>` item, the default `Claude Code-credentials` item that is not the app's, and this build's
-//     "<product> Safe Storage" item, which `safeStorage` creates;
+//     "<product> Safe Storage" item and the shipped product's, seeded by name;
 //   - the confirmation names the root, its size, the PATH entry (Windows), the work folder that stays, and the two entries that stay with their reason; the owned one is not named;
 //   - after Confirm: the result names the same two entries, no step failed, the root holds only `electron` and `remove-pending` (Chromium has it open), nothing runs from under the root, the owned entry,
 //     the app's Claude item and the Safe Storage item are gone, the other two entries and the default Claude item are unchanged (the secret and the time), the user PATH has no entry of the app, and the work
@@ -214,13 +214,11 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		const url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), 500);
 		assert.equal(await guiStatus(url), 200);
 		if (process.platform === "darwin") {
-			// Chromium makes its Safe Storage item the first time something is encrypted.
-			const available = await app.evaluate(({ safeStorage }) => {
-				const ok = safeStorage.isEncryptionAvailable();
-				if (ok) safeStorage.encryptString("sbd-e2e");
-				return ok;
-			});
-			assert.equal(available, true, "safeStorage is available");
+			// This build's Safe Storage item is seeded by name through `security`, as the other entries are. Chromium would make it with an access list of its own, and the first thing a program that is not on
+			// that list does with it may be a Keychain dialog, which nobody answers on a runner; whether a PM sees one on a real Mac is task 17's to record. What this case proves is the name: the item of
+			// *this build's* product goes, the shipped product's does not (it is seeded too).
+			await seeder.write(safeName(), packaged?.productName ?? "Straw Boss Desk Dev", SECRET);
+			await seeder.write(safeStorageItem("Straw Boss Desk"), "Straw Boss Desk", SECRET);
 			assert.equal(await present(safeName()), true, `${safeName()} is in the scratch keychain`);
 		}
 		beforeTimes = { foreign: (await timeOf(FOREIGN)) ?? "", changed: (await timeOf(CHANGED)) ?? "" };
@@ -236,6 +234,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		for (const e of [OWNED, CHANGED, FOREIGN]) await seeder?.remove(e.name, e.account).catch(() => undefined);
 		if (process.platform === "darwin") {
 			await seeder?.remove(DEFAULT_CLAUDE.name, DEFAULT_CLAUDE.account).catch(() => undefined);
+			await seeder?.remove(safeStorageItem("Straw Boss Desk"), "Straw Boss Desk").catch(() => undefined);
 			await scratch?.dispose().catch(() => undefined);
 		}
 		const userPathBefore = world?.userPathBefore;
@@ -294,6 +293,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		if (isWin) assert.ok(!(await world.userPath.read())?.value.split(";").some((p) => p.toLowerCase() === world.layout.tools.shims.toLowerCase()), "the user PATH holds no entry of the app");
 		if (process.platform === "darwin") {
 			assert.equal(await present(safeName()), false, "this build's Safe Storage item is gone");
+			assert.equal(await seeder.read(safeStorageItem("Straw Boss Desk"), "Straw Boss Desk"), SECRET, "the shipped product's Safe Storage item is untouched");
 			assert.equal(await present(claudeName()), false, "the app's Claude item is gone");
 			assert.equal(await seeder.read(DEFAULT_CLAUDE.name, DEFAULT_CLAUDE.account), SECRET, "the default Claude Code-credentials item is as it was");
 		}
