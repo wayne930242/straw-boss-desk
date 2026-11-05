@@ -41,7 +41,7 @@ import type { SpawnFn } from "./runtime/herdr.ts";
 import type { EngineConfig } from "./bootstrap/engine.ts";
 import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
 import { FetchRefused, fetchPublicText } from "./net/safe-fetch.ts";
-import { ProjectGit, type GitExec } from "./projects/git.ts";
+import { callEnv, ProjectGit, type GitExec } from "./projects/git.ts";
 import { OpenBaseClient } from "./projects/open-base.ts";
 import { ProjectRecordStore } from "./projects/record.ts";
 import { ProjectsRunner } from "./projects/runner.ts";
@@ -226,7 +226,7 @@ const gitExec: GitExec = async (args, options) => {
 	const current = installedTools();
 	if (current === null) return { code: null, stdout: "", stderr: "the install is not complete" };
 	const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
-	const env = { ...proxyEnv, ...buildEnv({ layout, current, appEnv: process.env }), GIT_TERMINAL_PROMPT: "0" };
+	const env = callEnv({ ...proxyEnv, ...buildEnv({ layout, current, appEnv: process.env }), GIT_TERMINAL_PROMPT: "0" }, options.env);
 	const git = join(toolDir(layout, "git", current.git), toolExecutable(layout.platform, "git"));
 	return run(git, args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}), ...(options.signal !== undefined ? { signal: options.signal } : {}) });
 };

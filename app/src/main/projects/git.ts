@@ -5,7 +5,16 @@ import { linkListing } from "./links.ts";
 // The Git calls of the projects step, through the app's own Git with the constructed environment (the private `gitconfig`, the forge credential helpers, no terminal prompt). Every call is one
 // event in `logs/shell.jsonl` (its arguments and exit code, never its output beyond the caller's own redacted line), so a test can say which Git ran and which did not.
 
-export type GitExec = (args: readonly string[], options: { cwd?: string; timeoutMs: number; signal?: AbortSignal }) => Promise<RunResult>;
+export type GitExec = (args: readonly string[], options: { cwd?: string; timeoutMs: number; signal?: AbortSignal; env?: Readonly<Record<string, string>> }) => Promise<RunResult>;
+
+/**
+ * What the projects step reads from Git's words (`Not a valid ref` for a missing branch, the causes of a failed clone) is Git's English text, which a localized Git translates (Git for Windows follows the
+ * Windows language, and a PM's `LANG` passes through on macOS). The C locale for these calls alone gives the words the code matches; `LANGUAGE` is cleared of any translation list too (R12-F005).
+ */
+export const GIT_PARSED_LOCALE: Readonly<Record<string, string>> = { LC_ALL: "C", LANGUAGE: "C" };
+
+/** The environment of one Git call: the app's Git environment, then what the call asks for, which wins over a locale that came through. */
+export const callEnv = (base: Readonly<Record<string, string>>, asked: Readonly<Record<string, string>> | undefined): Record<string, string> => ({ ...base, ...(asked ?? {}) });
 
 export const CLONE_MS = 45 * 60_000;
 export const FETCH_MS = 15 * 60_000;
@@ -26,7 +35,7 @@ export class ProjectGit {
 
 	async #run(args: readonly string[], timeoutMs: number, cwd?: string): Promise<RunResult> {
 		const signal = this.#signal();
-		const result = await this.#exec(args, { timeoutMs, ...(cwd !== undefined ? { cwd } : {}), ...(signal !== undefined ? { signal } : {}) });
+		const result = await this.#exec(args, { timeoutMs, env: GIT_PARSED_LOCALE, ...(cwd !== undefined ? { cwd } : {}), ...(signal !== undefined ? { signal } : {}) });
 		this.#log({ event: "project-git", args: [...args], code: result.code, timedOut: result.timedOut === true });
 		return result;
 	}

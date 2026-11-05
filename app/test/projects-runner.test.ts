@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
-import { ProjectGit } from "../src/main/projects/git.ts";
+import { callEnv, ProjectGit } from "../src/main/projects/git.ts";
 import { ProjectRecordStore } from "../src/main/projects/record.ts";
 import { ProjectsRunner, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
 import type { OpenOutcome } from "../src/main/projects/open-base.ts";
@@ -99,7 +99,7 @@ function rig(platform: "win32" | "darwin" = "darwin", existing?: { work: string;
 		platform,
 		workFolder: () => work,
 		git: new ProjectGit(
-			(args, options) => (calls.push([...args]), run("git", args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) })),
+			(args, options) => (calls.push([...args]), run("git", args, { env: callEnv(env, options.env), replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) })),
 			() => undefined,
 		),
 		openBase: async (input, hooks) => {
