@@ -1,3 +1,4 @@
+import type { RuntimeEvent } from "../runtime/log.ts";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../shared/projects.ts";
@@ -32,7 +33,7 @@ export interface ProjectsDeps {
 	openBase(input: { dir: string; label: string; deploy: string }, hooks: { onTrust(asking: boolean): void; signal: AbortSignal }): Promise<OpenOutcome>;
 	record: ProjectRecordStore;
 	redact: Redact;
-	log(fields: Record<string, unknown>): void;
+	log: RuntimeEvent;
 	/** Test hooks of the file system reads. */
 	exists?: (path: string) => boolean;
 	isDirectory?: (path: string) => boolean;
@@ -77,7 +78,7 @@ export class ProjectsRunner {
 	readonly #d: ProjectsDeps;
 	readonly #rows = new Map<string, StoredRow>();
 	readonly #listeners = new Set<() => void>();
-	readonly #abort = new AbortController();
+	#abort = new AbortController();
 	/** The work folder the stored rows were made for. */
 	#savedWorkFolder: string | null;
 	#chain: Promise<void> = Promise.resolve();
@@ -189,6 +190,16 @@ export class ProjectsRunner {
 	/** Ends what is in flight: the open is aborted and no further row starts. */
 	dispose(): void {
 		this.#abort.abort();
+	}
+
+	/** The signal that ends the Git calls and the open: the Git wrapper reads it per call, so `resume` gives later calls a live one. */
+	get signal(): AbortSignal {
+		return this.#abort.signal;
+	}
+
+	/** After a quit that was undone (the installer of an update could not start): rows may run again. */
+	resume(): void {
+		if (this.#abort.signal.aborted) this.#abort = new AbortController();
 	}
 
 	/** Waits until every queued row has ended. */

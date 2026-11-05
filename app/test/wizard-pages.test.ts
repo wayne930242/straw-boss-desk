@@ -16,7 +16,7 @@ const renderer = join(import.meta.dirname, "..", "src", "renderer");
 
 const view = (over: Partial<WizardView> = {}): WizardView => ({
 	step: "install",
-	steps: ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"],
+	steps: ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "projects", "done"],
 	locale: "en",
 	root: "/r",
 	dev: true,
@@ -30,6 +30,7 @@ const view = (over: Partial<WizardView> = {}): WizardView => ({
 	claude: { state: "unknown", storage: "keychain", flow: { phase: "idle" } },
 	linear: { state: "not-saved", flow: { phase: "idle" }, restart: { phase: "none" }, encryption: true },
 	linearOffered: false,
+	projects: { rows: [], running: false, held: false },
 	later: [],
 	...over,
 });

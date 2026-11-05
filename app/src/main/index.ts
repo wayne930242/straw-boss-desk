@@ -7,7 +7,8 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { pickLocale } from "../shared/locale.ts";
 import { identityFromProductName } from "./build.ts";
-import { dataRoot, electronDir, computeLayout } from "./paths.ts";
+import { dataRoot, electronDir, computeLayout, toolDir, toolExecutable } from "./paths.ts";
+import { buildEnv } from "./env.ts";
 import { DeskWindow } from "./desk-window.ts";
 import { GuiPresenter } from "./gui-presenter.ts";
 import { bannerState, failureState, screenState } from "./shell-state.ts";
@@ -39,6 +40,13 @@ import { loadActiveStack } from "./wizard/stack-source.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
 import type { EngineConfig } from "./bootstrap/engine.ts";
 import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
+import { FetchRefused, fetchPublicText } from "./net/safe-fetch.ts";
+import { ProjectGit, type GitExec } from "./projects/git.ts";
+import { OpenBaseClient } from "./projects/open-base.ts";
+import { ProjectRecordStore } from "./projects/record.ts";
+import { ProjectsRunner } from "./projects/runner.ts";
+import { RecipeService } from "./recipe/service.ts";
+import { RecipeMemoStore } from "./recipe/store.ts";
 import { StackUpdater, type EngineRunResult, type FetchedBytes } from "./update/stack.ts";
 import { UpdatesService } from "./update/service.ts";
 import { feedUrlProblem, updateConfig } from "./update/verify.ts";
@@ -63,7 +71,7 @@ const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(
 // `logs/shell.jsonl`: the shell's own events, the code-host sign-ins among them (no token, no code, no command output beyond one redacted line).
 const shellLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(secretPatterns), file: "shell.jsonl" });
 // The recipe validator is a plain module beside the recipe schema (`recipe/validate.mjs`), copied to `dist/assets/recipe` by `scripts/copy-assets.ts`; it is loaded from there, not bundled.
-const { validateRecipe } = (await import(pathToFileURL(join(assetsDir, "recipe", "validate.mjs")).href)) as { validateRecipe: ValidateRecipe };
+const { validateRecipe, privateOrLocalHost } = (await import(pathToFileURL(join(assetsDir, "recipe", "validate.mjs")).href)) as { validateRecipe: ValidateRecipe; privateOrLocalHost: (hostname: string) => boolean };
 const platform = createPlatform();
 const run = execRunner();
 
@@ -201,6 +209,38 @@ const linear = new LinearAccounts({
 /** The most a recipe file is read for: the validator's own limit is 256 KB, so a bigger file is handed over empty and refused by the validator (`too-large` is not reached; `invalid-json` is). */
 const MAX_RECIPE_READ = 300 * 1024;
 
+/** The native file dialog for a recipe (the wizard's step 2 and settings' **Replace**); null when cancelled. */
+async function pickRecipeFile(): Promise<{ name: string; text: string } | null> {
+	const window = desk?.window;
+	const options = { properties: ["openFile" as const], filters: [{ name: "Straw Boss recipe", extensions: ["json"] }] };
+	const picked = window === undefined ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options);
+	const file = picked.filePaths[0];
+	if (picked.canceled || file === undefined) return null;
+	return { name: basename(file), text: statSync(file).size > MAX_RECIPE_READ ? "" : readFileSync(file, "utf8") };
+}
+
+// ---- the projects step (task 12) -------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** Git for the projects step: the app's own Git with the constructed environment (the private gitconfig and the credential helpers), never a terminal prompt, the OS proxy for the forge hosts. */
+const gitExec: GitExec = async (args, options) => {
+	const current = installedTools();
+	if (current === null) return { code: null, stdout: "", stderr: "the install is not complete" };
+	const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
+	const env = { ...proxyEnv, ...buildEnv({ layout, current, appEnv: process.env }), GIT_TERMINAL_PROMPT: "0" };
+	const git = join(toolDir(layout, "git", current.git), toolExecutable(layout.platform, "git"));
+	return run(git, args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}), ...(options.signal !== undefined ? { signal: options.signal } : {}) });
+};
+const openBaseClient = new OpenBaseClient({ slotDir: join(layout.agent, "straw-boss") });
+const projects: ProjectsRunner = new ProjectsRunner({
+	platform: layout.platform,
+	workFolder: () => loadStartConfig(layout, home).workFolder,
+	git: new ProjectGit(gitExec, (fields) => shellLog.event(fields), () => projects.signal),
+	openBase: (input, hooks) => openBaseClient.open(input, hooks),
+	record: new ProjectRecordStore(layout),
+	redact: (text) => runtimeLog.redactor.redact(text),
+	log: (fields) => shellLog.event(fields),
+});
+
 const wizard = new WizardController({
 	layout,
 	home,
@@ -217,14 +257,8 @@ const wizard = new WizardController({
 	tttInstalled: () => new StateStore(layout).record("ttt")?.status === "ok",
 	// A function: `app.getLocale()` answers the default (en-US) before the app is ready, and the controller is built at module load.
 	osLocale: () => pickLocale([app.getLocale(), ...app.getPreferredSystemLanguages()]),
-	pickRecipeFile: async () => {
-		const window = desk?.window;
-		const options = { properties: ["openFile" as const], filters: [{ name: "Straw Boss recipe", extensions: ["json"] }] };
-		const picked = window === undefined ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options);
-		const file = picked.filePaths[0];
-		if (picked.canceled || file === undefined) return null;
-		return { name: basename(file), text: statSync(file).size > MAX_RECIPE_READ ? "" : readFileSync(file, "utf8") };
-	},
+	pickRecipeFile,
+	projects,
 	pickFolder: async (defaultPath) => {
 		const window = desk?.window;
 		const options = { defaultPath, properties: ["openDirectory" as const, "createDirectory" as const] };
@@ -358,6 +392,50 @@ const shellUpdater = new ShellUpdater({
 
 const updates = new UpdatesService({ shell: shellUpdater, stack: stackUpdater, appVersion: app.getVersion(), platform: layout.platform, enabled: () => wizard.done, log: (fields) => runtimeLog.event(fields) });
 
+// ---- the Team recipe card (task 12) ----------------------------------------------------------------------------------------------------------------------------------------------------
+
+/**
+ * The tests' stand-in for the internet (development build only, like `SBD_UPDATE_FEED`): `SBD_TEST_RECIPE_FETCH` is JSON `{"hosts": {"<name>": {"address": "<a public-looking address>", "port": <local port>}}, "ca": "<path to a PEM>"}`.
+ * A name in it resolves to its address, and a connection to that address goes to 127.0.0.1 at the port, trusting the CA; every rule of the fetch still applies, so a name that maps to a private address is refused.
+ * A release build never reads the variable.
+ */
+function recipeFetchSeam(): { resolve: (host: string) => Promise<string[]>; dial: (address: string, port: number) => { host: string; port: number }; ca?: string } | null {
+	const raw = process.env.SBD_TEST_RECIPE_FETCH;
+	if (identity.kind !== "dev" || raw === undefined || raw === "") return null;
+	try {
+		const parsed = JSON.parse(raw) as { hosts: Record<string, { address: string; port: number }>; ca?: string };
+		return {
+			resolve: async (host) => {
+				const found = parsed.hosts[host];
+				if (found === undefined) throw new Error(`no such host ${host}`);
+				return [found.address];
+			},
+			dial: (address) => ({ host: "127.0.0.1", port: Object.values(parsed.hosts).find((h) => h.address === address)?.port ?? 9 }),
+			...(parsed.ca !== undefined ? { ca: readFileSync(parsed.ca, "utf8") } : {}),
+		};
+	} catch (error) {
+		runtimeLog.event({ event: "recipe-fetch-seam-unreadable", detail: (error as Error).message.slice(0, 200) });
+		return null;
+	}
+}
+
+const recipeSeam = recipeFetchSeam();
+const recipeMemo = new RecipeMemoStore(layout);
+const recipeCard = new RecipeService({
+	active: () => wizard.recipe,
+	stack: () => loadActiveStack(layout, join(assetsDir, "stack.json")).stack,
+	intake: (name, text) => wizard.intakeFor(name, text),
+	fetchText: (url) => fetchPublicText(url, { privateOrLocalHost, ...(recipeSeam ?? {}) }),
+	pickFile: pickRecipeFile,
+	accept: (next, source) => wizard.acceptRecipe(next, source),
+	install: () => wizard.installRecipe(),
+	projects,
+	addLater: (items) => wizard.setLater([...wizard.later, ...items.filter((i) => !wizard.later.some((l) => l.item === i.item && "host" in l && "host" in i && l.host === i.host))]),
+	store: recipeMemo,
+	log: (fields) => shellLog.event(fields),
+	enabled: () => wizard.done,
+});
+
 /** The WSL sentence, until dismissed for this start. */
 let wslNotice: ShellNotice | null = null;
 
@@ -370,7 +448,7 @@ function refreshNotices(): void {
 
 function settingsView(section: SettingsSection): SettingsView {
 	const recipe = wizard.recipe;
-	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev", updates: updates.view() };
+	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev", updates: updates.view(), recipeCard: recipeCard.view() };
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
@@ -453,7 +531,15 @@ let stopped = false;
 
 /** The stop sequence of a quit and of an update's stop (`stop-sequence.ts`). */
 function stopAll(): Promise<boolean> {
-	return stopSequence({ supervisor, updates, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) });
+	// The checks of the Team recipe card and the repositories in flight end with the app's other background work.
+	const background = {
+		dispose: () => {
+			updates.dispose();
+			recipeCard.dispose();
+			projects.dispose();
+		},
+	};
+	return stopSequence({ supervisor, updates: background, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) });
 }
 
 function stopThenExit(code: (ok: boolean) => number): void {
@@ -487,6 +573,8 @@ async function resumeAfterFailedUpdate(): Promise<void> {
 	claude.resume();
 	linear.resume();
 	updates.start();
+	projects.resume();
+	recipeCard.start();
 	runtimeLog.event({ event: "update-resume" });
 	// A start that fails shows on the runtime page through the supervisor's `failure` event.
 	await supervisor.start().catch(() => undefined);
@@ -539,6 +627,7 @@ if (!app.requestSingleInstanceLock()) {
 			onWizardAction: (action) => wizard.act(action),
 			settingsView,
 			onAccountAction: (action) => wizard.accountAction(action),
+			onRecipeAction: (action) => recipeCard.act(action).catch((error: Error) => runtimeLog.event({ event: "recipe-action-failed", detail: error.message.slice(0, 300) })),
 			onUpdateAction: (action) => updates.act(action).catch((error: Error) => runtimeLog.event({ event: "update-action-failed", detail: error.message.slice(0, 300) })),
 			// Settings' Accounts rows show what the store and the CLIs hold now, not what they held when the app started.
 			onSettingsShown: (section) => {
@@ -570,6 +659,7 @@ if (!app.requestSingleInstanceLock()) {
 			desk?.pushSettings();
 			refreshNotices();
 		});
+		recipeCard.onChange(() => desk?.pushSettings());
 		desk.setWizardActive(mode === "wizard");
 		refreshNotices();
 		attachPower(powerMonitor, supervisor, (fields) => runtimeLog.event(fields));
@@ -584,5 +674,6 @@ if (!app.requestSingleInstanceLock()) {
 				.catch(() => undefined);
 		}
 		updates.start();
+		recipeCard.start();
 	});
 }

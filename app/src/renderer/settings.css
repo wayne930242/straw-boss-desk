@@ -17,7 +17,7 @@ html, body { height: 100%; }
 .forge-note { margin: 8px 0 0; }
 
 /* Updates: three cards in the accounts list's frame, each with one row of actions (layout only; the colours are the list's and the badge's). */
-.accounts > li.update-card { display: block; }
+.accounts > li.update-card, .accounts > li.project-card { display: block; }
 .update-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .update-name { font-weight: 700; }
 .update-version { flex: 1; min-width: 120px; }
@@ -30,3 +30,9 @@ html, body { height: 100%; }
 
 .language { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
 .language-label { color: var(--dim); margin-right: 4px; }
+
+/* The Team recipe card: the change list's long text (the team's instructions, in full) and the projects it sets up. */
+.change-text { max-height: 240px; overflow: auto; }
+.project-card .finding { margin: 8px 0 0; }
+.project-card .problem { margin: 8px 0 0; }
+#recipe-refusals { margin: 8px 0 0; }

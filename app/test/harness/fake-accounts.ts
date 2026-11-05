@@ -1,6 +1,8 @@
 import type { ClaudeAction, ClaudeFlow, ClaudeState, ClaudeView, ForgeAction, ForgeFlow, ForgeView, LinearAction, LinearFlow, LinearState, LinearView } from "../../src/shared/accounts.ts";
 import type { Forge } from "../../src/shared/wizard.ts";
-import type { WizardAccounts, WizardClaude, WizardLinear } from "../../src/main/wizard/controller.ts";
+import type { ProjectsView } from "../../src/shared/projects.ts";
+import type { RepoSpec } from "../../src/main/projects/runner.ts";
+import type { WizardAccounts, WizardClaude, WizardLinear, WizardProjects } from "../../src/main/wizard/controller.ts";
 
 /** The controller's view of the code-host sign-in, scripted by a test: it records what the controller asked and lets the test set a host's flow. */
 export class FakeAccounts implements WizardAccounts {
@@ -130,5 +132,30 @@ export class FakeLinear implements WizardLinear {
 	saved(): void {
 		this.state = "saved";
 		for (const l of this.#saved) l();
+	}
+}
+
+/** The controller's view of the projects step, scripted by a test: it records the passes and the retries and lets the test set what the step shows. */
+export class FakeProjects implements WizardProjects {
+	current: ProjectsView = { rows: [], running: false, held: false };
+	readonly begun: Array<readonly RepoSpec[]> = [];
+	readonly retried: RepoSpec[] = [];
+	readonly #changed = new Set<() => void>();
+	view(): ProjectsView {
+		return this.current;
+	}
+	async begin(specs: readonly RepoSpec[]): Promise<void> {
+		this.begun.push(specs);
+	}
+	async retry(spec: RepoSpec): Promise<void> {
+		this.retried.push(spec);
+	}
+	onChange(listener: () => void): () => void {
+		this.#changed.add(listener);
+		return () => this.#changed.delete(listener);
+	}
+	set(view: ProjectsView): void {
+		this.current = view;
+		for (const l of this.#changed) l();
 	}
 }

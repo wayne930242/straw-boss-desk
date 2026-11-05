@@ -11,7 +11,7 @@ import { WizardController, type WizardDeps } from "../src/main/wizard/controller
 import type { EngineEnd, EngineHost } from "../src/main/wizard/engine-host.ts";
 import { readWizardFile } from "../src/main/wizard/state-file.ts";
 import { scratchRoot, testLayout } from "./harness/engine-fixture.ts";
-import { FakeAccounts, FakeClaude, FakeLinear } from "./harness/fake-accounts.ts";
+import { FakeAccounts, FakeClaude, FakeLinear, FakeProjects } from "./harness/fake-accounts.ts";
 
 // The wizard's step machine (task 9): the steps in order, what is written and when, the refusals, the resume of an install, an engine that crashes, and the sign-in placeholders.
 
@@ -57,6 +57,7 @@ function make(options: MakeOptions = {}) {
 	const accounts = new FakeAccounts();
 	const claude = new FakeClaude();
 	const linear = new FakeLinear();
+	const projects = new FakeProjects();
 	const log: Array<Record<string, unknown>> = [];
 	let starts = 0;
 	const deps: WizardDeps = {
@@ -89,6 +90,7 @@ function make(options: MakeOptions = {}) {
 		accounts,
 		claude,
 		linear,
+		projects,
 		tttInstalled: () => false,
 		osLocale: () => "en",
 		pickRecipeFile: async () => null,
@@ -100,7 +102,7 @@ function make(options: MakeOptions = {}) {
 		...options.pick,
 	};
 	const controller = new WizardController(deps);
-	return { controller, layout, engine, accounts, claude, linear, deps, base: made.base, log, starts: () => starts };
+	return { controller, layout, engine, accounts, claude, linear, projects, deps, base: made.base, log, starts: () => starts };
 }
 
 describe("recipeAgainst (task 13)", () => {
@@ -166,7 +168,7 @@ describe("the steps", () => {
 	});
 
 	it("the step total is the same at every step and in every kind of run (SA-01)", async () => {
-		const full = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"];
+		const full = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "projects", "done"];
 		const recipe = make();
 		const seen: string[][] = [recipe.controller.view().steps];
 		await recipe.controller.act({ type: "welcome-next" });

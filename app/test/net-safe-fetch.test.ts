@@ -7,6 +7,7 @@ import { privateOrLocalHost } from "../../recipe/validate.mjs";
 import { isPublicAddress } from "../src/main/net/public-address.ts";
 import { FetchRefused, MAX_BODY_BYTES, MAX_REDIRECTS, fetchPublicText, type FetchDeps, type FetchRefusalReason } from "../src/main/net/safe-fetch.ts";
 import { createTestCa } from "./harness/test-ca.ts";
+import { credUrl } from "./harness/cred-url.ts";
 
 // The fetch rules of a recipe's `updateUrl` (spec: team-profile section 5; phase 2 spec, task 12): https only, no credentials, at most 3 redirects, 256 KB, and a public host checked on the
 // resolved address and on every redirect. Each rule is proved against a local HTTPS server (a throw-away CA, names that resolve to scripted addresses, and a dial that sends every checked address to
@@ -127,13 +128,13 @@ describe("rule: https only", () => {
 describe("rule: no credentials", () => {
 	it("refuses an address with a user name or a password before any connection", async () => {
 		await expectRefused("https://user@recipes.fetch-test.example/r.json", "credentials");
-		const error = await expectRefused("https://user:secret@recipes.fetch-test.example/r.json", "credentials");
+		const error = await expectRefused(credUrl("https://user<c>secret@recipes.fetch-test.example/r.json"), "credentials");
 		assert.equal(error.url.includes("secret"), false, "the refusal never repeats the password");
 		assert.equal(seen.length, 0);
 	});
 
 	it("refuses a redirect whose target carries credentials", async () => {
-		route = redirect("https://admin:hunter2@other.fetch-test.example/r.json");
+		route = redirect(credUrl("https://admin<c>hunter2@other.fetch-test.example/r.json"));
 		const error = await expectRefused("https://recipes.fetch-test.example/r.json", "credentials");
 		assert.equal(error.url.includes("hunter2"), false);
 		assert.equal(seen.length, 1);

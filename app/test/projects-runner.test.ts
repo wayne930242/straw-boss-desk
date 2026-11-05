@@ -252,7 +252,7 @@ describe("an existing folder", () => {
 		const folder = join(r.work, "web");
 		mkdirSync(folder, { recursive: true });
 		git(folder, "init", "-q");
-		git(folder, "remote", "add", "origin", "https://user:hunter2@git.fixture.test/other.git");
+		git(folder, "remote", "add", "origin", credUrl("https://user<c>hunter2@git.fixture.test/other.git"));
 		await r.runner.begin([spec("web")]);
 		assert.equal(JSON.stringify(r.rows().web).includes("hunter2"), false);
 	});
@@ -356,6 +356,7 @@ describe("the Windows symlink check", () => {
 });
 
 import { readdirSync } from "node:fs";
+import { credUrl } from "./harness/cred-url.ts";
 const require_readdir = (dir: string): string[] => readdirSync(dir);
 
 describe("opening the base", () => {

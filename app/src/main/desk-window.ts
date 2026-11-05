@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CHANNELS, type ShellAction, type ShellState } from "../shared/shell-state.ts";
 import type { Locale } from "../shared/locale.ts";
 import { isAccountAction, type AccountAction } from "../shared/accounts.ts";
+import { isRecipeAction, type RecipeAction } from "../shared/recipe-update.ts";
 import { isUpdateAction, type UpdateAction } from "../shared/updates.ts";
 import { SETTINGS_SECTIONS, type SettingsAction, type SettingsSection, type SettingsView, type ShellNotice, type WizardAction, type WizardView } from "../shared/wizard.ts";
 import { dialogTitle, externalLink, guiOriginOf, guiPortOf, isGuiUrl, permissionAllowed } from "./page-security.ts";
@@ -41,6 +42,8 @@ export interface DeskWindowDeps {
 	onAccountAction(action: AccountAction): Promise<void>;
 	/** A request of settings' Updates section (check now, apply, restart to update, download, show) and the banner's **Restart to update**. */
 	onUpdateAction(action: UpdateAction): Promise<void>;
+	/** A request of settings' Team recipe card (check now, apply, keep, replace, retry a repository). */
+	onRecipeAction(action: RecipeAction): Promise<void>;
 	/** Windows log off or shutdown (`session-end`): the stop that fits in the time Windows gives. */
 	onSessionEnd(): void;
 	log: RuntimeEvent;
@@ -424,6 +427,7 @@ export class DeskWindow {
 			else if (a.type === "set-locale" && (a.locale === "en" || a.locale === "zh-TW")) await this.#d.onWizardAction({ type: "set-locale", locale: a.locale });
 			else if (isAccountAction(a)) await this.#d.onAccountAction(a);
 			else if (isUpdateAction(a)) await this.#d.onUpdateAction(a);
+			else if (isRecipeAction(a)) await this.#d.onRecipeAction(a);
 		});
 	}
 }

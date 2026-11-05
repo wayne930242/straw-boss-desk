@@ -10,6 +10,7 @@ import { install } from "./wizard/install.ts";
 import { hosts } from "./wizard/hosts.ts";
 import { claude } from "./wizard/claude.ts";
 import { linear } from "./wizard/linear.ts";
+import { projects } from "./wizard/projects.ts";
 import { recipe } from "./wizard/recipe.ts";
 import { start } from "./wizard/start.ts";
 import { trust } from "./wizard/trust.ts";
@@ -33,7 +34,7 @@ const announce = byId("announce");
 let spoken: string[] = [];
 let shownStep = "";
 
-const STEPS: Record<string, (ctx: Ctx) => HTMLElement> = { welcome, recipe, trust, folder, install, start, claude, hosts, linear, done, launching };
+const STEPS: Record<string, (ctx: Ctx) => HTMLElement> = { welcome, recipe, trust, folder, install, start, claude, hosts, linear, projects, done, launching };
 
 /** The element the PM is on, by something that survives a redraw: its id, or the language it switches to. */
 function focusKey(): string | null {

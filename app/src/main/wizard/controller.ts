@@ -14,6 +14,10 @@ import type { RuntimeEvent } from "../runtime/log.ts";
 import { StartFailureError, firstLineOf } from "../runtime/failure.ts";
 import { shellFailureOf } from "../shell-state.ts";
 import type { StartResult } from "../runtime/supervisor.ts";
+import type { ProjectsView } from "../../shared/projects.ts";
+import type { RecipeSource } from "../../shared/recipe-update.ts";
+import type { RepoSpec } from "../projects/runner.ts";
+import { repoSpecs } from "../recipe/diff.ts";
 import { isAccountAction, isClaudeAction, isForgeAction, isLinearAction, type AccountAction, type ClaudeAction, type ClaudeView, type ForgeAction, type ForgeView, type LinearAction, type LinearView } from "../../shared/accounts.ts";
 import type { Locale } from "../../shared/locale.ts";
 import type { ShellFailure } from "../../shared/shell-state.ts";
@@ -80,6 +84,15 @@ export interface WizardLinear {
 	onSaved(listener: () => void): () => void;
 }
 
+/** What the controller asks of the projects step (`projects/runner.ts`). */
+export interface WizardProjects {
+	view(): ProjectsView;
+	/** The first pass over the recipe's repositories; ends when every row has ended (a row held on a trust question ends when the PM answers). */
+	begin(specs: readonly RepoSpec[]): Promise<void>;
+	retry(spec: RepoSpec): Promise<void>;
+	onChange(listener: () => void): () => void;
+}
+
 export interface WizardDeps {
 	layout: Layout;
 	home: string;
@@ -94,6 +107,7 @@ export interface WizardDeps {
 	accounts: WizardAccounts;
 	claude: WizardClaude;
 	linear: WizardLinear;
+	projects: WizardProjects;
 	/** True when the `ttt` stage is installed, so a later engine run (Repair) keeps it in its plan. */
 	tttInstalled(): boolean;
 	/** The language the OS asks for, when the PM has not chosen one. */
@@ -154,6 +168,7 @@ export class WizardController {
 		deps.claude.onSignedIn(() => this.#takeOffLater("claude"));
 		deps.linear.onChange(() => this.#emit());
 		deps.linear.onSaved(() => this.#takeOffLater("linear"));
+		deps.projects.onChange(() => this.#emit());
 	}
 
 	/** A sign-in that is done leaves the list of those put off, in the wizard and in settings alike. */
@@ -293,11 +308,14 @@ export class WizardController {
 			claude: this.#d.claude.view(),
 			linear: this.#d.linear.view(),
 			linearOffered: this.linearOffered,
+			projects: this.#d.projects.view(),
 			later: this.later,
 		};
 	}
 
 	#launching = false;
+	/** The projects pass has been started in this run of the app. */
+	#projectsBegun = false;
 
 	// ---- the launch --------------------------------------------------------------------------------------------------
 
@@ -407,6 +425,12 @@ export class WizardController {
 			case "step-next":
 				this.#stepNext();
 				return;
+			case "projects-next":
+				if (this.#at("projects") && this.#projectsSettled()) this.#go("done");
+				return;
+			case "project-retry":
+				if (this.#at("projects")) await this.retryProject(action.folder);
+				return;
 			case "finish":
 				if (this.#at("done")) this.#finish();
 				return;
@@ -472,6 +496,11 @@ export class WizardController {
 		const file = this.#file;
 		if (file.done) return;
 		if (file.step === "claude" && this.#d.claude.flow.phase === "idle" && this.#d.claude.state === "unknown") void this.#d.claude.refresh().catch((error: Error) => this.#d.log({ event: "claude-refresh-failed", detail: firstLineOf(error.message) }));
+		// The projects step needs the GUI (a base is opened through its endpoint), so it begins once the stack runs; a relaunch on this step starts the stack first.
+		if (file.step === "projects" && !this.#projectsBegun && this.#d.supervisor.state === "running") {
+			this.#projectsBegun = true;
+			void this.#d.projects.begin(repoSpecs(this.recipe)).catch((error: Error) => this.#d.log({ event: "projects-failed", detail: firstLineOf(error.message) }));
+		}
 		if (file.step === "linear") void this.#d.linear.probe().catch((error: Error) => this.#d.log({ event: "linear-probe-failed", detail: firstLineOf(error.message) }));
 		if (file.step !== "hosts") return;
 		const forge = this.forges[Math.min(file.hostsIndex, Math.max(0, this.forges.length - 1))];
@@ -563,6 +592,57 @@ export class WizardController {
 		// "I have no recipe": no trust screen, since there is nothing from a colleague to trust. Any recipe file of an earlier choice is dropped.
 		this.#clearRecipeFiles();
 		this.#save({ noRecipeForges: forges, step: "folder" });
+	}
+
+	// ---- a recipe update (settings' Team recipe card) -------------------------------------------------------------------------
+
+	/** Validates a recipe file's text against the stack in force, for the Team recipe card. */
+	intakeFor(fileName: string, text: string): Intake {
+		return intakeRecipe(this.#d.validate, this.#stackNow().stack, fileName, typeof text === "string" ? text : "");
+	}
+
+	/**
+	 * Makes an accepted recipe the active one, as **Apply** on the trust screen does (the file under `recipe/`, the controller's memory, the wizard record's file name), and returns the function that
+	 * puts the previous recipe back. Nothing else runs here: the caller installs and opens.
+	 */
+	acceptRecipe(intake: Extract<Intake, { ok: true }>, _source: RecipeSource): () => void {
+		const dir = this.#d.layout.recipe;
+		const previous: Array<{ name: string; text: string }> = [];
+		try {
+			for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) previous.push({ name, text: readFileSync(join(dir, name), "utf8") });
+		} catch {
+			// no recipe folder yet
+		}
+		const oldRecipe = this.#recipe;
+		const oldFile = this.#file;
+		mkdirSync(dir, { recursive: true });
+		const target = `${intake.recipe.id}.json`;
+		this.#clearRecipeFiles(target);
+		writeFileAtomic(join(dir, target), intake.text);
+		this.#recipe = intake.recipe;
+		const file = { ...this.#file };
+		delete file.noRecipeForges;
+		this.#file = file;
+		this.#save({ recipeFile: plainFileName(intake.fileName) });
+		return () => {
+			this.#clearRecipeFiles();
+			for (const p of previous) writeFileAtomic(join(dir, p.name), p.text);
+			this.#recipe = oldRecipe;
+			this.#file = oldFile;
+			writeWizardFile(this.#d.layout, this.#file);
+			this.#emit();
+		};
+	}
+
+	/**
+	 * The install step for the recipe now in force, run with the stack stopped (a stop, the engine, a start: one job of the supervisor's queue). Says how it ended; the first failed stage is named.
+	 * Throws when the stack cannot be stopped.
+	 */
+	async installRecipe(): Promise<{ ok: true } | { ok: false; stage: string; category: string }> {
+		const result = await this.#d.supervisor.withStackStopped(() => this.#runEngine({}));
+		if (result.ok) return { ok: true };
+		const first = this.#progress.view().failures[0];
+		return { ok: false, stage: first?.stage ?? "install", category: first?.category ?? "other" };
 	}
 
 	#cancelTrust(): void {
@@ -837,13 +917,13 @@ export class WizardController {
 			// A key being saved, `ttt` being installed and `ttt init` running are not cut off by Later: the key is saved first, so what stays is never half done.
 			if (LINEAR_BUSY.includes(this.#d.linear.flow.phase)) return;
 			this.#d.linear.reset();
-			this.#save({ later: addLater(file.later, { item: "linear" }), step: "done" });
+			this.#save({ later: addLater(file.later, { item: "linear" }), step: this.#afterSignIns() });
 		}
 	}
 
 	/** On from Claude: to the first code host, else Linear, else the end. `later` is the list to keep. */
 	#afterClaude(later: LaterItem[]): void {
-		this.#save({ later, step: this.forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+		this.#save({ later, step: this.forges.length > 0 ? "hosts" : this.linearOffered ? "linear" : this.#afterSignIns(), hostsIndex: 0 });
 	}
 
 	/** **Next** after the sign-in on screen passed: Claude's status says signed in (step 7), or the Linear key is saved and no setup is running (step 9). */
@@ -853,7 +933,7 @@ export class WizardController {
 		if (file.step === "claude" && this.#d.claude.state === "signed-in" && !CLAUDE_BUSY.includes(this.#d.claude.flow.phase)) this.#afterClaude(file.later);
 		else if (file.step === "linear" && this.#d.linear.state === "saved" && !LINEAR_BUSY.includes(this.#d.linear.flow.phase)) {
 			this.#d.linear.reset();
-			this.#save({ step: "done" });
+			this.#save({ step: this.#afterSignIns() });
 		}
 	}
 
@@ -864,7 +944,25 @@ export class WizardController {
 		const later = put === null ? file.later : addLater(file.later, put);
 		const index = file.hostsIndex + 1;
 		if (index < forges.length) this.#save({ later, hostsIndex: index });
-		else this.#save({ later, step: this.linearOffered ? "linear" : "done", hostsIndex: 0 });
+		else this.#save({ later, step: this.linearOffered ? "linear" : this.#afterSignIns(), hostsIndex: 0 });
+	}
+
+	/** After the last sign-in step: the projects step when the recipe has repositories, else the end. */
+	#afterSignIns(): WizardStep {
+		return repoSpecs(this.recipe).length > 0 ? "projects" : "done";
+	}
+
+	/** Every row has ended, or the rest waits behind a trust question the PM answers in the GUI after the wizard. */
+	#projectsSettled(): boolean {
+		const view = this.#d.projects.view();
+		if (!this.#projectsBegun || view.running) return false;
+		return view.held || !view.rows.some((r) => r.phase === "waiting");
+	}
+
+	/** Retries one failed repository alone (the wizard's step and settings' Team recipe card). */
+	async retryProject(folder: string): Promise<void> {
+		const spec = repoSpecs(this.recipe).find((s) => s.folder === folder);
+		if (spec !== undefined) await this.#d.projects.retry(spec);
 	}
 
 	#hostsNext(): void {

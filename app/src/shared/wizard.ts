@@ -1,13 +1,15 @@
 import type { AccountAction, ClaudeView, ForgeView, LinearView } from "./accounts.ts";
 import type { Locale } from "./locale.ts";
+import type { ProjectsView } from "./projects.ts";
+import type { RecipeAction, RecipeCardView } from "./recipe-update.ts";
 import type { ShellFailure } from "./shell-state.ts";
 import type { UpdateAction, UpdatesView } from "./updates.ts";
 
 // What the wizard (`renderer/wizard.ts`) and the settings page (`renderer/settings.ts`) are told by main, and what they may ask for (spec: The wizard). Plain data, so it crosses the IPC
 // boundary and the renderer imports only this file. The words are the catalog's: main sends kinds, ids and values, and the pages word them, so a PM reads one language whatever a tool printed.
 
-/** The wizard's steps in order. Step 10 (projects) belongs to a later task; the sign-in steps are placeholders that end in **Later**. */
-export const WIZARD_STEPS = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"] as const;
+/** The wizard's steps in order. The sign-in steps end in **Later**; the projects step is skipped for a recipe without repositories. */
+export const WIZARD_STEPS = ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "projects", "done"] as const;
 export type WizardStep = (typeof WIZARD_STEPS)[number];
 
 /** A sign-in the PM put off. It shows as a badge in settings and as a notice over the GUI. */
@@ -119,6 +121,8 @@ export interface WizardView {
 	/** Step 9: the Linear key, and the setup after it. */
 	linear: LinearView;
 	linearOffered: boolean;
+	/** Step 10: the repositories of the recipe, each with where it stands. */
+	projects: ProjectsView;
 	later: LaterItem[];
 }
 
@@ -144,6 +148,9 @@ export type WizardAction =
 	| { type: "hosts-next" }
 	/** Claude is signed in (step 7) or the Linear key is saved (step 9): on to the next step without putting it off. */
 	| { type: "step-next" }
+	/** Step 10 is over (every row ended, or the rest waits on a trust question in the GUI): on to the end. */
+	| { type: "projects-next" }
+	| { type: "project-retry"; folder: string }
 	| { type: "finish" }
 	| AccountAction;
 
@@ -171,6 +178,8 @@ export interface SettingsView {
 	dev: boolean;
 	/** Both update channels' state (Updates). Absent before main has built it. */
 	updates?: UpdatesView;
+	/** The Team recipe card: the active recipe, an update offered, and the repository rows. Absent before main has built it. */
+	recipeCard?: RecipeCardView;
 }
 
-export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | AccountAction | UpdateAction;
+export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | AccountAction | UpdateAction | RecipeAction;

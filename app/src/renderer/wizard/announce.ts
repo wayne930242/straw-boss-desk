@@ -81,6 +81,13 @@ export function announcementParts(ctx: Ctx): string[] {
 			else if (restart.phase === "failed") parts.push(ctx.tr("linear.restart.failed"));
 			break;
 		}
+		case "projects": {
+			const { rows, running, held } = view.projects;
+			if (running) parts.push(ctx.tr("projects.running"));
+			else if (held) parts.push(ctx.tr("projects.held"));
+			else if (rows.length > 0 && !rows.some((r) => r.phase === "waiting")) parts.push(ctx.tr(rows.some((r) => r.phase === "failed") ? "projects.someFailed" : "projects.allDone"));
+			break;
+		}
 		default:
 	}
 	return parts;

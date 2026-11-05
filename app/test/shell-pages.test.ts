@@ -50,7 +50,7 @@ describe("the wizard and settings pages", () => {
 				const block = c.settings[section];
 				assert.ok(block.title && block.lead, `${locale} settings ${section}`);
 			}
-			for (const step of ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "done"]) assert.ok((c.steps as Record<string, string>)[step], `${locale} step ${step}`);
+			for (const step of ["welcome", "recipe", "trust", "folder", "install", "start", "claude", "hosts", "linear", "projects", "done"]) assert.ok((c.steps as Record<string, string>)[step], `${locale} step ${step}`);
 			for (const item of ["claude", "github", "gitlab", "linear"]) assert.ok((c.later as Record<string, string>)[item], `${locale} later ${item}`);
 		}
 	});

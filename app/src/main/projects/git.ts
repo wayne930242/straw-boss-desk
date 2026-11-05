@@ -1,3 +1,4 @@
+import type { RuntimeEvent } from "../runtime/log.ts";
 import type { RunResult } from "../platform/types.ts";
 import { linkListing } from "./links.ts";
 
@@ -10,21 +11,22 @@ export const CLONE_MS = 45 * 60_000;
 export const FETCH_MS = 15 * 60_000;
 export const QUICK_MS = 60_000;
 
-export type GitLog = (fields: Record<string, unknown>) => void;
+export type GitLog = RuntimeEvent;
 
 export class ProjectGit {
 	readonly #exec: GitExec;
 	readonly #log: GitLog;
-	readonly #signal: AbortSignal | undefined;
+	readonly #signal: () => AbortSignal | undefined;
 
-	constructor(exec: GitExec, log: GitLog, signal?: AbortSignal) {
+	constructor(exec: GitExec, log: GitLog, signal: () => AbortSignal | undefined = () => undefined) {
 		this.#exec = exec;
 		this.#log = log;
 		this.#signal = signal;
 	}
 
 	async #run(args: readonly string[], timeoutMs: number, cwd?: string): Promise<RunResult> {
-		const result = await this.#exec(args, { timeoutMs, ...(cwd !== undefined ? { cwd } : {}), ...(this.#signal !== undefined ? { signal: this.#signal } : {}) });
+		const signal = this.#signal();
+		const result = await this.#exec(args, { timeoutMs, ...(cwd !== undefined ? { cwd } : {}), ...(signal !== undefined ? { signal } : {}) });
 		this.#log({ event: "project-git", args: [...args], code: result.code, timedOut: result.timedOut === true });
 		return result;
 	}
