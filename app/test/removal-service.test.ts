@@ -32,7 +32,7 @@ interface Rig {
 	listed: string[][];
 }
 
-function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[] }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean } = {}): Rig {
+function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[] }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void } = {}): Rig {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-rm-")));
 	bases.push(base);
 	const home = join(base, "home");
@@ -87,7 +87,8 @@ function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[] }
 		resume: async () => void calls.push("resume"),
 		arm: (spec) => void armed.push(spec),
 		quit: () => void calls.push("quit"),
-		log: () => {},
+		log: over.log ?? (() => {}),
+		...(over.beforeFiles !== undefined ? { beforeFiles: over.beforeFiles } : {}),
 		measure: async () => 123_456_789,
 		...(over.deleteChildren !== undefined ? { deleteChildren: over.deleteChildren } : {}),
 	});
@@ -221,6 +222,41 @@ describe("the removal", () => {
 		assert.deepEqual(other.armed, [{ root: other.root, fallbackDir: null }]);
 		const s = other.svc.state;
 		assert.ok(s.phase === "done" && s.result.problems.some((p) => p.step === "files" && /not this app's/.test(p.detail)));
+	});
+
+	it("reaches the result when the log cannot be written any more (its folder was deleted with the files)", async () => {
+		let deleted = false;
+		const r = rig({
+			log: () => {
+				if (deleted) throw new Error("ENOENT: no such file or directory, open 'logs/start.jsonl'");
+			},
+			deleteChildren: async (root, keep) => {
+				const { deleteChildren } = await import("../src/main/removal/files.ts");
+				const out = await deleteChildren(root, keep, { caseInsensitive: false });
+				deleted = true;
+				return out;
+			},
+		});
+		await r.svc.plan();
+		await r.svc.confirm();
+		assert.equal(r.svc.state.phase, "done", "a log that throws after the folder is gone does not stop the result");
+		assert.deepEqual(rootNames(r), ["electron", PENDING_FILE]);
+	});
+
+	it("calls beforeFiles once, after the sign-outs and before the marker is written or a file is deleted", async () => {
+		const seen: string[] = [];
+		const r = rig({ beforeFiles: () => void seen.push(`beforeFiles marker=${existsSync(join(r.root, PENDING_FILE))} tools=${existsSync(join(r.root, "tools"))}`) });
+		await r.svc.plan();
+		await r.svc.confirm();
+		assert.deepEqual(seen, ["beforeFiles marker=false tools=true"]);
+		assert.ok(r.calls.indexOf("linear.signOut") >= 0);
+	});
+
+	it("a beforeFiles that throws does not stop the files", async () => {
+		const r = rig({ beforeFiles: () => { throw new Error("no log to close"); } });
+		await r.svc.plan();
+		await r.svc.confirm();
+		assert.equal(r.svc.state.phase, "done");
 	});
 
 	it("quits only after the result", async () => {

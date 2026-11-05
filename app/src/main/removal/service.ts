@@ -43,6 +43,8 @@ export interface RemovalDeps {
 	/** Leaves the app (the PM read the result). */
 	quit(): void;
 	log: RuntimeEvent;
+	/** Called once, right before the first file is deleted: the logs live in the folder that goes, so the caller stops writing to them. */
+	beforeFiles?: () => void;
 	measure?: (root: string) => Promise<number | null>;
 	deleteChildren?: (root: string, keep: readonly string[]) => Promise<DeleteResult>;
 	/** Deletes a folder tree (the fallback folder); default `fs.rm` with retries. */
@@ -74,6 +76,15 @@ export class RemovalService {
 		return this.#state.phase === "working" || this.#state.phase === "done";
 	}
 
+	/** A log that cannot be written must not change what the removal does: its folder may be the one that was just deleted. */
+	#log(fields: Parameters<RuntimeEvent>[0]): void {
+		try {
+			this.#d.log(fields);
+		} catch {
+			// nothing to do: the log is gone with the folder
+		}
+	}
+
 	#set(state: RemoveState): void {
 		this.#state = state;
 		for (const l of this.#listeners) l();
@@ -90,7 +101,7 @@ export class RemovalService {
 			const hosts = this.#d.accounts.removalHosts(this.#d.forges());
 			const surveyed = await this.#d.accounts.survey(hosts);
 			if (!surveyed.ok) {
-				this.#d.log({ event: "remove-refused", reason: "store", detail: surveyed.detail });
+				this.#log({ event: "remove-refused", reason: "store", detail: surveyed.detail });
 				this.#set({ phase: "refused", reason: "store", detail: surveyed.detail });
 				return;
 			}
@@ -121,7 +132,7 @@ export class RemovalService {
 		const { layout, home } = this.#d;
 		const step = (name: RemoveStep): void => {
 			this.#set({ phase: "working", step: name });
-			this.#d.log({ event: "remove-step", step: name });
+			this.#log({ event: "remove-step", step: name });
 		};
 		step("stopping");
 		const problems: RemovalProblem[] = [];
@@ -129,7 +140,7 @@ export class RemovalService {
 		try {
 			const stopped = await this.#d.stop();
 			if (!stopped.ok) {
-				this.#d.log({ event: "remove-stop-failed", leftovers: stopped.leftovers.length });
+				this.#log({ event: "remove-stop-failed", leftovers: stopped.leftovers.length });
 				await this.#d.resume().catch(() => undefined);
 				this.#set({ phase: "stop-failed", leftovers: stopped.leftovers, detail: "" });
 				return;
@@ -158,7 +169,7 @@ export class RemovalService {
 			await this.#keychainItems(problems);
 		} catch (error) {
 			// Nothing in `<root>` was deleted yet: put the app back as it was and say what went wrong.
-			this.#d.log({ event: "remove-failed", detail: firstLine((error as Error).message) });
+			this.#log({ event: "remove-failed", detail: firstLine((error as Error).message) });
 			await this.#d.resume().catch(() => undefined);
 			this.#set({ phase: "failed", detail: firstLine((error as Error).message) });
 			return;
@@ -167,7 +178,7 @@ export class RemovalService {
 		step("files");
 		await this.#files(problems);
 		const result: RemovalResult = { root: layout.root, workFolder: shown.plan.workFolder, left, problems };
-		this.#d.log({ event: "remove-done", left: left.length, problems: problems.length });
+		this.#log({ event: "remove-done", left: left.length, problems: problems.length });
 		this.#set({ phase: "done", result });
 	}
 
@@ -175,7 +186,7 @@ export class RemovalService {
 		const { layout } = this.#d;
 		this.#d.claude.resume();
 		// The CLI's own logout first (it also tells Claude's service); a failure is not a problem by itself: the item is deleted by name below, and the Windows file goes with the folder.
-		await this.#d.claude.signOut().catch((error: Error) => this.#d.log({ event: "remove-claude-logout-failed", detail: firstLine(error.message) }));
+		await this.#d.claude.signOut().catch((error: Error) => this.#log({ event: "remove-claude-logout-failed", detail: firstLine(error.message) }));
 		if (layout.platform !== "darwin") return;
 		await this.#deleteItems([claudeItem(layout.claude)], "claude", problems);
 	}
@@ -193,7 +204,7 @@ export class RemovalService {
 				if (!names.includes(entry.name)) continue;
 				try {
 					await credentials.delete({ name: entry.name, account: entry.account });
-					this.#d.log({ event: "remove-keychain-item", step, name: entry.name });
+					this.#log({ event: "remove-keychain-item", step, name: entry.name });
 				} catch (error) {
 					problems.push({ step, detail: firstLine((error as Error).message) });
 				}
@@ -208,7 +219,7 @@ export class RemovalService {
 		if (!userPath.supported) return;
 		try {
 			const removed = await userPath.remove(this.#d.layout.tools.shims);
-			this.#d.log({ event: "remove-user-path", changed: removed.changed });
+			this.#log({ event: "remove-user-path", changed: removed.changed });
 		} catch (error) {
 			problems.push({ step: "path", detail: firstLine((error as Error).message) });
 		}
@@ -218,6 +229,11 @@ export class RemovalService {
 	async #files(problems: RemovalProblem[]): Promise<void> {
 		const { layout, home } = this.#d;
 		let fallbackDir: string | null = null;
+		try {
+			this.#d.beforeFiles?.();
+		} catch {
+			// the log could not be closed; the writes after this are caught one by one
+		}
 		const recorded = layout.record.fallbackDir;
 		if (recorded !== null) {
 			if (fallbackIsOurs({ fallbackDir: recorded, home, realRoot: layout.record.realRoot, platform: layout.platform })) fallbackDir = recorded;

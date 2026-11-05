@@ -24,6 +24,7 @@ export class RuntimeLog {
 	readonly #now: () => Date;
 	readonly #path: string;
 	readonly #keep: number | undefined;
+	#muted = false;
 
 	constructor(options: RuntimeLogOptions) {
 		this.redactor = options.redactor;
@@ -37,8 +38,17 @@ export class RuntimeLog {
 		});
 	}
 
+	/**
+	 * Stops writing for good. **Remove all data** calls it before it deletes the folder this log lives in: a write after that has no folder to go to and would throw into whatever logged it, so
+	 * everything that logs from now on is dropped instead.
+	 */
+	mute(): void {
+		this.#muted = true;
+	}
+
 	/** One JSON line: the time, then `fields`. */
 	event(fields: Record<string, LogValue>): void {
+		if (this.#muted) return;
 		const line = redactValue(this.redactor, { t: this.#now().toISOString(), ...fields });
 		this.file.append(`${JSON.stringify(line)}\n`);
 	}

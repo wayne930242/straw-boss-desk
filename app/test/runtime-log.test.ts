@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -28,6 +28,30 @@ function logWith(redactor: ReturnType<typeof runtimeRedactor>) {
 	const log = new RuntimeLog({ dir: join(made.base, "logs"), redactor });
 	return { log, text: () => readFileSync(join(made.base, "logs", "start.jsonl"), "utf8") };
 }
+
+describe("a muted log (Remove all data deletes the folder it writes to)", () => {
+	it("writes nothing after mute, and does not throw when the folder is gone", () => {
+		const made = scratchRoot("sbd-rlog-mute-");
+		scratch.push(made.base);
+		const dir = join(made.base, "logs");
+		const log = new RuntimeLog({ dir, redactor: runtimeRedactor(secretPatterns) });
+		log.event({ event: "before" });
+		log.mute();
+		removeTree(dir);
+		assert.doesNotThrow(() => log.event({ event: "after" }));
+		assert.equal(existsSync(dir), false, "a muted log does not make its folder again");
+	});
+
+	it("an unmuted log still throws when its folder is gone: the failure is not hidden", () => {
+		const made = scratchRoot("sbd-rlog-gone-");
+		scratch.push(made.base);
+		const dir = join(made.base, "logs");
+		const log = new RuntimeLog({ dir, redactor: runtimeRedactor(secretPatterns) });
+		log.event({ event: "before" });
+		removeTree(dir);
+		assert.throws(() => log.event({ event: "after" }), /ENOENT/);
+	});
+});
 
 describe("logs/start.jsonl", () => {
 	it("masks the credential shapes of the recipe's secret patterns in tool output, as well as the page token and a proxy's userinfo", () => {

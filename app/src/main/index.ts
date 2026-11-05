@@ -498,6 +498,11 @@ const removal = new RemovalService({
 	arm: (spec) => {
 		pendingCleanup = spec;
 	},
+	// The logs are in the folder that is about to be deleted; a write after that would throw into whatever logged it.
+	beforeFiles: () => {
+		runtimeLog.mute();
+		shellLog.mute();
+	},
 	quit: () => app.quit(),
 	log: (fields) => runtimeLog.event(fields),
 });
