@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it as nodeIt } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
@@ -141,10 +142,11 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 			}
 		});
 
+	const cleanupTrace = join(tmpdir(), `sbd-cleanup-trace-${process.pid}.log`);
 	const env = (): Record<string, string> => {
 		const base: Record<string, string> = {};
 		for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(PI_|HERDR_|ELECTRON_RUN_AS_NODE$)/.test(k)) base[k] = v;
-		return { ...base, ...world.appEnv, STRAW_BOSS_DESK_ROOT: world.root };
+		return { ...base, ...world.appEnv, STRAW_BOSS_DESK_ROOT: world.root, SBD_CLEANUP_TRACE: cleanupTrace };
 	};
 	const guiUrl = (a: ElectronApplication): Promise<string | undefined> => a.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => w.getURL()).find((u) => /^http:\/\/127\.0\.0\.1:\d+\//.test(u)));
 	const guiStatus = (url: string): Promise<number> =>
@@ -334,7 +336,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 			await sleep(500);
 		}
 		timeline.push(`${seconds()}s root ${existsSync(world.root) ? "still there" : "gone"}`);
-		if (existsSync(world.root)) assert.fail(`the root stayed 240 s after the exit; app pid ${appPid}; timeline: ${timeline.join(" | ")}`);
+		if (existsSync(world.root)) assert.fail(`the root stayed 240 s after the exit; app pid ${appPid}; trace: ${existsSync(cleanupTrace) ? readFileSync(cleanupTrace, "utf8").trim().split("\n").join(" | ") : "(no file)"}; timeline: ${timeline.join(" | ")}`);
 		console.log(`cleanup timeline: ${timeline.join(" | ")}`);
 		assert.ok(Date.now() - started <= 60_000, `${timeline.join(" | ")}: the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
 		assert.equal(existsSync(join(world.home, ".straw-boss-desk")), false, "no fallback folder");
