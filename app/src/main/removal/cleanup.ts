@@ -41,8 +41,10 @@ export const POWERSHELL_SCRIPT = [
 	"$ErrorActionPreference = 'SilentlyContinue'",
 	"$waitPid = 0",
 	"if (-not [int]::TryParse($env:SBD_RM_PID, [ref]$waitPid) -or $waitPid -le 0) { exit 1 }",
-	`for ($i = 0; $i -lt ${WAIT_SECONDS}; $i++) { if (-not (Get-Process -Id $waitPid)) { break }; Start-Sleep -Seconds 1 }`,
-	"if (Get-Process -Id $waitPid) { exit 2 }",
+	// A process that has exited can stay in the process list while some other program still holds a handle to it (the parent that started the app, a debugger): it counts as gone once `HasExited` says so.
+	"function Alive { $p = Get-Process -Id $waitPid; return ($null -ne $p -and -not $p.HasExited) }",
+	`for ($i = 0; $i -lt ${WAIT_SECONDS}; $i++) { if (-not (Alive)) { break }; Start-Sleep -Seconds 1 }`,
+	"if (Alive) { exit 2 }",
 	"foreach ($target in @($env:SBD_RM_ROOT, $env:SBD_RM_FALLBACK)) {",
 	"  if ([string]::IsNullOrEmpty($target) -or -not [IO.Path]::IsPathRooted($target)) { continue }",
 	`  for ($n = 0; $n -lt ${RETRIES}; $n++) {`,
