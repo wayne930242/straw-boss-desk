@@ -15,7 +15,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import { after, before, describe, it as nodeIt } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { writeFileAtomic } from "../../src/main/bootstrap/fsutil.ts";
@@ -315,6 +316,7 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 
 	it("deletes the root within 30 s of the app's exit, and no fallback folder is left", async () => {
 		assert.equal(await page.locator("#remove-quit").count(), 1);
+		const appPid = (app as ElectronApplication).process().pid;
 		const closed = (app as ElectronApplication).waitForEvent("close", { timeout: 60_000 });
 		await page.locator("#remove-quit").click();
 		await closed;
@@ -322,9 +324,18 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		try {
 			await until("the data root to be gone", 90_000, () => !existsSync(world.root), 500);
 		} catch (error) {
-			// Which programs run from the Windows PowerShell folder (the detached cleanup is one), by executable path, and what the root holds.
+			// What the root holds, whether the app's pid is still alive, which programs run from the Windows PowerShell folder (the detached cleanup is one) and from the install folder, by executable path,
+			// and what a delete of the Chromium folder says (the file that is locked).
 			const where = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell");
 			const shells = isWin ? (await platform.processes.listUnder(where)).filter((p) => p.pid !== process.pid).map((p) => p.pid) : [];
+			const alive = (() => { try { process.kill(appPid ?? 0, 0); return true; } catch { return false; } })();
+			const fromInstall = (await platform.processes.listUnder(dirname(packaged?.executable ?? ""))).map((p) => p.pid);
+			let locked = "";
+			if (isWin && existsSync(join(world.root, "electron"))) {
+				const r = spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", `Remove-Item -LiteralPath '${join(world.root, "electron").replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable e; ($e | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' || '`], { encoding: "utf8", timeout: 60_000 });
+				locked = (r.stdout || r.stderr || "").trim().slice(0, 600);
+			}
+			error = new Error(`${(error as Error).message}; app pid ${appPid} alive: ${alive}; install-folder pids: [${fromInstall.join(",")}]; delete says: ${locked || "(n/a)"}`, { cause: error });
 			throw new Error(`${(error as Error).message}; powershell pids: [${shells.join(",")}]; root: ${existsSync(world.root) ? readdirSync(world.root).join(",") : "(gone)"}`, { cause: error });
 		}
 		assert.ok(Date.now() - started <= 60_000, `the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
