@@ -1,7 +1,7 @@
 import { app, clipboard, dialog, Menu, net, powerMonitor, powerSaveBlocker, safeStorage, session, shell, utilityProcess } from "electron";
 import electronUpdater from "electron-updater";
 import { spawn, type SpawnOptions } from "node:child_process";
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { arch, homedir, release } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -476,7 +476,8 @@ function runCleanup(): void {
 		const command = cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir }, platform.locate);
 		trace(`spawn ${command.file} args=${command.args.length}`);
 		spawnCleanup(command, ((file: string, args: readonly string[], options: SpawnOptions) => {
-			const child = spawn(file, args, options);
+			const out = process.env.SBD_CLEANUP_TRACE ? openSync(process.env.SBD_CLEANUP_TRACE, "a") : "ignore";
+			const child = spawn(file, args, { ...options, stdio: ["ignore", out, out] });
 			trace(`spawned pid=${child.pid}`);
 			child.on("error", (e) => trace(`child error ${e.message}`));
 			child.on("exit", (code, signal) => trace(`child exit ${code} ${signal}`));
