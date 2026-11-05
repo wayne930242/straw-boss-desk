@@ -73,6 +73,8 @@ export interface CleanupCommand {
 	file: string;
 	args: string[];
 	env: Record<string, string>;
+	/** Windows: `args` is one command line for `cmd.exe /s /c` and goes to it as it is (`windowsVerbatimArguments`). */
+	verbatim?: boolean;
 }
 
 /** The command that deletes the data root after the app has gone. Pure: nothing runs here. */
@@ -86,7 +88,10 @@ export function cleanupCommand(spec: CleanupSpec, locate: Pick<Locate, "system">
 		env.SBD_RM_FALLBACK = spec.fallbackDir ?? "";
 		env.SBD_RM_PID = String(spec.pid);
 		const encoded = Buffer.from(POWERSHELL_SCRIPT, "utf16le").toString("base64");
-		return { file: locate.system("powershell"), args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], env };
+		// PowerShell is started by `cmd /c start /b`, which ends at once: the program's parent is then a process that has gone, and not the app. Started by the app directly it was gone with the app on the
+		// hosted runner, however it was started (detached, or not), and nothing deleted the root. Every part of the command line is made of characters `cmd` leaves alone (the base64 has no `&^%`).
+		const powershell = locate.system("powershell");
+		return { file: locate.system("cmd"), args: ["/d", "/s", "/c", `"start "" /b "${powershell}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}"`], env, verbatim: true };
 	}
 	const env: Record<string, string> = {};
 	for (const key of ["PATH", "LANG", "LC_ALL", "HOME"]) if (baseEnv[key] !== undefined) env[key] = baseEnv[key] as string;
@@ -103,7 +108,7 @@ export type SpawnDetached = (file: string, args: readonly string[], options: Spa
  * hosted runner: the same command with `detached` left out deleted the folder, with it nothing happened). A Windows child does not end with its parent, so the app's exit leaves it running.
  */
 export function spawnCleanup(command: CleanupCommand, spawnFn: SpawnDetached = spawn as unknown as SpawnDetached, platform: NodeJS.Platform = process.platform): void {
-	const child = spawnFn(command.file, command.args, { detached: platform !== "win32", stdio: "ignore", windowsHide: true, env: command.env, cwd: tmpdir() });
+	const child = spawnFn(command.file, command.args, { detached: platform !== "win32", stdio: "ignore", windowsHide: true, env: command.env, cwd: tmpdir(), ...(command.verbatim ? { windowsVerbatimArguments: true } : {}) });
 	// A program that cannot start leaves the marker, and the next launch deletes the root; there is nothing else to do here.
 	child.on("error", () => {});
 	child.unref();

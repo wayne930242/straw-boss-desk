@@ -34,11 +34,14 @@ describe("the cleanup command", () => {
 	it("passes them in the environment on Windows, UTF-16 and unquoted, whatever & ^ % or CJK the root holds, and the encoded script holds none of them", () => {
 		const root = "C:\\Users\\PM\\AppData\\Local\\sbd 測試 & ^ %TEMP% !x!";
 		const c = cleanupCommand({ platform: "win32", pid: 77, root, fallbackDir: null }, win, { SystemRoot: "C:\\Windows" });
-		assert.match(c.file, /powershell\.exe$/i);
+		assert.match(c.file, /cmd\.exe$/i);
+		assert.equal(c.verbatim, true);
+		assert.deepEqual(c.args.slice(0, 3), ["/d", "/s", "/c"]);
+		assert.match(c.args[3] as string, /^"start "" \/b "C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand [A-Za-z0-9+/=]+"$/);
 		assert.equal(c.env.SBD_RM_ROOT, root);
 		assert.equal(c.env.SBD_RM_FALLBACK, "");
 		assert.equal(c.env.SBD_RM_PID, "77");
-		const decoded = Buffer.from(c.args[c.args.length - 1] as string, "base64").toString("utf16le");
+		const decoded = Buffer.from(/-EncodedCommand ([A-Za-z0-9+/=]+)"$/.exec(c.args[3] as string)?.[1] ?? "", "base64").toString("utf16le");
 		assert.equal(decoded, POWERSHELL_SCRIPT);
 		assert.ok(!c.args.join(" ").includes("測試"));
 	});
@@ -67,11 +70,12 @@ describe("the cleanup command", () => {
 
 	it("does not start the Windows program detached: with no console at all Windows PowerShell ends before its first line (seen on the hosted runner)", () => {
 		const calls: Array<Record<string, unknown>> = [];
-		spawnCleanup({ file: "x", args: [], env: {} }, (_file, _args, options) => {
+		spawnCleanup({ file: "x", args: [], env: {}, verbatim: true }, (_file, _args, options) => {
 			calls.push(options as Record<string, unknown>);
 			return { unref: () => undefined, on: () => undefined };
 		}, "win32");
 		assert.equal(calls[0]?.detached, false);
+		assert.equal(calls[0]?.windowsVerbatimArguments, true);
 		assert.equal(calls[0]?.stdio, "ignore");
 		assert.equal(calls[0]?.windowsHide, true);
 	});
@@ -140,8 +144,11 @@ describe("the PowerShell cleanup, run for real", { skip: process.platform === "w
 		mkdirSync(join(root, "electron"), { recursive: true });
 		mkdirSync(fallback, { recursive: true });
 		const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: fallback }, createWinLocate());
-		const r = spawnSync(c.file, c.args, { env: c.env, encoding: "utf8", timeout: 120_000, windowsHide: true });
+		// `cmd /c start` returns at once; the PowerShell it started does the deletion, so the test looks for it.
+		const r = spawnSync(c.file, c.args, { env: c.env, encoding: "utf8", timeout: 120_000, windowsHide: true, windowsVerbatimArguments: c.verbatim === true });
 		assert.equal(r.status, 0, r.stderr);
-		assert.ok(!existsSync(root) && !existsSync(fallback));
+		const deadline = Date.now() + 90_000;
+		while ((existsSync(root) || existsSync(fallback)) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+		assert.ok(!existsSync(root) && !existsSync(fallback), "the root and the fallback folder are gone");
 	});
 });
