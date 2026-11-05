@@ -114,6 +114,10 @@ export function npmGlobalStage(spec: NpmStageSpec): Stage {
 		async install(ctx) {
 			const pin = pinOf(ctx);
 			await assertRegistryIntegrity(ctx, pin, spec.npm);
+			// No npm of an earlier run may still be writing the prefix (R9-F001), and from here on the prefix changes in place: a failure cannot promise the old install is intact, and a
+			// cancel or a time limit leaves the record `running`, which the start gate reads (R13-F009, R9B-F002).
+			await ctx.waitForQuietTools();
+			ctx.markInPlace();
 			await installGlobal(ctx, pin, spec.npm);
 		},
 		async verify(ctx) {

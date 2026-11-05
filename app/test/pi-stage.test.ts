@@ -6,6 +6,7 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { binEntry, binScript, binShim, installedFiles, npmGlobalPin, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
 import { npmFailure, npmFailureKind } from "../src/main/bootstrap/npm.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
+import { readStartGate } from "../src/main/runtime/readiness.ts";
 import type { Stack } from "../src/main/bootstrap/stack.ts";
 import { connectProxy } from "./harness/connect-proxy.ts";
 import { makeStack, scratchRoot, testEngine, testLayout } from "./harness/engine-fixture.ts";
@@ -162,6 +163,44 @@ describe("the pi stage against a local registry", () => {
 // T6-F001: the default root holds the profile folder's name, which can carry `&`, `^`, `!`, or `%`. The stage runs the package's bin script with the
 // private Node (what the `pi.cmd` shim runs), never npm's `pi.cmd` wrapper, whose `SET dp0=%~dp0` breaks under `&` and `^`.
 const HOSTILE_ROOTS = ["a^b!c%d&e 測試", "R&D", "a^b", "100%", "x!y!", "(1) b"];
+describe("R9B-F002 and R13-F009: an install of pi that is cut off keeps the start refused", () => {
+	const published = registry.publish(PI, "1.5.0");
+
+	it("leaves the record `running` and the start gate reading it when npm install -g hits its time limit", async () => {
+		const f = await fixture();
+		registry.mode = { kind: "hang-tarball" };
+		try {
+			const engine = testEngine(f.root, () => [{ ...piStage(isWindows ? "win32" : "darwin", { env: { NPM_CONFIG_REGISTRY: registry.url, NPM_CONFIG_FETCH_RETRIES: "0" }, timeoutMs: 3_500 }), needs: [] as string[] }], { appEnv: f.appEnv, layout: f.layout });
+			await engine.engine.handle({ type: "run", config: { root: f.root, stack: stackFor(published), secretPatterns: (await import("./harness/engine-fixture.ts")).secretPatterns } });
+			const done = engine.events.find((e) => e.type === "done");
+			assert.ok(done?.type === "done", JSON.stringify(engine.events.find((e) => e.type === "error")));
+			assert.equal(done.outcomes.find((o) => o.stage === "pi")?.failure?.category, "registry", "the time limit is a registry failure");
+		} finally {
+			registry.mode = { kind: "ok" };
+		}
+		assert.equal(new StateStore(f.layout).record("pi")?.status, "running", "a cut-off npm may still be writing the prefix");
+		assert.deepEqual(readStartGate(f.layout).interrupted, ["pi"], "a start is refused until a run of the stage finishes");
+	});
+
+	it("records `failed`, not the old `ok`, when a pin change fails after npm began (the prefix has no staging copy)", async () => {
+		const f = await fixture();
+		const old = registry.publish(PI, "1.6.0");
+		assert.equal((await runPi(f, old)).outcome?.status, "installed");
+		const next = { ...registry.publish(PI, "1.7.0"), integrity: `sha512-${Buffer.alloc(64, 9).toString("base64")}` };
+		// The registry integrity check stops this one before npm installs anything: the old record stays.
+		assert.equal((await runPi(f, next)).outcome?.failure?.category, "integrity");
+		assert.equal(new StateStore(f.layout).record("pi")?.status, "ok");
+		registry.mode = { kind: "hang-tarball" };
+		try {
+			const engine = testEngine(f.root, () => [{ ...piStage(isWindows ? "win32" : "darwin", { env: { NPM_CONFIG_REGISTRY: registry.url, NPM_CONFIG_FETCH_RETRIES: "0" }, timeoutMs: 3_500 }), needs: [] as string[] }], { appEnv: f.appEnv, layout: f.layout });
+			await engine.engine.handle({ type: "run", config: { root: f.root, stack: stackFor(registry.publish(PI, "1.7.1")), secretPatterns: (await import("./harness/engine-fixture.ts")).secretPatterns } });
+		} finally {
+			registry.mode = { kind: "ok" };
+		}
+		assert.notEqual(new StateStore(f.layout).record("pi")?.status, "ok", "the old install may be gone or altered");
+	});
+});
+
 describe("the pi stage under a root with cmd's special characters (T6-F001), Windows only", { skip: isWindows ? false : "Windows only: cmd.exe's parsing of the wrapper npm writes" }, () => {
 	const hostile = registry.publish(PI, "1.5.0");
 	for (const name of HOSTILE_ROOTS) {

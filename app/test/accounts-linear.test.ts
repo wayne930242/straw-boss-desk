@@ -272,6 +272,17 @@ describe("the key for the Herdr server", () => {
 		assert.deepEqual(filesUnder(join(r.layout.root, "secrets")).filter((f) => f.endsWith(".tmp")), [], "no temporary file is left");
 	});
 
+	it("PIN review: a sign-out during the availability question reads as no key, not as an error", async () => {
+		const r = rig();
+		await r.linear.save(KEY);
+		r.box.available = async () => {
+			rmSync(linearFile(r.layout));
+			return true;
+		};
+		assert.equal(await r.linear.read(), undefined, "no key, no throw");
+		assert.equal(r.linear.state, "not-saved", "the row does not ask for the key again");
+	});
+
 	it("is not read when encryption has become unavailable", async () => {
 		const r = rig();
 		await r.linear.save(KEY);

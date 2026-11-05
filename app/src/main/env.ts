@@ -29,10 +29,10 @@ export const PASS_THROUGH = [
 /**
  * Variables a child never inherits. The allow-list already excludes them; this list is the second gate, checked on the finished map, so a later
  * addition to an allow-list cannot let one through. The launchers' unset list (spike/win/lib/forge-cli.mjs `UNSET`) plus the variables that make a
- * pi a subagent, join a Herdr, or move Claude Code's Keychain item (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, spec: Secrets).
+ * pi a subagent or mark a process as a pi worker's (pi-straw-boss ends what carries its owner id, so an inherited one would make the desk's own Herdr and sb server reapable by another sb server; PIN-F004), join a Herdr, or move Claude Code's Keychain item (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, spec: Secrets).
  */
 export const NEVER_CARRY = [
-	"PI_SUBAGENT_ID", "PI_INTERCOM_SESSION_ID", "STRAW_BOSS_ROLE", "SSH_AUTH_SOCK", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+	"PI_SUBAGENT_ID", "PI_INTERCOM_SESSION_ID", "PI_INTERCOM_STABLE_ID", "STRAW_BOSS_ROLE", "STRAW_BOSS_OWNER", "SSH_AUTH_SOCK", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
 	"HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_SESSION",
 	"CI", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN",
 	"OAUTH_TOKEN", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN", "GH_HOST", "GITLAB_HOST", "GITLAB_URI", "GITLAB_API_HOST", "GL_HOST",

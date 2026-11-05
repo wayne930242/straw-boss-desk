@@ -5,7 +5,7 @@
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";

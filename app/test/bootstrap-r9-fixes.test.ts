@@ -128,6 +128,56 @@ describe("R9-F002: a cancel after a package stage changed its prefix in place ke
 	});
 });
 
+describe("R9B-F002: a program the time limit ended after the stage changed its prefix keeps the start blocked", () => {
+	/** A package stage that touches the prefix, runs one program (the runner answers `results` in turn), and fails as a registry failure when the last one did not exit 0. */
+	function runsProgram(results: Array<{ timedOut: boolean }>, name = "pkg:repro"): { stage: Stage; run: NonNullable<Parameters<typeof testEngine>[2]>["run"] } {
+		let n = 0;
+		return {
+			run: async () => ({ code: results[Math.min(n++, results.length - 1)]?.timedOut ? null : 0, stdout: "", stderr: "", ...(results[Math.min(n - 1, results.length - 1)]?.timedOut ? { timedOut: true } : {}) }),
+			stage: {
+				name,
+				needs: [],
+				lane: "npm",
+				plannedVersion: () => "1.0.0",
+				detect: async () => null,
+				async install(ctx: StageContext) {
+					ctx.markInPlace();
+					for (let i = 0; i < results.length; i++) {
+						const r = await ctx.exec("/bin/pi", ["install"], { timeoutMs: 1 });
+						if (r.timedOut === true) throw new StageError("registry", { what: "x@1" }, "pi install did not finish in time");
+					}
+				},
+				verify: async () => ({ text: "x", version: "1.0.0", files: [] }),
+				activate: async () => undefined,
+			},
+		};
+	}
+	const recordAfter = async (stage: Stage, run: NonNullable<Parameters<typeof testEngine>[2]>["run"]) => {
+		const made = scratchRoot("sbd-r9b-cut-");
+		scratch.push(made.base);
+		const t = testEngine(made.root, () => [stage], { run });
+		const result = await t.run(makeStack({}));
+		const layout = testLayout(made.root);
+		const record = (JSON.parse(readFileSync(join(layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> }).stages[stage.name];
+		return { result, record, gate: readStartGate(layout) };
+	};
+
+	it("leaves the record `running` when the last program was cut off by its time limit", async () => {
+		const { stage, run } = runsProgram([{ timedOut: true }]);
+		const out = await recordAfter(stage, run);
+		assert.equal(out.result.ok, false);
+		assert.equal(out.record?.status, "running");
+		assert.deepEqual(out.gate.interrupted, ["pkg:repro"]);
+	});
+
+	it("is a plain failure when the stage never touched the prefix", async () => {
+		const { stage, run } = runsProgram([{ timedOut: true }]);
+		const out = await recordAfter({ ...stage, install: async (ctx: StageContext) => { await ctx.exec("/bin/pi", [], { timeoutMs: 1 }); throw new StageError("registry", { what: "x@1" }, "late"); } }, run);
+		assert.equal(out.record?.status, "failed");
+		assert.deepEqual(out.gate.interrupted, []);
+	});
+});
+
 describe("R9-F004 b: a cancel that arrives while the engine lock is being taken is not lost", () => {
 	it("ends the run without installing anything", async () => {
 		const made = scratchRoot("sbd-r9-lock-");

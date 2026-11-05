@@ -14,7 +14,8 @@ export interface PublishedPackage {
 	tarball: Buffer;
 }
 
-export type RegistryMode = { kind: "ok" } | { kind: "status"; code: number };
+/** `hang-tarball`: the packument answers, the tarball never does (an install that a time limit must cut off). */
+export type RegistryMode = { kind: "ok" } | { kind: "status"; code: number } | { kind: "hang-tarball" };
 
 export class NpmRegistryFixture {
 	readonly #server: Server;
@@ -34,6 +35,7 @@ export class NpmRegistryFixture {
 				return;
 			}
 			const tarball = /^\/tarballs\/(.+)$/.exec(url);
+			if (tarball !== null && this.mode.kind === "hang-tarball") return;
 			if (tarball !== null) {
 				const file = tarball[1] as string;
 				for (const list of this.#packages.values()) {

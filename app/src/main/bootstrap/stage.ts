@@ -365,7 +365,13 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 
-function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[], inPlace: { touched: boolean }): StageContext {
+/** What a stage did to a place with no staging copy: it changed it (`touched`), and the last program it ran after that was cut off by its time limit (`cutOff`, R9B-F002). */
+interface InPlaceMark {
+	touched: boolean;
+	cutOff: boolean;
+}
+
+function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[], inPlace: InPlaceMark): StageContext {
 	const log = deps.logFor(stage.name);
 	const quiet = deps.quiet ?? new ToolsQuiet();
 	/** The scrubbed environment of the programs that unpack a download (`tar`, a self-extractor): the system essentials and nothing of the app's own (T5-F005). */
@@ -411,6 +417,8 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 			const result = await deps.run(file, args, { ...options, env: options?.env ?? systemEnv(deps.layout.platform, deps.appEnv), replaceEnv: true });
 			// A child ended by the time limit or the abort was ended alone: whatever it had started may still run (R9-F001), so the next package stage lists again.
 			if (result.timedOut === true || deps.signal.aborted) quiet.markDirty();
+			// A program the time limit ended was ended alone, and what it had started may still write the place the stage changed in place (R9B-F002): the record must say so.
+			if (inPlace.touched) inPlace.cutOff = result.timedOut === true;
 			log.raw(`$ ${file} ${args.join(" ")}\n${result.stdout}${result.stdout.endsWith("\n") || result.stdout === "" ? "" : "\n"}${result.stderr}\n`);
 			log.flush();
 			log.event({ event: "exec-result", file, code: result.code, timedOut: result.timedOut === true, ms: Date.now() - started });
@@ -495,7 +503,7 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 	const record = deps.state.record(stage.name);
 	const staging = new Set<string>();
 	const fsErrors: string[] = [];
-	const inPlace = { touched: false };
+	const inPlace: InPlaceMark = { touched: false, cutOff: false };
 	const ctx = makeContext(stage, deps, record, staging, fsErrors, inPlace);
 	const log = ctx.log;
 	const done = (outcome: Omit<StageOutcome, "stage" | "ms" | "fsErrors">): StageOutcome => {
@@ -596,8 +604,9 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			// A package left loadable by this failure, or by an earlier one that no run has cleared yet, keeps the start blocked.
 			const startBlock = error.startBlock ?? record?.startBlock;
 			// A cancel (a quit, a Repair that is stopped) after the stage changed a place with no staging copy leaves an install nobody finished, which is what `running` says to the
-			// start gate (R7-F001): `failed` would let a start go on over a half-installed package (R9-F002). The next run of the stage rewrites the record.
-			const interrupted = deps.signal.aborted && inPlace.touched;
+			// start gate (R7-F001): `failed` would let a start go on over a half-installed package (R9-F002). The same holds when the last program the stage ran was cut off by its time
+			// limit: the program it started (npm under pi) may still be writing (R9B-F002). The next run of the stage rewrites the record.
+			const interrupted = inPlace.touched && (deps.signal.aborted || inPlace.cutOff);
 			await deps.state.setRecord(
 				stage.name,
 				interrupted

@@ -137,7 +137,14 @@ export class LinearKeyFile {
 	async read(): Promise<string | null> {
 		if (!this.exists) return null;
 		if (!(await this.#box.available())) throw new Error("the OS cannot decrypt the key: encryption is not available");
-		const blob = readFileSync(linearFile(this.#layout));
+		// A sign-out can land during the availability question: the file is then gone, and there is no key to read (a read that threw here made the row ask for the key again).
+		let blob: Buffer;
+		try {
+			blob = readFileSync(linearFile(this.#layout));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw error;
+		}
 		const { result: key, shouldReEncrypt } = await this.#box.decrypt(blob);
 		// Written back under the current key (R11-F006), only while the file still holds the blob that was decrypted: a save or a sign-out that landed meanwhile is not undone (R11B-F002; the check and the rename share one synchronous step). A write that fails leaves the old blob, which still reads until the old key is dropped: the key itself was read, so this read does not fail.
 		if (shouldReEncrypt && key !== "") {
