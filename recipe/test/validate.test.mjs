@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { KNOWN_FIELDS, MAX_RECIPE_BYTES, validateRecipe as validateWith } from "../validate.mjs";
+import { HOME_BASE_FOLDER, KNOWN_FIELDS, MAX_RECIPE_BYTES, validateRecipe as validateWith } from "../validate.mjs";
 
 /** Most tests reserve no package; the reserved-package tests pass their own options. */
 const validateRecipe = (input, options = { reservedPackages: [] }) => validateWith(input, options);
@@ -267,6 +267,17 @@ describe("fields", () => {
     for (const folder of ["COM0", "console", "官網", "my docs", "a.b", "文件 說明"]) assert.ok(validateRecipe(withField(repo(folder))).ok, folder);
     bad({ repos: [{ url: "https://github.com/a/b.git", folder: "x".repeat(65) }] }, "repos[0].folder", "too-long");
     bad({ repos: [{ url: "https://github.com/a/b.git", folder: "x" }, { url: "https://github.com/a/c.git", folder: "X" }] }, "repos[1].folder", "duplicate");
+  });
+
+  it("refuses the home base's folder name for a repository, whatever its case or Unicode form (task 12)", () => {
+    const repo = (folder) => ({ repos: [{ url: "https://github.com/a/b.git", folder }] });
+    assert.equal(HOME_BASE_FOLDER, "Straw Boss");
+    for (const folder of ["Straw Boss", "straw boss", "STRAW BOSS", "sTRaW bOSS"]) bad(repo(folder), "repos[0].folder", "reserved-folder");
+    // A name that only looks like it is another folder and passes: the rule is the exact name, case folded.
+    for (const folder of ["Straw  Boss", "StrawBoss", "Straw Boss 2", "Straw-Boss", "straw boss docs"]) assert.ok(validateWith(withField(repo(folder)), { reservedPackages: [] }).ok, folder);
+    // The message names the field and the rule, not the value.
+    const result = validateWith(withField(repo("Straw Boss")), { reservedPackages: [] });
+    assert.ok(!JSON.stringify(result.errors).includes("Straw Boss"), "the refusal does not repeat the folder name");
   });
 
   it("checks default branch names", () => {

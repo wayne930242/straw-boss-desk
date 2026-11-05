@@ -85,8 +85,8 @@ export interface TestCa {
 	ca: X509Certificate;
 }
 
-/** A new CA and server certificate, valid from an hour ago for two days (macOS refuses a server certificate valid for more than 825 days). */
-export function createTestCa(label = "test"): TestCa {
+/** A new CA and server certificate (for `127.0.0.1`, `localhost` and any further DNS `names`), valid from an hour ago for two days (macOS refuses a server certificate valid for more than 825 days). */
+export function createTestCa(label = "test", names: readonly string[] = []): TestCa {
 	const commonName = `Straw Boss Desk ${label} CA ${randomBytes(4).toString("hex")}`;
 	const caKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
 	const ca = issue({
@@ -102,7 +102,7 @@ export function createTestCa(label = "test"): TestCa {
 		],
 	});
 	const serverKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
-	const san = seq(tlv(0x82, Buffer.from("localhost", "ascii")), tlv(0x87, Buffer.from([127, 0, 0, 1])));
+	const san = seq(tlv(0x82, Buffer.from("localhost", "ascii")), ...names.map((n) => tlv(0x82, Buffer.from(n, "ascii"))), tlv(0x87, Buffer.from([127, 0, 0, 1])));
 	const server = issue({
 		subject: "127.0.0.1",
 		issuer: commonName,

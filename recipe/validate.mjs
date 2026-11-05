@@ -10,6 +10,8 @@ import secretPatterns from "./secret-patterns.json" with { type: "json" };
 export const RECIPE_VERSION = 1;
 export const MAX_RECIPE_BYTES = 256 * 1024;
 export const PROFILE_PACKAGE = "straw-boss-desk-profile";
+/** The folder of the home base inside the work folder (the app's `HOME_BASE_LABEL`, which a test keeps equal): a repository may not be cloned into it. */
+export const HOME_BASE_FOLDER = "Straw Boss";
 
 const MAX_DEPTH = 8;
 const SECRETS = secretPatterns.patterns.map((p) => ({ id: p.id, regex: new RegExp(p.regex, p.flags ?? "") }));
@@ -220,10 +222,11 @@ function checkPattern(value, regex, at, errors, what) {
 }
 
 // Lexical only: a name that resolves to a private address (127.0.0.1.nip.io) passes. The fetcher
-// must check the address it connects to and every redirect (spec section 5, Delivery).
+// must check the address it connects to and every redirect (spec section 5, Delivery); it asks this
+// function for the name as well, so the recipe and the fetch share one list.
 const LOCAL_SUFFIXES = [".localhost", ".localdomain", ".local", ".lan", ".home.arpa", ".internal"];
 
-function privateOrLocalHost(hostname) {
+export function privateOrLocalHost(hostname) {
   if (hostname.startsWith("[")) return true; // an IPv6 literal is never a public recipe host
   if (hostname.endsWith(".")) return true; // `localhost.` and `intranet.` are the same hosts with a root dot
   if (!hostname.includes(".")) return true; // localhost, intranet, and every other single-label name
@@ -348,6 +351,7 @@ function validateRepos(value, forgeHosts, errors) {
       else if (FORBIDDEN_FOLDER_CHARS.test(folder) || folder === "." || folder === "..") errors.add(f, "bad-format", "must be a single folder name without separators or reserved characters");
       else if (/^\s|[\s.]$/.test(folder)) errors.add(f, "bad-format", "must not start with a space or end with a space or dot");
       else if (RESERVED_WINDOWS.test(folder)) errors.add(f, "reserved-name", "is a reserved Windows name");
+      else if (folder.normalize("NFC").toLowerCase() === HOME_BASE_FOLDER.toLowerCase()) errors.add(f, "reserved-folder", "is the folder of the home base, which a repository cannot use");
       else if (folders.has(folder.toLowerCase())) errors.add(f, "duplicate", "is used by another repository");
       else folders.add(folder.toLowerCase());
     }
