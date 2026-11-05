@@ -33,6 +33,7 @@ import { spawnLogin } from "./accounts/cli.ts";
 import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
 import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
+import { QuitGate } from "./quit-gate.ts";
 import { stopSequence } from "./stop-sequence.ts";
 import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
@@ -532,9 +533,6 @@ function buildMenu(): void {
 }
 
 // The quit holds until the stop sequence is done, then leaves with `app.exit`, so a quit never abandons the stack half stopped.
-let stopping = false;
-let stopped = false;
-
 /** The stop sequence of a quit and of an update's stop (`stop-sequence.ts`). */
 function stopAll(): Promise<boolean> {
 	// The checks of the Team recipe card and the repositories in flight end with the app's other background work.
@@ -548,31 +546,28 @@ function stopAll(): Promise<boolean> {
 	return stopSequence({ supervisor, updates: background, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) });
 }
 
-function stopThenExit(code: (ok: boolean) => number): void {
-	if (stopping) return;
-	stopping = true;
-	void stopAll().then((ok) => {
-		stopped = true;
-		app.exit(code(ok));
-	});
-}
+const quitGate = new QuitGate({
+	stopAll: () => stopAll(),
+	exit: (code) => app.exit(code),
+	resume: () => resumeStack(),
+	log: (fields) => runtimeLog.event(fields),
+});
+const stopThenExit = (code: (ok: boolean) => number): void => quitGate.quit(code);
 
 /**
  * Restart to update (spec: Updater): the stop sequence runs, then electron-updater starts the installer and quits the app. The quit it makes is not held again, since the stack is stopped
  * already; the installer replaces the program files only, never the data root.
  */
-async function stopForUpdate(): Promise<void> {
-	if (stopping) return;
-	stopping = true;
-	const ok = await stopAll();
-	stopped = true;
-	runtimeLog.event({ event: "update-stop", ok });
-}
+const stopForUpdate = (): Promise<void> => quitGate.stopForUpdate();
 
-/** The installer could not start (spec: Updater): the app goes on as it was before the click. The stack starts again, the engine and the supervisor take work, and the checks run again. */
-async function resumeAfterFailedUpdate(): Promise<void> {
-	stopping = false;
-	stopped = false;
+/** The installer could not start (spec: Updater): the app goes on as it was before the click, or leaves if the PM asked to quit meanwhile. */
+const resumeAfterFailedUpdate = (): Promise<boolean> => quitGate.resumeAfterFailedUpdate();
+
+/**
+ * The app goes on as it was: the stack starts again, the engine and the supervisor take work, and the checks run again. An apply that the stop cut short is finished first, so the stack does not
+ * start on half-updated tools and the card does not stay on "applying" (R13B-F002). Resolves with whether the agents started.
+ */
+async function resumeStack(): Promise<boolean> {
 	supervisor.cancelQuit();
 	engineHost.resume();
 	accounts.resume();
@@ -582,8 +577,12 @@ async function resumeAfterFailedUpdate(): Promise<void> {
 	projects.resume();
 	recipeCard.start();
 	runtimeLog.event({ event: "update-resume" });
+	await stackUpdater.healInterrupted().catch((error: Error) => runtimeLog.event({ event: "update-resume-heal-failed", detail: error.message.slice(0, 200) }));
 	// A start that fails shows on the runtime page through the supervisor's `failure` event.
-	await supervisor.start().catch(() => undefined);
+	return supervisor
+		.start()
+		.then(() => true)
+		.catch(() => false);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -606,9 +605,7 @@ if (!app.requestSingleInstanceLock()) {
 		window.focus();
 	});
 	app.on("before-quit", (event) => {
-		if (stopped) return;
-		event.preventDefault();
-		stopThenExit(() => 0);
+		if (!quitGate.beforeQuit()) event.preventDefault();
 	});
 	// macOS keeps the app and the stack running when the window closes; Windows quits and stops (design: Window close).
 	app.on("window-all-closed", () => {

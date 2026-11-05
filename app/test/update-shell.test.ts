@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -59,6 +59,8 @@ interface Rig {
 	driverMade: { n: number };
 	fetched: string[];
 	logs: Array<Record<string, unknown>>;
+	/** Runs inside the stop sequence, after `prepareQuit` is called; and what the resume reports (true: the agents run again). */
+	stop: { during?: () => void; resumed: boolean };
 }
 
 function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDeps["feed"]; keys?: string[]; check?: () => Promise<FoundUpdate | null>; fail?: (what: string) => Error | null } = {}): Rig {
@@ -77,7 +79,8 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 	const found: Rig["found"] = { value: { version: "0.0.2", files: [{ url: platform === "win32" ? INSTALLER_NAME : DMG_NAME }] } };
 	const payload = { bytes: platform === "win32" ? INSTALLER : DMG };
 	const driverMade = { n: 0 };
-	const rig = { dir, sigs, manifests, install, calls, revealed, states, found, payload, driverMade, fetched, logs } as unknown as Rig;
+	const stop: Rig["stop"] = { resumed: true };
+	const rig = { dir, sigs, manifests, install, calls, revealed, states, found, payload, driverMade, fetched, logs, stop } as unknown as Rig;
 	const driver: UpdaterDriver = {
 		check: options.check ?? (async () => found.value),
 		async download(onProgress) {
@@ -118,8 +121,14 @@ function makeRig(options: { platform?: "win32" | "darwin"; feed?: ShellUpdaterDe
 		},
 		downloadDir: () => downloads,
 		reveal: (file) => void revealed.push(file),
-		prepareQuit: async () => void calls.push("prepareQuit"),
-		resumeAfterFailedInstall: async () => void calls.push("resume"),
+		prepareQuit: async () => {
+			calls.push("prepareQuit");
+			stop.during?.();
+		},
+		resumeAfterFailedInstall: async () => {
+			calls.push("resume");
+			return stop.resumed;
+		},
 		log: (fields) => void logs.push(fields as Record<string, unknown>),
 		now: () => new Date("2026-11-04T10:00:00Z"),
 	});
@@ -230,6 +239,43 @@ describe("the Windows installer", () => {
 		assert.deepEqual(rig.calls, []);
 		assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason: "hash-mismatch" });
 		assert.equal(existsSync(join(rig.dir, "pending", INSTALLER_NAME)), false);
+	});
+
+	it("checks the file once more after the stop sequence, right before the installer starts: one swapped during the stop is refused, deleted, and the stack comes back (R13B-F003)", async () => {
+		const rig = makeRig();
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		rig.stop.during = () => writeFileSync(join(rig.dir, "pending", INSTALLER_NAME), "a different installer");
+		rig.calls.length = 0;
+		await rig.shell.restart();
+		assert.deepEqual(rig.calls, ["prepareQuit", "resume"], "the stop ran, the installer never started, the stack was brought back");
+		assert.deepEqual(rig.shell.state, { phase: "refused", version: "0.0.2", reason: "hash-mismatch" });
+		assert.equal(existsSync(join(rig.dir, "pending", INSTALLER_NAME)), false);
+	});
+
+	it("brings the stack back and reports a file that vanished during the stop as a start that failed (R13B-F003)", async () => {
+		const rig = makeRig();
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		rig.stop.during = () => rmSync(join(rig.dir, "pending", INSTALLER_NAME), { force: true });
+		rig.calls.length = 0;
+		await rig.shell.restart();
+		assert.deepEqual(rig.calls, ["prepareQuit", "resume"]);
+		assert.equal(rig.shell.state.phase, "ready");
+		assert.ok((rig.shell.state as { installFailed?: string }).installFailed);
+	});
+
+	it("says the agents did not start when the restart after a failed installer failed (R13B-F005)", async () => {
+		const rig = makeRig();
+		serve(rig, INSTALLER_NAME, INSTALLER);
+		await rig.shell.check();
+		rig.install.result = { ok: false, detail: "EACCES" };
+		rig.stop.resumed = false;
+		await rig.shell.restart();
+		assert.deepEqual(rig.shell.state, { phase: "ready", version: "0.0.2", installFailed: "EACCES", agentsStopped: true });
+		rig.stop.resumed = true;
+		await rig.shell.restart();
+		assert.deepEqual(rig.shell.state, { phase: "ready", version: "0.0.2", installFailed: "EACCES" });
 	});
 
 	it("when the installer cannot start, starts the stack again and keeps the offer, with the reason (R13-F004)", async () => {

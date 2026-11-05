@@ -118,8 +118,8 @@ export interface ShellUpdaterDeps {
 	reveal(file: string): void;
 	/** Windows: the stop sequence that runs before the installer takes over. Resolves when the stack is stopped; whether it stopped everything is logged by the caller. */
 	prepareQuit(): Promise<void>;
-	/** Windows: the installer could not start, so the app goes on: undoes `prepareQuit` (the stack starts again, the timers and the engine are back). */
-	resumeAfterFailedInstall(): Promise<void>;
+	/** Windows: the installer could not start, so the app goes on: undoes `prepareQuit` (the stack starts again, the timers and the engine are back). Resolves with whether the agents are running again. */
+	resumeAfterFailedInstall(): Promise<boolean>;
 	log: RuntimeEvent;
 	now?: () => Date;
 }
@@ -313,12 +313,13 @@ export class ShellUpdater {
 				this.#refuse(state.version, again.reason, file);
 				return;
 			}
-			const failure = await this.#install(state.version);
+			const failure = await this.#install(state.version, file, proof);
 			if (failure === null) return;
-			// The stack is stopped and the installer did not take over: the app goes on as it was, and the file is still offered.
-			this.#d.log({ event: "shell-update-install-failed", version: state.version, detail: failure });
-			await this.#d.resumeAfterFailedInstall();
-			this.#set({ phase: "ready", version: state.version, installFailed: failure });
+			// The stack is stopped and the installer did not take over: the app goes on as it was, and the file is still offered, unless the last look at it refused it.
+			if (typeof failure !== "string") this.#refuse(state.version, failure.refused, file);
+			else this.#d.log({ event: "shell-update-install-failed", version: state.version, detail: failure });
+			const running = await this.#d.resumeAfterFailedInstall();
+			if (typeof failure === "string") this.#set({ phase: "ready", version: state.version, installFailed: failure, ...(running ? {} : { agentsStopped: true as const }) });
 		} catch (error) {
 			this.#fail(error, "install");
 		} finally {
@@ -326,9 +327,18 @@ export class ShellUpdater {
 		}
 	}
 
-	/** Stops the stack and starts the installer. Null when the installer started (the app is quitting), else why it did not. Throws only when the stack could not even be prepared. */
-	async #install(version: string): Promise<string | null> {
+	/**
+	 * Stops the stack and starts the installer. Null when the installer started (the app is quitting), else why it did not: the first line of the reason, or `{ refused }` when the file no longer
+	 * matches its proof. The file is checked once more after the stop, which takes seconds, and right before `quitAndInstall` is called (R13B-F003). Throws only when the stack could not even be prepared.
+	 */
+	async #install(version: string, file: string, proof: Proof): Promise<string | { refused: ShellRefusal } | null> {
 		await this.#d.prepareQuit();
+		try {
+			const last = this.#check(file, proof);
+			if (!last.ok) return { refused: last.reason };
+		} catch (error) {
+			return firstLineOf((error as Error).message);
+		}
 		this.#d.log({ event: "shell-update-install", version });
 		try {
 			const started = await this.#driverNow().quitAndInstall();

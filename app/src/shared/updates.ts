@@ -69,8 +69,8 @@ export type ShellUpdateState =
 	/** macOS: a newer version exists; **Download the new version** fetches it. */
 	| { phase: "available"; version: string }
 	| { phase: "downloading"; version: string; percent: number | null }
-	/** Windows: the installer is downloaded and the signature checked; **Restart to update** is offered. `installFailed` is the raw reason when the last try could not start the installer (the stack was started again). */
-	| { phase: "ready"; version: string; installFailed?: string }
+	/** Windows: the installer is downloaded and the signature checked; **Restart to update** is offered. `installFailed` is the raw reason when the last try could not start the installer (the stack was started again); `agentsStopped` is set when it was not (R13B-F005). */
+	| { phase: "ready"; version: string; installFailed?: string; agentsStopped?: true }
 	/** macOS: the dmg is downloaded, checked and shown in its folder. `folder` is the folder's name for the sentence. */
 	| { phase: "downloaded"; version: string; file: string }
 	| { phase: "refused"; version: string; reason: ShellRefusal }

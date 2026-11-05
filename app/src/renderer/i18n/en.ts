@@ -518,6 +518,7 @@ export const en = {
 				downloadingPercent: "Downloading version {version}: {percent} %",
 				ready: "Version {version} is ready. Straw Boss stops your agents and restarts to finish the update.",
 				installFailed: "The installer for version {version} could not start, so nothing changed: your agents are running again. You can try again.",
+				installFailedStopped: "The installer for version {version} could not start, so the app was not updated. Your agents could not be started again; the main window says why. You can try again.",
 				downloaded: "Version {version} is downloaded and checked. Open the file to install it.",
 				refused: {
 					"bad-signature": "Version {version} did not match its signature, so it was deleted and will not be offered.",

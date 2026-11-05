@@ -60,7 +60,8 @@ function appSentence(tr: Tr, state: ShellUpdateState): string {
 		case "downloading":
 			return state.percent === null ? tr("settings.updates.app.downloading", { version: state.version }) : tr("settings.updates.app.downloadingPercent", { version: state.version, percent: state.percent });
 		case "ready":
-			return state.installFailed === undefined ? tr("settings.updates.app.ready", { version: state.version }) : tr("settings.updates.app.installFailed", { version: state.version });
+			if (state.installFailed === undefined) return tr("settings.updates.app.ready", { version: state.version });
+			return tr(state.agentsStopped === true ? "settings.updates.app.installFailedStopped" : "settings.updates.app.installFailed", { version: state.version });
 		case "downloaded":
 			return tr("settings.updates.app.downloaded", { version: state.version });
 		case "refused":

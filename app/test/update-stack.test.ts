@@ -453,6 +453,31 @@ describe("StackUpdater.apply: the stack stops, the engine runs against the candi
 	});
 });
 
+describe("an apply cut short by a stop that was then undone (R13B-F002)", () => {
+	it("finishes the interrupted apply before the stack starts again: the engine runs against the stack in force, and the card leaves 'applying'", async () => {
+		const rig = makeRig();
+		serveSigned(rig, next(6));
+		rig.script.set(6, { ok: false, interrupted: true });
+		await rig.updater.check();
+		await rig.updater.apply();
+		assert.equal(rig.updater.state.phase, "applying", "the cut-short apply leaves the card here");
+		assert.equal(rig.record().inFlight.generation, 6);
+		rig.events.length = 0;
+		await rig.updater.healInterrupted();
+		assert.deepEqual(rig.events, ["stop", "engine 5", "start"]);
+		assert.equal(rig.record().inFlight, undefined);
+		assert.equal(rig.updater.state.phase, "rolled-back");
+		assert.equal(readFileSync(rig.files.active, "utf8"), realText);
+	});
+
+	it("does nothing when no apply was cut short", async () => {
+		const rig = makeRig();
+		await rig.updater.healInterrupted();
+		assert.deepEqual(rig.events, []);
+		assert.equal(rig.updater.state.phase, "idle");
+	});
+});
+
 describe("StackUpdater at launch: Precedence and an update that was cut short", () => {
 	const bundledFile = (rig: Rig, value: unknown): string => {
 		const file = join(rig.root, "bundled-stack.json");
