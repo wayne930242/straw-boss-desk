@@ -39,7 +39,6 @@ import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
 import { loadActiveStack } from "./wizard/stack-source.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
-import type { EngineConfig } from "./bootstrap/engine.ts";
 import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
 import { FetchRefused, fetchPublicText } from "./net/safe-fetch.ts";
 import { callEnv, ProjectGit, type GitExec } from "./projects/git.ts";
@@ -50,6 +49,7 @@ import { ProjectRecordStore } from "./projects/record.ts";
 import { ProjectsRunner } from "./projects/runner.ts";
 import { RecipeService } from "./recipe/service.ts";
 import { RecipeMemoStore } from "./recipe/store.ts";
+import { runUpdateEngine } from "./update/engine-run.ts";
 import { StackUpdater, type EngineRunResult, type FetchedBytes } from "./update/stack.ts";
 import { UpdatesService } from "./update/service.ts";
 import { feedUrlProblem, updateConfig } from "./update/verify.ts";
@@ -339,33 +339,19 @@ function engineRecipe(): unknown {
 }
 
 /** One engine run for an update (the candidate's, or the old stack's after a failure), in the same utilityProcess the wizard's runs use. */
-async function runEngineForUpdate(stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult> {
-	const recipe = engineRecipe();
-	const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
-	const config: EngineConfig = { root: layout.root, home, platform: layout.platform, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}), ...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}) };
-	let current: string | null = null;
-	const failures: Array<{ stage: string; category: string }> = [];
-	const end = await engineHost.run(config, (event) => {
-		if (event.type === "stage-start") {
-			current = event.stage;
-			onStage({ type: "start", stage: event.stage });
-		} else if (event.type === "stage") {
-			onStage({ type: "end", stage: event.outcome.stage });
-			if (event.outcome.status === "failed") failures.push({ stage: event.outcome.stage, category: event.outcome.failure?.category ?? "other" });
-		}
-	});
-	switch (end.kind) {
-		case "done":
-			return end.ok ? { ok: true } : { ok: false, failed: failures[0] ?? { stage: "engine", category: "other" } };
-		case "error":
-			runtimeLog.event({ event: "update-engine-error", name: end.name, detail: end.message.slice(0, 300) });
-			return { ok: false, failed: { stage: "engine", category: "other" } };
-		case "crashed":
-			return { ok: false, failed: { stage: current ?? "engine", category: "other" } };
-		case "disposed":
-			return { ok: false, interrupted: true };
-	}
-}
+const runEngineForUpdate = (stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult> =>
+	runUpdateEngine(
+		{
+			host: engineHost,
+			config: async () => {
+				const recipe = engineRecipe();
+				const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
+				return { root: layout.root, home, platform: layout.platform, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}), ...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}) };
+			},
+			log: (fields) => runtimeLog.event(fields),
+		},
+		onStage,
+	);
 
 const stackUpdater = new StackUpdater({
 	layout,

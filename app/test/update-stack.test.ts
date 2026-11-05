@@ -7,6 +7,9 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { parseStack, platformKey, type Stack } from "../src/main/bootstrap/stack.ts";
 import { checkCandidate, changeList, MAX_STACK_BYTES, StackUpdater, stackFiles, type EngineRunResult, type StackUpdaterDeps } from "../src/main/update/stack.ts";
 import type { StackUpdateState } from "../src/shared/updates.ts";
+import type { EngineEvent, EngineRequest } from "../src/main/bootstrap/engine.ts";
+import { runUpdateEngine } from "../src/main/update/engine-run.ts";
+import { UtilityEngineHost, type UtilityChild } from "../src/main/wizard/engine-host.ts";
 import { loadActiveStack } from "../src/main/wizard/stack-source.ts";
 import { compareVersions } from "../src/main/update/verify.ts";
 import { ALT_NODE_VERSION, altStack } from "./harness/alt-pins.ts";
@@ -194,7 +197,7 @@ interface Rig {
 	record(): Record<string, any>;
 }
 
-function makeRig(options: { onRun?: () => void; onReload?: () => void; onRecipeTools?: (stack: Stack) => void; recipeTools?: string[]; keys?: string[]; base?: string | null; withStackStopped?: StackUpdaterDeps["withStackStopped"]; activeBytes?: Buffer | null } = {}): Rig {
+function makeRig(options: { onRun?: () => void; onReload?: () => void; onRecipeTools?: (stack: Stack) => void; recipeTools?: string[]; keys?: string[]; base?: string | null; withStackStopped?: StackUpdaterDeps["withStackStopped"]; activeBytes?: Buffer | null; runEngine?: StackUpdaterDeps["runEngine"] } = {}): Rig {
 	const { base, root } = scratchRoot("sbd-upd-");
 	scratch.push(base);
 	const layout = testLayout(root);
@@ -226,15 +229,17 @@ function makeRig(options: { onRun?: () => void; onReload?: () => void; onRecipeT
 			if (hit === undefined) throw new Error(`no route ${url}`);
 			return hit;
 		},
-		runEngine: async (raw, onStage) => {
-			const generation = (raw as { generation: number }).generation;
-			options.onRun?.();
-			runs.push({ generation });
-			events.push(`engine ${generation}`);
-			onStage({ type: "start", stage: "node" });
-			onStage({ type: "end", stage: "node" });
-			return script.get(generation) ?? { ok: true };
-		},
+		runEngine:
+			options.runEngine ??
+			(async (raw, onStage) => {
+				const generation = (raw as { generation: number }).generation;
+				options.onRun?.();
+				runs.push({ generation });
+				events.push(`engine ${generation}`);
+				onStage({ type: "start", stage: "node" });
+				onStage({ type: "end", stage: "node" });
+				return script.get(generation) ?? { ok: true };
+			}),
 		withStackStopped:
 			options.withStackStopped ??
 			(async (work) => {
@@ -475,6 +480,116 @@ describe("an apply cut short by a stop that was then undone (R13B-F002)", () => 
 		await rig.updater.healInterrupted();
 		assert.deepEqual(rig.events, []);
 		assert.equal(rig.updater.state.phase, "idle");
+	});
+});
+
+/** An engine process that says what the test has it say, with the host's own `UtilityChild` shape. */
+class FakeEngineChild implements UtilityChild {
+	pid: number | undefined = 4321;
+	posted: EngineRequest[] = [];
+	#message: Array<(m: EngineEvent) => void> = [];
+	#exit: Array<(c: number) => void> = [];
+	postMessage(m: EngineRequest): void {
+		this.posted.push(m);
+	}
+	on(event: "message" | "exit", listener: ((m: EngineEvent) => void) & ((c: number) => void)): void {
+		if (event === "message") this.#message.push(listener);
+		else this.#exit.push(listener);
+	}
+	kill(): boolean {
+		return true;
+	}
+	say(m: EngineEvent): void {
+		for (const l of this.#message) l(m);
+	}
+	end(code: number): void {
+		for (const l of this.#exit) l(code);
+	}
+	/** The generation of the stack this child was asked to run. */
+	get generation(): number | undefined {
+		const run = this.posted.find((m) => m.type === "run");
+		return run?.type === "run" ? (run.config.stack as { generation: number }).generation : undefined;
+	}
+}
+
+describe("a quit during an apply keeps its marker, through the real engine host (CIN-F001)", () => {
+	/** A rig whose engine is the real `UtilityEngineHost` over fake processes, through the same mapping `index.ts` uses. */
+	function hostRig() {
+		const children: FakeEngineChild[] = [];
+		const host = new UtilityEngineHost({
+			fork: () => {
+				const child = new FakeEngineChild();
+				children.push(child);
+				return child;
+			},
+			cancelWaitMs: 2000,
+			exitWaitMs: 50,
+		});
+		const rig = makeRig({ runEngine: (raw, onStage) => runUpdateEngine({ host, config: async () => ({ root: "/r", stack: raw, secretPatterns: {} }), log: () => undefined }, onStage) });
+		/** Waits until the host has forked its `n`-th process, then says ready, so the run is posted. */
+		const started = async (n: number): Promise<FakeEngineChild> => {
+			while (children.length < n) await new Promise((resolve) => setImmediate(resolve));
+			const child = children[n - 1] as FakeEngineChild;
+			child.say({ type: "ready" });
+			return child;
+		};
+		return { rig, host, children, started };
+	}
+
+	/** An apply of generation 6 that a quit cuts short the way the real engine ends a cancelled run: it answers the cancel with `done`, `ok: false`, then leaves. */
+	async function applyCutByQuit(h: ReturnType<typeof hostRig>): Promise<void> {
+		serveSigned(h.rig, next(6));
+		await h.rig.updater.check();
+		const applying = h.rig.updater.apply();
+		const child = await h.started(1);
+		assert.equal(child.generation, 6);
+		const disposing = h.host.dispose();
+		assert.deepEqual(child.posted.at(-1), { type: "cancel" });
+		child.say({ type: "done", ok: false, outcomes: [] });
+		child.end(0);
+		await disposing;
+		await applying;
+	}
+
+	it("runs no rollback, shows no error, and leaves the marker, so the resume's heal has something to finish", async () => {
+		const h = hostRig();
+		await applyCutByQuit(h);
+		assert.equal(h.children.length, 1, "no rollback run was asked of the disposed host");
+		assert.equal(h.rig.updater.state.phase, "applying", "not 'the engine host is disposed'");
+		assert.equal(h.rig.record().inFlight.generation, 6);
+		assert.ok(h.rig.logs.some((l) => l.event === "stack-apply-interrupted"));
+		assert.equal(readFileSync(h.rig.files.active, "utf8"), realText);
+		// The installer could not start: the host takes work again, and the heal brings the machine back to the stack in force.
+		h.host.resume();
+		const healing = h.rig.updater.healInterrupted();
+		const child = await h.started(2);
+		assert.equal(child.generation, 5);
+		child.say({ type: "done", ok: true, outcomes: [] });
+		child.end(0);
+		await healing;
+		assert.equal(h.rig.record().inFlight, undefined);
+		assert.equal(h.rig.updater.state.phase, "rolled-back");
+	});
+
+	it("keeps the marker when the quit lands before the heal's own engine run starts, or cuts it short", async () => {
+		const h = hostRig();
+		await applyCutByQuit(h);
+		// The host is still disposed (a quit during the resume): the run is refused, and the engine never ran.
+		await h.rig.updater.healInterrupted();
+		assert.equal(h.children.length, 1);
+		assert.equal(h.rig.record().inFlight.generation, 6, "refused, not failed");
+		assert.equal(h.rig.updater.state.phase, "applying");
+		// The heal's run starts, and a quit cuts it short the same way.
+		h.host.resume();
+		const healing = h.rig.updater.healInterrupted();
+		const child = await h.started(2);
+		const disposing = h.host.dispose();
+		child.say({ type: "done", ok: false, outcomes: [] });
+		child.end(0);
+		await disposing;
+		await healing;
+		assert.equal(h.rig.record().inFlight.generation, 6, "cut short, not rolled back with restored: false");
+		assert.equal(h.rig.updater.state.phase, "applying");
 	});
 });
 
