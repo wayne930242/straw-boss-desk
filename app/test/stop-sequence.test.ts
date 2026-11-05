@@ -106,14 +106,21 @@ describe("stop sequence", () => {
 	it("both the update stop and the quit go through stopAll, which hands over the real sign-ins (comments ignored)", () => {
 		const source = code("../src/main/index.ts");
 		assert.match(source, /prepareQuit: \(\) => stopForUpdate\(\)/);
-		assert.match(body(source, "stopForUpdate"), /await stopAll\(\)/);
-		assert.match(body(source, "stopThenExit"), /stopAll\(\)/);
+		assert.match(source, /new QuitGate\(\{\s*stopAll: \(\) => stopAll\(\)/, "the gate stops through stopAll");
+		assert.match(source, /const stopForUpdate = \(\): Promise<void> => quitGate\.stopForUpdate\(\)/);
+		assert.match(source, /const stopThenExit = [^;]*quitGate\.quit\(code\)/);
+		const gate = code("../src/main/quit-gate.ts");
+		assert.match(gate, /async stopForUpdate\(\)[^]*await this\.#d\.stopAll\(\)/);
+		assert.match(gate, /quit\(code[^]*this\.#d\.stopAll\(\)/);
 		const all = body(source, "stopAll");
 		assert.match(all, /stopSequence\(\{[^]*\bupdates\b[^]*\baccounts\b[^]*\bclaude\b[^]*\blinear\b[^]*\bengineHost\b[^]*\}\)/);
 	});
 
-	it("resumeAfterFailedUpdate resumes every sign-in (comments ignored)", () => {
-		const resume = body(code("../src/main/index.ts"), "resumeAfterFailedUpdate");
+	it("resuming after a failed installer resumes every sign-in, and finishes an interrupted apply before the stack starts (comments ignored)", () => {
+		const source = code("../src/main/index.ts");
+		assert.match(source, /resume: \(\) => resumeStack\(\)/);
+		const resume = body(source, "resumeStack");
 		for (const name of ["accounts", "claude", "linear"]) assert.match(resume, new RegExp(`\\b${name}\\.resume\\(\\)`));
+		assert.match(resume, /stackUpdater\.healInterrupted\(\)[^]*supervisor\s*\.start\(\)/, "the heal comes before the start");
 	});
 });
