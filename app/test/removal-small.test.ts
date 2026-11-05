@@ -45,6 +45,39 @@ describe("the uninstaller's flags", () => {
 	});
 });
 
+describe("the NSIS uninstall script", () => {
+	const nsh = readFileSync(join(import.meta.dirname, "..", "build", "installer.nsh"), "utf8");
+	const code = nsh.split("\n").filter((l) => !l.trimStart().startsWith(";")).join("\n");
+
+	it("is included by electron-builder", () => {
+		const config = JSON.parse(readFileSync(join(import.meta.dirname, "..", "electron-builder.json"), "utf8")) as { nsis: { include?: string; deleteAppDataOnUninstall?: boolean } };
+		assert.equal(config.nsis.include, "build/installer.nsh");
+		assert.equal(config.nsis.deleteAppDataOnUninstall, false, "the uninstaller never deletes the data root");
+	});
+
+	it("stops the stack first, whether or not this is an update, and only when the installed program is still there", () => {
+		const stop = code.indexOf("--stop-stack");
+		assert.ok(stop > 0);
+		assert.ok(code.indexOf('FileExists} "$INSTDIR\\${APP_EXECUTABLE_FILENAME}"') > 0 && code.indexOf("FileExists") < stop);
+		const guard = code.indexOf("${ifNot} ${isUpdated}");
+		assert.ok(guard > stop, "the stop comes before the isUpdated guard, so an update stops the stack too");
+	});
+
+	it("removes the PATH entry only outside an update: --remove-user-path sits inside the isUpdated guard and nowhere else", () => {
+		const guard = code.indexOf("${ifNot} ${isUpdated}");
+		const end = code.indexOf("${endIf}", guard);
+		const remove = code.indexOf("--remove-user-path");
+		assert.ok(guard > 0 && remove > guard && remove < end, "inside the guard");
+		assert.equal(code.split("--remove-user-path").length - 1, 1, "once");
+		assert.doesNotMatch(code, /tools\\shims|RegDelete|EnVar|WriteRegExpandStr/, "the script itself touches no registry value; the app does, through UserPath");
+	});
+
+	it("waits for each call and does not stop the uninstall on their exit codes", () => {
+		assert.equal((code.match(/ExecWait/g) ?? []).length, 2);
+		assert.doesNotMatch(code, /Abort|Quit/);
+	});
+});
+
 describe("pre-launch (before userData, the lock and any window)", () => {
 	const userPath = (log: string[], over: Partial<UserPath> = {}): UserPath => ({ supported: true, read: async () => null, ensureFirst: async () => ({ changed: false }), remove: async (e) => (log.push(`remove ${e}`), { changed: true }), ...over });
 	const base = { root: "C:\\Users\\PM\\AppData\\Local\\sbd 測試", home: "C:\\Users\\PM", platform: "win32" as const };
