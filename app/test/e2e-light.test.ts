@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, win32 } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import { privateHostSentence } from "../src/main/bootstrap/stages/preflight.ts";
@@ -31,6 +32,9 @@ import {
 import { testPlatform } from "./harness/engine-fixture.ts";
 import { createPlatform } from "../src/main/platform/index.ts";
 import { execRunner } from "../src/main/platform/exec.ts";
+import { ProjectGit } from "../src/main/projects/git.ts";
+import { ProjectRecordStore } from "../src/main/projects/record.ts";
+import { ProjectsRunner, type RepoSpec } from "../src/main/projects/runner.ts";
 import { checkPaneLookups } from "../src/main/pane-path.ts";
 import { hostedCase, type FixtureIO } from "./harness/hosted.ts";
 import { sameFolder } from "../src/main/bootstrap/stages/paths-launchers.ts";
@@ -199,6 +203,143 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 		assert.equal(helper.code, 0, helper.stderr);
 		assert.equal(helper.stdout.trim(), "helper-ran");
 		assert.equal((await run(git as string, ["config", "--global", "--get", "init.defaultBranch"], { env })).stdout.trim(), "main");
+	});
+
+	// Task 12's anchor with the app's own Git (spec: Tasks, 12): the projects step against fixture repositories that `url.<folder>.insteadOf` serves for an https address, so no network and no
+	// credential is involved. The symlink anchor: a mode-120000 entry `.agents/skills` (put in the index by hand, so it builds without symlink rights), a real `.pi/settings.json` and a link
+	// `docs/link` outside the three folders; on Windows the row ends done with the sentence naming `.agents/skills` only, and `core.symlinks` in the clone is what Git gives with no help from the app.
+	describe("projects with the app's Git (task 12)", () => {
+		let git = "";
+		let env: Record<string, string> = {};
+		let base = "";
+		let seeds = 0;
+		const g = async (cwd: string, ...args: string[]): Promise<string> => {
+			const r = await run(git, args, { env, cwd, timeoutMs: 120_000 });
+			assert.equal(r.code, 0, `git ${args.join(" ")}: ${r.stderr}`);
+			return r.stdout;
+		};
+		const bare = async (name: string, options: { links?: string[]; files?: Record<string, string>; branches?: string[] } = {}): Promise<void> => {
+			const work = join(base, `seed-${name}-${++seeds}`);
+			mkdirSync(work, { recursive: true });
+			await g(work, "init", "-q", "-b", "main");
+			for (const [file, text] of Object.entries(options.files ?? { "README.md": "hello\n" })) {
+				mkdirSync(dirname(join(work, file)), { recursive: true });
+				writeFileSync(join(work, file), text);
+			}
+			await g(work, "add", "-A");
+			for (const link of options.links ?? []) {
+				const blob = (await run(git, ["hash-object", "-w", "--stdin"], { env, cwd: work, stdin: "target", timeoutMs: 60_000 })).stdout.trim();
+				await g(work, "update-index", "--add", "--cacheinfo", `120000,${blob},${link}`);
+			}
+			await g(work, "commit", "-q", "-m", "seed");
+			for (const branch of options.branches ?? []) await g(work, "branch", branch);
+			await g(base, "clone", "-q", "--bare", work, join(base, "remote", `${name}.git`));
+		};
+		const spec = (name: string, extra: Partial<RepoSpec> = {}): RepoSpec => ({ url: `https://git.fixture.test/${name}.git`, folder: name, label: name, ...extra });
+		const runner = (platformName: "win32" | "darwin", existingWork?: string) => {
+			const calls: string[][] = [];
+			const exec = execRunner();
+			const work = existingWork ?? mkdtempSync(join(base, "work-"));
+			const state = mkdtempSync(join(base, "state-"));
+			const opens: string[] = [];
+			const instance = new ProjectsRunner({
+				platform: platformName,
+				workFolder: () => work,
+				git: new ProjectGit((args, options) => (calls.push([...args]), exec(git, args, { env, replaceEnv: true, timeoutMs: options.timeoutMs, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) })), () => undefined),
+				openBase: async (input) => (opens.push(input.dir), { ok: true }),
+				record: new ProjectRecordStore({ state }),
+				redact: (t) => t,
+				log: () => undefined,
+			});
+			return { calls, work, opens, instance, rows: () => Object.fromEntries(instance.view().rows.map((r) => [r.folder, r])) };
+		};
+
+		before(async () => {
+			const found = childEnvOf(world, ["bun"]);
+			const exe = found.PATH?.split(isWindows ? ";" : ":").map((dir) => join(dir, isWindows ? "git.exe" : "git")).find((f) => existsSync(f));
+			assert.ok(exe !== undefined && under(world.root, exe), `git on the constructed PATH is ${exe}`);
+			git = exe as string;
+			base = mkdtempSync(join(world.base, "projects-"));
+			mkdirSync(join(base, "remote"), { recursive: true });
+			env = {
+				...found,
+				GIT_TERMINAL_PROMPT: "0",
+				GIT_CONFIG_COUNT: "4",
+				GIT_CONFIG_KEY_0: `url.${pathToFileURL(join(base, "remote")).href}/.insteadOf`,
+				GIT_CONFIG_VALUE_0: "https://git.fixture.test/",
+				GIT_CONFIG_KEY_1: "protocol.file.allow",
+				GIT_CONFIG_VALUE_1: "always",
+				GIT_CONFIG_KEY_2: "user.name",
+				GIT_CONFIG_VALUE_2: "Fixture",
+				GIT_CONFIG_KEY_3: "user.email",
+				GIT_CONFIG_VALUE_3: "fixture@example.invalid",
+			};
+			await bare("links", { links: [".agents/skills", "docs/link"], files: { ".pi/settings.json": "{}\n", "README.md": "x\n" } });
+			await bare("clean", { files: { ".pi/settings.json": "{}\n", ".agents/real/SKILL.md": "x\n" } });
+			await bare("develop", { branches: ["develop"] });
+			await bare("plain");
+		});
+
+		it("clones the link fixture by path: on Windows the row is done with the one sentence for .agents/skills, and on macOS no Git process ran for the check and there is no sentence", async () => {
+			const r = runner(platform);
+			await r.instance.begin([spec("links")]);
+			const row = r.rows().links;
+			assert.equal(row?.phase, "done", JSON.stringify(row));
+			assert.equal(row?.opened, true, "the repository is opened as a base");
+			assert.deepEqual(r.opens, [join(r.work, "links")]);
+			if (isWindows) assert.deepEqual(row?.links, { paths: [".agents/skills"], more: 0 }, "no other path, and docs/link lies outside the three folders");
+			else {
+				assert.equal(row?.links, null);
+				assert.equal(r.calls.some((c) => c[0] === "ls-files"), false, "the check ran no Git process");
+			}
+			// core.symlinks in the clone is what Git gives with no help from the app: the same value a plain `git init` in the same environment reports, and no call of ours sets it.
+			const clone = join(r.work, "links");
+			const shown = (await run(git, ["config", "--show-origin", "core.symlinks"], { env, cwd: clone, timeoutMs: 60_000 })).stdout.trim();
+			const control = join(base, `control-${seeds}`);
+			mkdirSync(control, { recursive: true });
+			await g(control, "init", "-q");
+			const wanted = (await run(git, ["config", "core.symlinks"], { env, cwd: control, timeoutMs: 60_000 })).stdout.trim();
+			console.log(`core.symlinks in the link fixture's clone (${platform}): ${shown || "(unset)"}; a fresh repository reports ${wanted || "(unset)"}`);
+			assert.equal(shown.split(/\s+/).pop() ?? "", wanted, "the clone's value is the one Git gives a fresh repository here");
+			assert.equal(r.calls.some((c) => c.some((a) => /symlinks/i.test(a))), false, "no call of the app names core.symlinks");
+		});
+
+		it("shows the sentence again when the same folder is reused, and none for a repository without such entries (Windows)", { skip: isWindows ? false : "Windows only: the check does not run on macOS" }, async () => {
+			const r = runner("win32");
+			await r.instance.begin([spec("links"), spec("clean")]);
+			assert.equal(r.rows().clean?.phase, "done");
+			assert.equal(r.rows().clean?.links, null);
+			const second = runner("win32", r.work);
+			await second.instance.begin([spec("links")]);
+			assert.equal(second.rows().links?.reused, true);
+			assert.deepEqual(second.rows().links?.links?.paths, [".agents/skills"]);
+		});
+
+		it("points origin/HEAD at the recipe's defaultBranch although the server's HEAD is main, keeps main for a repository without one, and fails a branch origin lacks for that repository alone", async () => {
+			const r = runner(platform);
+			await r.instance.begin([spec("develop", { defaultBranch: "develop" }), spec("plain"), spec("clean", { defaultBranch: "nope" })]);
+			assert.equal((await g(join(r.work, "develop"), "symbolic-ref", "refs/remotes/origin/HEAD")).trim(), "refs/remotes/origin/develop");
+			assert.equal((await g(join(r.work, "plain"), "symbolic-ref", "refs/remotes/origin/HEAD")).trim(), "refs/remotes/origin/main");
+			const rows = r.rows();
+			assert.equal(rows.develop?.phase, "done");
+			assert.equal(rows.plain?.phase, "done");
+			assert.equal(rows.clean?.phase, "failed");
+			assert.deepEqual(rows.clean?.failure, { kind: "branch-missing", branch: "nope" });
+		});
+
+		it("reports a folder with another origin and leaves it untouched, and refuses a repository whose folder is Straw Boss", async () => {
+			const r = runner(platform);
+			const folder = join(r.work, "plain");
+			mkdirSync(folder, { recursive: true });
+			await g(folder, "init", "-q");
+			await g(folder, "remote", "add", "origin", "https://git.fixture.test/other.git");
+			await r.instance.begin([spec("plain"), spec("clean", { folder: "Straw Boss" })]);
+			assert.deepEqual(r.rows().plain?.failure, { kind: "other-origin" });
+			assert.deepEqual(readdirSync(folder).filter((n) => n !== ".git"), [], "nothing was cloned into it");
+			assert.equal((await g(folder, "config", "--get", "remote.origin.url")).trim(), "https://git.fixture.test/other.git");
+			assert.deepEqual(r.rows()["Straw Boss"]?.failure, { kind: "reserved-folder" });
+			assert.equal(existsSync(join(r.work, "Straw Boss")), false);
+		});
 	});
 
 	/**

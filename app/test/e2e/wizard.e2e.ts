@@ -21,6 +21,8 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { en } from "../../src/renderer/i18n/en.ts";
@@ -41,6 +43,8 @@ import { parseStack } from "../../src/main/bootstrap/stack.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { developerToolsAsideScope } from "../harness/devtools-aside.ts";
 import { hostedCase, type FixtureIO } from "../harness/hosted.ts";
+import { createTestCa } from "../harness/test-ca.ts";
+import { credUrl } from "../harness/cred-url.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
 const enabled = process.env.SBD_E2E === "1";
@@ -707,6 +711,30 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.deepEqual(items.shipped, shippedSafeStorage, "the shipped product's Safe Storage item, if any, has the same modification time");
 
 		await page.locator("#step-next").click();
+		await waitStep(page, "projects");
+	});
+
+	it("projects step: the public repository is cloned beside the home base with the app's Git and opened as a base, in both languages (task 12)", { timeout: 900_000 }, async () => {
+		assert.equal(await stepOf(page), "projects");
+		assert.equal(await page.locator("#projects-next").isDisabled(), true, "Next waits for the rows");
+		await shot(page, "projects-start-zh-TW");
+		const card = page.locator('li.project-card[data-folder="hello-world"]');
+		await card.waitFor({ timeout: 60_000 });
+		await until("the repository to be copied and opened", 600_000, async () => (await card.getAttribute("data-state")) === "done" || (await card.getAttribute("data-state")) === "failed", 500);
+		assert.equal(await card.getAttribute("data-state"), "done", await card.innerText());
+		assert.equal(await page.locator("#projects-next").isDisabled(), false);
+		assert.equal(await page.locator('[data-role="links"]').count(), 0, "the public repository has no link Windows cannot make");
+		const clone = join(workFolderNow(), "hello-world");
+		assert.ok(existsSync(join(clone, ".git")), "the repository is beside the home base");
+		assert.ok(existsSync(join(workFolderNow(), "Straw Boss")), "the home base is there too");
+		const { git, env: gitEnv } = gitExecutable();
+		const origin = await run(git, ["config", "--get", "remote.origin.url"], { env: gitEnv, cwd: clone, timeoutMs: 60_000 });
+		assert.equal(origin.stdout.trim(), "https://github.com/octocat/Hello-World.git");
+		const list = await new WorldHerdr(world).cli(["workspace", "list"]);
+		assert.ok(list.stdout.includes("Hello World"), `the clone is a base in Herdr's list: ${list.stdout.slice(0, 400)}`);
+		assert.equal(eventsNamed("project-git").some((e) => JSON.stringify(e.args).includes("symlinks")), false, "no Git call names core.symlinks");
+		await shotBoth(page, "projects-done");
+		await page.locator("#projects-next").click();
 		await waitStep(page, "done");
 	});
 
@@ -728,6 +756,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const url = await until("the GUI view to load the server's address", 120_000, () => guiUrl(first));
 		assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{16,}\/?/);
 		assert.equal(await inGui(first, `document.querySelector('meta[name="sb-desk"]')?.content`), "1");
+		await until("the cloned repository's base in the page", 90_000, async () => String(await inGui(first, "document.body.innerText")).includes("Hello World"), 500);
 		assert.equal(readWizard().done, true);
 		assert.equal(readWizard().locale, "en");
 		const notices = await pageOf(first, "screen.html");
@@ -990,6 +1019,135 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await notices.locator('[data-notice="wsl"] .notice-text').innerText(), zhTW.welcome.wsl, "the saved language wins over the OS language");
 		assert.equal(await again.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length), 1);
 		await close(again);
+	});
+
+	it("settings' Team recipe: an update served by a local fixture server shows its change list and applies; each fetch refusal shows its sentence; Keep and Replace (task 12)", { timeout: 1_800_000 }, async () => {
+		// A local HTTPS server under a throw-away CA stands in for the internet (development build only, SBD_TEST_RECIPE_FETCH): names map to public-looking addresses that the app dials on 127.0.0.1,
+		// and every fetch rule still applies to them. `internal.example.com` maps to a private address, so a redirect to it is refused as a host.
+		const names = ["recipes.example.com", "other.example.com", "internal.example.com"];
+		const ca = createTestCa("recipe", names);
+		const caFile = join(world.base, "recipe-ca.pem");
+		writeFileSync(caFile, ca.caPem);
+		const seen: Array<{ url: string; headers: Record<string, string | string[] | undefined> }> = [];
+		let route: (url: string) => { status: number; headers?: Record<string, string>; body?: string } = () => ({ status: 404 });
+		const server: HttpsServer = createHttpsServer({ cert: ca.server.certPem, key: ca.server.keyPem }, (request, response) => {
+			seen.push({ url: request.url ?? "", headers: request.headers });
+			const r = route(request.url ?? "");
+			response.writeHead(r.status, r.headers ?? {}).end(r.body ?? "");
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as AddressInfo).port;
+		const seam = JSON.stringify({ ca: caFile, hosts: { "recipes.example.com": { address: "93.184.216.34", port }, "other.example.com": { address: "93.184.216.35", port }, "internal.example.com": { address: "10.1.2.3", port } } });
+		const base = JSON.parse(readFileSync(ciRecipe, "utf8")) as Record<string, unknown>;
+		const served = (over: Record<string, unknown>): string => JSON.stringify({ ...base, ...over });
+		const NEW_REPO = { url: "https://github.com/octocat/Spoon-Knife.git", folder: "spoon-knife", label: "Spoon Knife" };
+		try {
+			const app = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH, SBD_TEST_RECIPE_FETCH: seam });
+			const notices = await pageOf(app, "screen.html");
+			await notices.locator("#open-settings").click();
+			const s = await pageOf(app, "settings.html");
+			await s.locator('button.nav-item[data-section="recipe"]').click();
+			await s.locator("#recipe-cards").waitFor({ timeout: 30_000 });
+			const updateCard = s.locator('li[data-role="update"]');
+			const stateOf = async (): Promise<string> => (await updateCard.getAttribute("data-state")) ?? "";
+			const checkNow = async (): Promise<void> => {
+				await s.locator("#recipe-check").click();
+				await until("the check to end", 60_000, async () => (await stateOf()) !== "checking", 200);
+			};
+			/** The card in zh-TW and in English, as a picture each (the language buttons are in Computer). */
+			const recipeBoth = async (name: string): Promise<void> => {
+				for (const locale of ["zh-TW", "en"] as const) {
+					await s.locator('button.nav-item[data-section="computer"]').click();
+					await s.locator(`.language-button[data-locale="${locale}"]`).click();
+					await until(`${locale} in settings`, 10_000, async () => (await s.evaluate(() => document.documentElement.lang)) === locale, 100);
+					await s.locator('button.nav-item[data-section="recipe"]').click();
+					await s.locator("#recipe-cards").waitFor({ timeout: 10_000 });
+					assert.doesNotMatch(await s.locator("body").innerText(), /\{[A-Za-z]+\}/, `${name} ${locale} has an unfilled placeholder`);
+					await shot(s, `recipe-${name}-${locale}`);
+				}
+				await s.locator('button.nav-item[data-section="computer"]').click();
+				await s.locator('.language-button[data-locale="zh-TW"]').click();
+				await s.locator('button.nav-item[data-section="recipe"]').click();
+				await s.locator("#recipe-cards").waitFor({ timeout: 10_000 });
+			};
+			assert.equal(await s.locator("#recipe-name").innerText(), "CI 測試團隊");
+			await recipeBoth("idle");
+
+			// Each fetch rule, as the PM sees its refusal.
+			const refusals: Array<[string, string, () => { status: number; headers?: Record<string, string>; body?: string }]> = [
+				["scheme", "scheme", () => ({ status: 302, headers: { location: "http://recipes.example.com/ci-wizard.json" } })],
+				["credentials", "credentials", () => ({ status: 302, headers: { location: credUrl("https://user<c>secret@other.example.com/ci-wizard.json") } })],
+				["host", "host", () => ({ status: 302, headers: { location: "https://internal.example.com/ci-wizard.json" } })],
+				["redirects", "redirects", () => ({ status: 302, headers: { location: "https://recipes.example.com/ci-wizard.json" } })],
+				["too-large", "too-large", () => ({ status: 200, body: "x".repeat(300 * 1024) })],
+				["status", "status", () => ({ status: 404 })],
+			];
+			for (const [name, reason, answer] of refusals) {
+				route = () => answer();
+				await checkNow();
+				assert.equal(await stateOf(), "refused", name);
+				assert.equal(await s.locator("#recipe-update-note").getAttribute("data-reason"), reason, name);
+				await recipeBoth(`refused-${name}`);
+			}
+			assert.equal(seen.some((r) => JSON.stringify(r.headers).toLowerCase().includes("cookie") || "authorization" in r.headers), false, "no cookie and no authorization header ever reached the server");
+			route = () => ({ status: 200, body: "{not json" });
+			await checkNow();
+			assert.equal(await s.locator("#recipe-update-note").getAttribute("data-reason"), "invalid");
+			await recipeBoth("refused-invalid");
+			route = () => ({ status: 200, body: served({ id: "someone-else", version: "9.0.0" }) });
+			await checkNow();
+			assert.equal(await s.locator("#recipe-update-note").getAttribute("data-reason"), "other-id");
+			await recipeBoth("refused-other-id");
+
+			// An update: the change list first, nothing applied; Keep mine keeps it out of the next check; then Apply.
+			route = () => ({ status: 200, body: served({ version: "1.1.0", repos: [...(base.repos as unknown[]), NEW_REPO] }) });
+			const before = readdirSync(world.layout.recipe).map((f) => readFileSync(join(world.layout.recipe, f), "utf8"));
+			await checkNow();
+			assert.equal(await stateOf(), "offered");
+			const changes = await s.locator("#recipe-changes li").evaluateAll((items) => items.map((i) => i.getAttribute("data-change")));
+			assert.deepEqual(changes, ["version", "repo-added"]);
+			assert.deepEqual(readdirSync(world.layout.recipe).map((f) => readFileSync(join(world.layout.recipe, f), "utf8")), before, "nothing was written by the check");
+			assert.deepEqual(await s.locator('li[data-role="update"] button').evaluateAll((b) => b.map((x) => [x.id, x.className])), [["recipe-apply", "primary"], ["recipe-keep", ""]], "Apply first");
+			await recipeBoth("offered");
+			await s.locator("#recipe-keep").click();
+			assert.equal(await stateOf(), "kept");
+			await recipeBoth("kept");
+			await checkNow();
+			assert.equal(await stateOf(), "kept", "the same version is not offered again");
+			route = () => ({ status: 200, body: served({ version: "1.2.0", repos: [...(base.repos as unknown[]), NEW_REPO] }) });
+			await checkNow();
+			assert.equal(await stateOf(), "offered", "a higher version is");
+			await s.locator("#recipe-apply").click();
+			await until("the update to apply", 900_000, async () => ["applied", "failed", "error"].includes(await stateOf()), 1000);
+			assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			const active = readdirSync(world.layout.recipe).map((f) => JSON.parse(readFileSync(join(world.layout.recipe, f), "utf8")) as { version: string });
+			assert.deepEqual(active.map((r) => r.version), ["1.2.0"]);
+			const spoon = s.locator('li.project-card[data-folder="spoon-knife"]');
+			await spoon.waitFor({ timeout: 120_000 });
+			await until("the new repository to be copied and opened", 600_000, async () => ["done", "failed"].includes((await spoon.getAttribute("data-state")) ?? ""), 500);
+			assert.equal(await spoon.getAttribute("data-state"), "done", await spoon.innerText());
+			assert.ok(existsSync(join(workFolderNow(), "spoon-knife", ".git")));
+			assert.ok((await new WorldHerdr(world).cli(["workspace", "list"])).stdout.includes("Spoon Knife"), "the new repository is a base");
+			assert.equal(eventsNamed("project-git").filter((e) => Array.isArray(e.args) && e.args[0] === "clone" && JSON.stringify(e.args).includes("Hello-World")).length, 1, "the repository that did not change was not cloned again");
+			await recipeBoth("applied");
+			await checkNow();
+			assert.equal(await stateOf(), "idle", "the applied version is the one the address serves");
+
+			// Replace: a chosen file with another id is shown as another recipe and kept out without being applied.
+			const other = join(world.base, "other-recipe.json");
+			writeFileSync(other, served({ id: "other-team", name: "Other team", version: "1.0.0", updateUrl: undefined }));
+			await stubDialog(app, other);
+			await s.locator("#recipe-replace").click();
+			await until("the chosen file to be offered", 30_000, async () => (await stateOf()) === "offered", 200);
+			assert.match(await s.locator("#recipe-update-note").innerText(), /Other team|另一份配方/);
+			await recipeBoth("replace-offered");
+			await s.locator("#recipe-keep").click();
+			assert.deepEqual(readdirSync(world.layout.recipe).map((f) => (JSON.parse(readFileSync(join(world.layout.recipe, f), "utf8")) as { id: string }).id), ["ci-wizard"]);
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+		for (const a of apps) await close(a);
 	});
 
 	it("a launch that cannot start shows the failure screen, in both languages", async () => {

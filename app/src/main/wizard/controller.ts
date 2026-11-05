@@ -404,7 +404,10 @@ export class WizardController {
 				if (this.#at("install") && !this.#installing) await this.#runInstall();
 				return;
 			case "start-retry":
-				if (this.#atStartFailure() && !this.#starting) await this.#startStack();
+				if (this.#atStartFailure() && !this.#starting) {
+					await this.#startStack();
+					this.#syncSteps();
+				}
 				return;
 			case "repair":
 				if (this.#atStartFailure()) {
@@ -497,9 +500,11 @@ export class WizardController {
 		if (file.done) return;
 		if (file.step === "claude" && this.#d.claude.flow.phase === "idle" && this.#d.claude.state === "unknown") void this.#d.claude.refresh().catch((error: Error) => this.#d.log({ event: "claude-refresh-failed", detail: firstLineOf(error.message) }));
 		// The projects step needs the GUI (a base is opened through its endpoint), so it begins once the stack runs; a relaunch on this step starts the stack first.
-		if (file.step === "projects" && !this.#projectsBegun && this.#d.supervisor.state === "running") {
-			this.#projectsBegun = true;
-			void this.#d.projects.begin(repoSpecs(this.recipe)).catch((error: Error) => this.#d.log({ event: "projects-failed", detail: firstLineOf(error.message) }));
+		if (file.step === "projects" && !this.#projectsBegun) {
+			if (this.#d.supervisor.state === "running") {
+				this.#projectsBegun = true;
+				void this.#d.projects.begin(repoSpecs(this.recipe)).catch((error: Error) => this.#d.log({ event: "projects-failed", detail: firstLineOf(error.message) }));
+			} else if (!this.#starting && this.#startStatus !== "failed") void this.#startStack().then(() => this.#syncSteps());
 		}
 		if (file.step === "linear") void this.#d.linear.probe().catch((error: Error) => this.#d.log({ event: "linear-probe-failed", detail: firstLineOf(error.message) }));
 		if (file.step !== "hosts") return;
@@ -512,9 +517,9 @@ export class WizardController {
 		return this.#file.step === step && !this.#file.done;
 	}
 
-	/** Try again and Repair belong to the start step, and to the Linear step, where a start that failed while the PM filled in the key is shown too (R11-F001). */
+	/** Try again and Repair belong to the start step, and to the Linear and projects steps, where a start that failed while the PM filled in the key (R11-F001) or when the projects needed the GUI is shown too. */
 	#atStartFailure(): boolean {
-		return this.#at("start") || (this.#at("linear") && this.#startStatus === "failed");
+		return this.#at("start") || ((this.#at("linear") || this.#at("projects")) && this.#startStatus === "failed");
 	}
 
 	#save(change: Partial<WizardFile> & { workFolder?: string | undefined }): void {

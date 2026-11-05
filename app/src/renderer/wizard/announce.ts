@@ -83,6 +83,10 @@ export function announcementParts(ctx: Ctx): string[] {
 		}
 		case "projects": {
 			const { rows, running, held } = view.projects;
+			if (view.start.failure !== null) {
+				const sentences = catalogs[ctx.locale].start.failure as Record<string, string>;
+				parts.push((sentences[view.start.failure.kind] ?? sentences.other ?? "").replaceAll("{pid}", String(view.start.failure.pid ?? "")));
+			}
 			if (running) parts.push(ctx.tr("projects.running"));
 			else if (held) parts.push(ctx.tr("projects.held"));
 			else if (rows.length > 0 && !rows.some((r) => r.phase === "waiting")) parts.push(ctx.tr(rows.some((r) => r.phase === "failed") ? "projects.someFailed" : "projects.allDone"));

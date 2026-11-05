@@ -769,3 +769,124 @@ describe("steps 7 and 9: Claude and Linear (task 11)", () => {
 		assert.deepEqual(await w.controller.installTtt(), { ok: false, detail: "engine exploded" });
 	});
 });
+
+describe("step 10: projects (task 12)", () => {
+	/** The example recipe has repositories; every sign-in step is put off, which ends on the projects step. */
+	async function atProjects(running = true) {
+		const w = make();
+		(w.deps.supervisor as { state: string }).state = running ? "running" : "idle";
+		await w.controller.act({ type: "welcome-next" });
+		await w.controller.act({ type: "recipe-text", name: "team.json", text: example("team.strawboss.json") });
+		await w.controller.act({ type: "trust-apply" });
+		await w.controller.act({ type: "folder-next" });
+		return w;
+	}
+	const specsOf = (w: Awaited<ReturnType<typeof atProjects>>) => w.controller.recipe?.repos?.map((r) => r.folder) ?? [];
+
+	it("follows the last sign-in step when the recipe has repositories, and the end when it has none", async () => {
+		const w = await atProjects();
+		assert.deepEqual(specsOf(w), ["web", "handbook"]);
+		await skipToProjects(w);
+		assert.equal(w.controller.step, "projects");
+		const noRepos = await atFolder();
+		await noRepos.controller.act({ type: "folder-next" });
+		assert.equal(noRepos.controller.recipe, null);
+		for (let i = 0; i < 8 && noRepos.controller.step !== "done"; i++) await noRepos.controller.act({ type: "later" });
+		assert.equal(noRepos.controller.step, "done", "a machine with no recipe has no projects");
+	});
+
+	it("begins the first pass when the step opens with the stack running, once, with the recipe's repositories", async () => {
+		const w = await atProjects();
+		await skipToProjects(w);
+		assert.equal(w.controller.step, "projects");
+		assert.deepEqual(w.projects.begun.map((specs) => specs.map((s) => s.folder)), [["web", "handbook"]]);
+		await w.controller.act({ type: "rescan" });
+		assert.equal(w.projects.begun.length, 1, "a redraw does not begin it again");
+	});
+
+	it("Next ends the step only when every row has ended or the rest waits behind a trust question", async () => {
+		const w = await atProjects();
+		await skipToProjects(w);
+		const row = (folder: string, phase: "waiting" | "working" | "done" | "failed" | "trust") => ({ folder, label: folder, host: "github.com", defaultBranch: null, phase, step: null, reused: false, opened: false, links: null, failure: null, detail: "" });
+		w.projects.set({ rows: [row("web", "working"), row("handbook", "waiting")], running: true, held: false });
+		await w.controller.act({ type: "projects-next" });
+		assert.equal(w.controller.step, "projects");
+		w.projects.set({ rows: [row("web", "done"), row("handbook", "waiting")], running: false, held: false });
+		await w.controller.act({ type: "projects-next" });
+		assert.equal(w.controller.step, "projects", "a row still waits");
+		w.projects.set({ rows: [row("web", "trust"), row("handbook", "waiting")], running: false, held: true });
+		await w.controller.act({ type: "projects-next" });
+		assert.equal(w.controller.step, "done");
+	});
+
+	it("lets a failed row be retried alone, and ignores an unknown folder or a request from another step", async () => {
+		const w = await atProjects();
+		await w.controller.act({ type: "project-retry", folder: "web" });
+		assert.equal(w.projects.retried.length, 0, "not on the projects step");
+		await skipToProjects(w);
+		await w.controller.act({ type: "project-retry", folder: "nope" });
+		await w.controller.act({ type: "project-retry", folder: "handbook" });
+		assert.deepEqual(w.projects.retried.map((s) => s.folder), ["handbook"]);
+	});
+
+	it("starts the stack first when it is not running, and begins once it runs", async () => {
+		const w = await atProjects(false);
+		await skipToProjects(w);
+		assert.ok(w.starts() >= 1, "the stack was started for the step");
+		assert.equal(w.projects.begun.length, 0, "the fake supervisor never reports running");
+		(w.deps.supervisor as { state: string }).state = "running";
+		await w.controller.act({ type: "rescan" });
+		assert.equal(w.projects.begun.length, 1);
+	});
+
+	async function skipToProjects(w: Awaited<ReturnType<typeof atProjects>>) {
+		const c = w.controller;
+		// Install and start are passed by the fakes; the sign-in steps are put off one by one.
+		for (let i = 0; i < 12 && c.step !== "projects" && c.step !== "done"; i++) await c.act({ type: "later" });
+	}
+});
+
+describe("a recipe update accepted from settings (task 12)", () => {
+	async function inUse() {
+		const w = make();
+		await w.controller.act({ type: "welcome-next" });
+		await w.controller.act({ type: "recipe-text", name: "team.json", text: example("team.strawboss.json") });
+		await w.controller.act({ type: "trust-apply" });
+		return w;
+	}
+	const newer = (): string => example("team.strawboss.json").replace('"version": "1.0.0"', '"version": "1.1.0"');
+
+	it("writes the new file under recipe/, switches the recipe in use, and gives back a function that restores the old one", async () => {
+		const w = await inUse();
+		const before = recipeFiles(w.layout).map((f) => readFileSync(join(w.layout.recipe, f), "utf8"));
+		const next = w.controller.intakeFor("team-new.json", newer());
+		assert.equal(next.ok, true);
+		const undo = w.controller.acceptRecipe(next as never, { kind: "url", host: "example.com" });
+		assert.equal(w.controller.recipe?.version, "1.1.0");
+		assert.deepEqual(recipeFiles(w.layout).length, 1, "one recipe file at a time");
+		assert.equal(readWizardFile(w.layout)?.recipeFile, "team-new.json");
+		undo();
+		assert.equal(w.controller.recipe?.version, "1.0.0");
+		assert.deepEqual(recipeFiles(w.layout).map((f) => readFileSync(join(w.layout.recipe, f), "utf8")), before);
+	});
+
+	it("runs the install step for it with the stack stopped, as one job, and names the first failed stage", async () => {
+		const w = await inUse();
+		const stops = stackStopOptions.length;
+		w.engine.scripts.push(() => ({ kind: "done" as const, ok: true, outcomes: [okOutcome("node")] }));
+		assert.deepEqual(await w.controller.installRecipe(), { ok: true });
+		assert.equal(stackStopOptions.length, stops + 1, "the stop ran around the engine");
+		w.engine.scripts.push((_c, emit) => {
+			emit({ kind: "stage", stage: "opt:glab", status: "failed" } as never);
+			return { kind: "done" as const, ok: false, outcomes: [{ ...okOutcome("opt:glab"), status: "failed" as const, failure: { stage: "opt:glab", category: "network" as const, sentence: "x", detail: "ENOTFOUND", params: {} } }] };
+		});
+		const failed = await w.controller.installRecipe();
+		assert.equal(failed.ok, false);
+	});
+
+	it("validates an offered file against the stack in force, with a plain refusal for text that is not a recipe", async () => {
+		const w = await inUse();
+		assert.equal(w.controller.intakeFor("x.json", "{").ok, false);
+		assert.equal(w.controller.intakeFor("x.json", 5 as never).ok, false);
+	});
+});

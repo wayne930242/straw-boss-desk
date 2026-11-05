@@ -3,6 +3,7 @@
   "id": "ci-wizard",
   "name": "CI 測試團隊",
   "version": "1.0.0",
+  "updateUrl": "https://recipes.example.com/ci-wizard.json",
   "forges": [
     { "kind": "github", "host": "github.com" },
     { "kind": "gitlab", "host": "gitlab.com" }
