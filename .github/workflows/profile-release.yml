@@ -1,0 +1,80 @@
+name: profile-release
+
+# Publishes straw-boss-desk-profile to npm when a profile-v* tag is pushed. No token: npm Trusted Publishing (OIDC).
+on:
+  push:
+    tags:
+      - "profile-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: profile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: profile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm 11.5.1 or newer.
+      - name: Use an npm that supports trusted publishing
+        run: |
+          set -euo pipefail
+          npm install --global npm@^11.5.1
+          npm --version
+
+      - name: Tag must equal profile-v plus the package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "profile-v${version}" ]; then
+            echo "::error::tag $TAG does not match profile-v${version} from profile/package.json"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Version must not exist on npm yet
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::${name}@${VERSION} is already published"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Publish
+        run: npm publish --provenance --access public
+
+      - name: Wait for the version to appear on npm
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          for attempt in $(seq 1 30); do
+            if integrity="$(npm view "${name}@${VERSION}" dist.integrity 2>/dev/null)" && [ -n "$integrity" ]; then
+              echo "${name}@${VERSION} integrity: ${integrity}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${name}@${VERSION} did not appear on npm within 5 minutes"
+          exit 1
