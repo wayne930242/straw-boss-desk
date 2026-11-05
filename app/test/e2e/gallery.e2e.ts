@@ -137,12 +137,12 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 		const env: Record<string, string> = {};
 		for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(PI_|HERDR_|ELECTRON_RUN_AS_NODE$)/.test(k)) env[k] = v;
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: { ...env, STRAW_BOSS_DESK_ROOT: join(parent, "sbd 測試") }, timeout: 90_000 });
-		// A window of the test's own, in the app's main process, with the app's shell preload.
-		const [opened] = await Promise.all([
-			app.waitForEvent("window", { timeout: 60_000 }),
-			app.evaluate(({ app: electronApp, BrowserWindow, ipcMain }) => {
+		// A window of the test's own, in the app's main process, with the app's shell preload. It opens on the settings page (the app itself sits on its welcome page, so that address is the window's alone).
+		const first = settingsView({ locale: "zh-TW", section: "recipe", recipeCard: { active: ACTIVE, state: RECIPE_STATES[0]?.[1] as RecipeCardState, projects: projects([]), enabled: true } });
+		await app.evaluate(
+			({ app: electronApp, BrowserWindow, ipcMain }, initial: unknown) => {
 				const dist = `${electronApp.getAppPath()}/dist`;
-				const state: Record<string, unknown> = { wizard: null, settings: null, locale: "en" };
+				const state: Record<string, unknown> = { wizard: null, settings: initial, locale: "zh-TW" };
 				for (const channel of ["sbd:wizard-state", "sbd:settings-state", "sbd:locale", "sbd:wizard-act", "sbd:settings-act"]) ipcMain.removeHandler(channel);
 				ipcMain.handle("sbd:wizard-state", () => state.wizard);
 				ipcMain.handle("sbd:settings-state", () => state.settings);
@@ -153,31 +153,26 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 					width: 1000,
 					height: 900,
 					show: true,
-					webPreferences: { preload: `${dist}/preload/shell.cjs`, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ["--sbd-locale=en", "--sbd-build=dev", "--sbd-product=Gallery"] },
+					webPreferences: { preload: `${dist}/preload/shell.cjs`, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ["--sbd-locale=zh-TW", "--sbd-build=dev", "--sbd-product=Gallery"] },
 				});
 				(globalThis as unknown as { __gallery: unknown }).__gallery = { state, win, dist };
-			}),
-		]);
-		page = opened;
+				return win.loadFile(`${dist}/renderer/settings.html`);
+			},
+			first,
+		);
+		const deadline = Date.now() + 60_000;
+		let found: Page | undefined;
+		while (found === undefined && Date.now() < deadline) {
+			found = app.windows().find((w) => w.url().endsWith("/renderer/settings.html"));
+			if (found === undefined) await new Promise((r) => setTimeout(r, 250));
+		}
+		assert.ok(found, `the gallery window never opened; windows: ${app.windows().map((w) => w.url()).join(", ")}`);
+		page = found;
+		await page.waitForLoadState("domcontentloaded");
 	});
 	after(async () => {
 		await app?.close().catch(() => undefined);
 		if (parent !== "") rmSync(parent, { recursive: true, force: true });
-	});
-
-	it("draws each state of the projects step in both languages", async () => {
-		await load("wizard", wizardView({ locale: "zh-TW", projects: PROJECT_STATES[0]?.[1] as ProjectsView }));
-		await page.waitForLoadState("domcontentloaded");
-		for (const [name, view] of PROJECT_STATES) {
-			for (const locale of LOCALES) {
-				await push("wizard", wizardView({ locale, projects: view }));
-				await settled(locale);
-				assert.equal(await page.evaluate(() => document.body.dataset.step), "projects");
-				assert.equal(await page.locator("li.project-card").count(), view.rows.length, name);
-				await sound(`projects ${name} ${locale}`);
-				await shot(`projects-${name}`, locale);
-			}
-		}
 	});
 
 	it("draws each state of the Team recipe card in both languages", async () => {
@@ -191,6 +186,21 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 				assert.equal(await page.locator('li[data-role="update"]').getAttribute("data-state"), state.phase, name);
 				await sound(`recipe ${name} ${locale}`);
 				await shot(`recipe-${name}`, locale);
+			}
+		}
+	});
+
+	it("draws each state of the projects step in both languages", async () => {
+		await load("wizard", wizardView({ locale: "zh-TW", projects: PROJECT_STATES[0]?.[1] as ProjectsView }));
+		await page.waitForLoadState("domcontentloaded");
+		for (const [name, view] of PROJECT_STATES) {
+			for (const locale of LOCALES) {
+				await push("wizard", wizardView({ locale, projects: view }));
+				await settled(locale);
+				assert.equal(await page.evaluate(() => document.body.dataset.step), "projects");
+				assert.equal(await page.locator("li.project-card").count(), view.rows.length, name);
+				await sound(`projects ${name} ${locale}`);
+				await shot(`projects-${name}`, locale);
 			}
 		}
 	});

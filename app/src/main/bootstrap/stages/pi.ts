@@ -16,6 +16,11 @@ export interface NpmStageSpec {
 	/** The stage's name, which is also the `bin` the pin names in `stack.json` (`pi`, `ttt`). */
 	name: string;
 	needs: readonly string[];
+	/**
+	 * Wait for the programs of the data root to end before the install (the stack is stopped for this stage). `ttt` is installed beside a stack that runs, so it does not wait; it still marks its
+	 * prefix, so a cancel or a time limit leaves the record `running` for the start gate.
+	 */
+	waitForQuiet?: boolean;
 	/** Extra environment for npm, for tests (a local registry). The product passes none. */
 	npm?: NpmRun;
 }
@@ -116,7 +121,7 @@ export function npmGlobalStage(spec: NpmStageSpec): Stage {
 			await assertRegistryIntegrity(ctx, pin, spec.npm);
 			// No npm of an earlier run may still be writing the prefix (R9-F001), and from here on the prefix changes in place: a failure cannot promise the old install is intact, and a
 			// cancel or a time limit leaves the record `running`, which the start gate reads (R13-F009, R9B-F002).
-			await ctx.waitForQuietTools();
+			if (spec.waitForQuiet === true) await ctx.waitForQuietTools();
 			ctx.markInPlace();
 			await installGlobal(ctx, pin, spec.npm);
 		},
@@ -158,7 +163,7 @@ export async function versionThroughBin(ctx: StageContext, pin: NpmPin, bin: str
 }
 
 /** The `pi` stage. It needs Node (npm runs under it) and the other two tools of the constructed environment, which names all three. */
-export const piStage = (_platform: AppPlatform, npm?: NpmRun): Stage => npmGlobalStage({ name: "pi", needs: ["node", "git", "herdr"], ...(npm ? { npm } : {}) });
+export const piStage = (_platform: AppPlatform, npm?: NpmRun): Stage => npmGlobalStage({ name: "pi", needs: ["node", "git", "herdr"], waitForQuiet: true, ...(npm ? { npm } : {}) });
 
 /** Exposed for the tests that run npm by hand under the same private Node. */
 export { nodeBinaryPath, npmCliPath };

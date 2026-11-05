@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
-import { binEntry, binScript, binShim, installedFiles, npmGlobalPin, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
+import { binEntry, binScript, binShim, installedFiles, npmGlobalPin, npmGlobalStage, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
 import { npmFailure, npmFailureKind } from "../src/main/bootstrap/npm.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import { readStartGate } from "../src/main/runtime/readiness.ts";
@@ -288,5 +288,36 @@ describe("reading an installed package", () => {
 		const stack = stackFor({ name: PI, version: "1.4.0", integrity: "sha512-x" });
 		assert.equal(npmGlobalPin(stack, "pi").version, "1.4.0");
 		assert.throws(() => npmGlobalPin(stack, "ttt"), /no package with the bin ttt/);
+	});
+});
+
+describe("the ttt stage is installed beside a running stack (task 12 carry-in review)", () => {
+	/** A context that records what the install asked of it; every program it runs answers with the pinned integrity or succeeds. */
+	const install = async (name: "pi" | "ttt", waitForQuiet?: boolean): Promise<string[]> => {
+		const asked: string[] = [];
+		const pin = { name: "@x/pkg", version: "1.0.0", integrity: "sha512-abc", bin: name };
+		const stage = npmGlobalStage({ name, needs: [], ...(waitForQuiet === true ? { waitForQuiet } : {}) });
+		const ctx = {
+			stage: name,
+			stack: { npmGlobal: [pin] },
+			layout: { tools: { root: "/t", npm: "/t/npm" } },
+			fsErrors: [] as string[],
+			versionsOf: () => ({ node: "24.0.0" }),
+			childEnv: () => ({}),
+			exec: async (_file: string, args: readonly string[]) => (args.includes("view") ? { code: 0, stdout: "sha512-abc\n", stderr: "" } : (asked.push("npm-install"), { code: 0, stdout: "", stderr: "" })),
+			waitForQuietTools: async () => void asked.push("wait-quiet"),
+			markInPlace: () => void asked.push("mark-in-place"),
+		};
+		await stage.install(ctx as never);
+		return asked;
+	};
+
+	it("marks its prefix but does not wait for the programs of the data root, which are the running stack", async () => {
+		assert.deepEqual(await install("ttt"), ["mark-in-place", "npm-install"]);
+	});
+
+	it("the pi stage waits first and then marks, as it runs with the stack stopped", async () => {
+		assert.deepEqual(await install("pi", true), ["wait-quiet", "mark-in-place", "npm-install"]);
+		assert.equal(piStage("darwin").name, "pi");
 	});
 });
