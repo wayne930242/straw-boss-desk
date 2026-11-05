@@ -141,6 +141,16 @@ describe("Team recipe: an offered update", () => {
 		assert.deepEqual(buttons(update).map((b) => [b.id, b.className, b.textContent]), [["recipe-apply", "primary", "Apply"], ["recipe-keep", "", "Keep mine"]]);
 	});
 
+	it("shows where the offer came from and the first 16 characters of its SHA256, in both languages (R12-F013)", () => {
+		const sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+		const line = (view: RecipeCardView, locale: "en" | "zh-TW") => draw(view, locale).querySelector("#recipe-offer-source")?.textContent;
+		assert.equal(line(card(offered({ sha256 })), "en"), "From recipes.example.com · SHA256 0123456789abcdef…");
+		assert.equal(line(card(offered({ sha256 })), "zh-TW"), "來源：recipes.example.com · SHA256 0123456789abcdef…");
+		assert.equal(line(card(offered({ sha256, origin: "file" })), "en"), "From the file you chose · SHA256 0123456789abcdef…");
+		assert.equal(line(card(offered({ sha256, origin: "file" })), "zh-TW"), "來源：你選的檔案 · SHA256 0123456789abcdef…");
+		assert.equal(draw(card({ phase: "idle", checkedAt: null })).querySelector("#recipe-offer-source"), null);
+	});
+
 	it("lists every change in words, in both languages, with no placeholder left", () => {
 		for (const locale of ["en", "zh-TW"] as const) {
 			const items = draw(card(offered()), locale).querySelectorAll("#recipe-changes li");

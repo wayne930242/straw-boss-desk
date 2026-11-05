@@ -426,6 +426,8 @@ export const zhTW: Messages = {
 			offered: "{name} 的 {version} 版已經備妥。套用後會做出下列變更。",
 			offeredReplace: "{name}（版本 {version}）是另一份配方。套用後會取代你現在的配方，變更如下。",
 			offeredFile: "{name}（版本 {version}）來自你選的檔案。套用後會做出下列變更。",
+			offeredSourceUrl: "來源：{host} · SHA256 {hash}…",
+			offeredSourceFile: "來源：你選的檔案 · SHA256 {hash}…",
 			installNote: "套用時會先停止你的代理程式幾分鐘，等工具設定好再啟動。",
 			applying: { recipe: "正在儲存配方…", install: "正在設定有變動的部分。在這結束之前，你的代理程式都是停止的。", waitCopy: "正在等 {repository} 複製完。它一結束更新就會開始，在那之前你的代理程式照常運作。", projects: "正在開啟專案…" },
 			applied: "版本 {version} 已套用。新增的專案會在下方複製並開啟。",

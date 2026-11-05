@@ -190,6 +190,10 @@ function updateCard(ctx: SettingsCtx, view: RecipeCardView): HTMLElement {
 		h("p", { class: state.phase === "refused" || state.phase === "error" ? "problem" : "note update-note", id: "recipe-update-note", "data-reason": state.phase === "refused" ? (state.reason === "fetch" ? (state.fetch ?? "network") : state.reason) : state.phase === "failed" ? state.stage : null }, sentence(ctx, view)),
 		time === null ? null : h("p", { class: "note update-note", id: "recipe-checked" }, ctx.tr("settings.recipe.checkedAt", { time })),
 		state.phase === "idle" && time === null && checkable ? h("p", { class: "note update-note", id: "recipe-never" }, ctx.tr("settings.recipe.never")) : null,
+		// Where the offer came from and which bytes it is, as the first trust screen shows both (R12-F013). The host is the one the daily check asked.
+		state.phase === "offered"
+			? h("p", { class: "note update-note", id: "recipe-offer-source" }, state.origin === "url" && view.active?.updateHost != null ? ctx.tr("settings.recipe.offeredSourceUrl", { host: view.active.updateHost, hash: state.sha256.slice(0, 16) }) : ctx.tr("settings.recipe.offeredSourceFile", { hash: state.sha256.slice(0, 16) }))
+			: null,
 		state.phase === "offered" ? h("p", { class: "note update-note", id: "recipe-install-note" }, ctx.tr("settings.recipe.installNote")) : null,
 		state.phase === "refused" && state.reason === "invalid" && state.fields !== undefined && state.fields.length > 0
 			? h(

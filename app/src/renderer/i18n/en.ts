@@ -424,6 +424,8 @@ export const en = {
 			offered: "Version {version} of {name} is ready. Applying it makes the changes below.",
 			offeredReplace: "{name}, version {version}, is another recipe. Applying it replaces the one you have, with the changes below.",
 			offeredFile: "{name}, version {version}, from the file you chose. Applying it makes the changes below.",
+			offeredSourceUrl: "From {host} · SHA256 {hash}…",
+			offeredSourceFile: "From the file you chose · SHA256 {hash}…",
 			installNote: "Applying it stops your agents for a few minutes while tools are set up, then starts them again.",
 			applying: { recipe: "Saving the recipe…", install: "Setting up what changed. Your agents are stopped until this ends.", waitCopy: "Waiting for {repository} to finish copying. The update starts right after, and your agents run until then.", projects: "Opening the projects…" },
 			applied: "Version {version} is applied. Projects it adds are copied and opened below.",
