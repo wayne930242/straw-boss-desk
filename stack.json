@@ -87,7 +87,7 @@
     "integrity": "sha512-qiDHhoWJhhaxVBERMCS25lSGIxtM4Rutu7DZckilcCxQhL+q0QaZYJp3mdWd7/4B/l84NmR/jRDTo9f8npgEzQ=="
   },
   "piPackages": [
-    { "name": "pi-straw-boss", "version": "0.58.3", "integrity": "sha512-PsznRXDqDB5373EItgnbonMeD7uURZ92ZdeH19IH0/H5i/zdUdtUO+7rw+6ldu0M4+iWzffGtjt6SqbbOsXSMA==" },
+    { "name": "pi-straw-boss", "version": "0.59.0", "integrity": "sha512-cubRsrrrh0NvhPK3WE94T+tO5qsEibNAFy2e2JROg3YrQDFD8Jls2TXNKIAtbKLE1Mubc0iU4lGskVV/qBJ2cg==" },
     { "name": "pi-intercom", "version": "0.18.1", "integrity": "sha512-hY3y+vF6CrkpV0N/55pEsl3DSVjGerlTCQDY2mt37o0jQj8SLW+GmQoKyAEgCyfcxrqJb+Tx4hp4eXqM2hLYgg==" },
     {
       "name": "pi-herdr-agents",
