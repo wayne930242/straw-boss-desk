@@ -492,8 +492,8 @@ export class StackUpdater {
 	}
 
 	/**
-	 * An apply or a Repair that a stop of the app cut short (the PM clicked Restart to update, and the installer then could not start) leaves its marker and, for an apply, the card on "applying". This
-	 * finishes it as a launch would, before the stack starts again on tools that may be half updated. Nothing happens when no marker is there.
+	 * An apply that a stop of the app cut short (the PM clicked Restart to update, and the installer then could not start) leaves its marker and the card on "applying". This finishes it as a launch
+	 * would, before the stack starts again on tools that may be half updated. Nothing happens when no marker is there; a Repair writes none, and the start gate refuses the stage it cut.
 	 */
 	async healInterrupted(): Promise<void> {
 		const active = readStack(this.#files.active);

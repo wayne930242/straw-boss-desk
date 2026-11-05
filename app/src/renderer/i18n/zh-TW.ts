@@ -520,7 +520,7 @@ export const zhTW: Messages = {
 				downloadingPercent: "正在下載版本 {version}：{percent}%",
 				ready: "版本 {version} 已準備好。Straw Boss 會先停止你的代理程式，再重新啟動以完成更新。",
 				installFailed: "版本 {version} 的安裝程式沒能啟動，所以什麼都沒有改變，你的代理程式已經重新執行。可以再試一次。",
-				installFailedStopped: "版本 {version} 的安裝程式沒能啟動，所以應用程式沒有更新。你的代理程式沒能重新啟動，原因請看主視窗。可以再試一次。",
+				installFailedStopped: "版本 {version} 的安裝程式沒能啟動，所以應用程式沒有更新。你的代理程式沒能重新啟動，按「返回」看原因。可以再試一次。",
 				downloaded: "版本 {version} 已下載並檢查完畢。開啟這個檔案就能安裝。",
 				refused: {
 					"bad-signature": "版本 {version} 與它的簽章不符，已刪除，也不會提供安裝。",

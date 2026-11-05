@@ -57,8 +57,8 @@ export class QuitGate {
 	}
 
 	/**
-	 * The installer could not start. The app goes on as it was, unless the PM asked to quit during the stop: then it leaves, through the whole stop sequence again, since an update's stop leaves the
-	 * sign-ins alone (R13B-F004). Resolves with whether the agents are running again (false when the app is leaving).
+	 * The installer could not start. The app goes on as it was, unless the PM asked to quit during the stop: then it leaves, through the whole stop sequence again (R13B-F004). The second stop is
+	 * harmless: the update's stop disposed the sign-ins too, so what it finds is already stopped. Resolves with whether the agents are running again (false when the app is leaving).
 	 */
 	async resumeAfterFailedUpdate(): Promise<boolean> {
 		const leaving = this.#quitAsked;
