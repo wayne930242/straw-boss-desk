@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 // File helpers shared by the engine's modules. Every write that another run might read half-done goes through `writeFileAtomic`.
@@ -70,6 +71,9 @@ export function readJsonFile(file: string): JsonValue {
 export function removeTree(path: string): void {
 	rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
+
+/** `removeTree` without blocking the main thread. */
+export const removeTreeAsync = (path: string): Promise<void> => rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
 /**
  * The file operations that can fail on Windows while a process still runs the file. A test passes stubs; the engine passes the real ones.

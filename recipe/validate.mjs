@@ -349,6 +349,7 @@ function validateRepos(value, forgeHosts, errors) {
       const f = `${at}.folder`;
       if (hasHiddenChars(folder)) errors.add(f, "bad-format", "must not contain control or invisible characters");
       else if (FORBIDDEN_FOLDER_CHARS.test(folder) || folder === "." || folder === "..") errors.add(f, "bad-format", "must be a single folder name without separators or reserved characters");
+      else if (folder.startsWith(".")) errors.add(f, "bad-format", "must not start with a dot");
       else if (/^\s|[\s.]$/.test(folder)) errors.add(f, "bad-format", "must not start with a space or end with a space or dot");
       else if (RESERVED_WINDOWS.test(folder)) errors.add(f, "reserved-name", "is a reserved Windows name");
       else if (folder.normalize("NFC").toLowerCase() === HOME_BASE_FOLDER.toLowerCase()) errors.add(f, "reserved-folder", "is the folder of the home base, which a repository cannot use");

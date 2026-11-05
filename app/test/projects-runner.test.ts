@@ -353,6 +353,30 @@ describe("an interrupted clone (R12-F001)", () => {
 		assert.ok(existsSync(join(r.work, ".web.sbd-partial-fedcba987654")), "a file with that name is not removed");
 	});
 
+	it("the sweep never removes a folder the active recipe names, even with a staging name (R12B-F001)", async () => {
+		const r = rig();
+		mkdirSync(r.work, { recursive: true });
+		const named = ".web.sbd-partial-0123456789ab";
+		mkdirSync(join(r.work, named), { recursive: true });
+		writeFileSync(join(r.work, named, "keep.txt"), "a real repository's file");
+		await r.runner.begin([spec("web"), spec(named)]);
+		assert.equal(readFileSync(join(r.work, named, "keep.txt"), "utf8"), "a real repository's file");
+	});
+
+	it("a quit during the host check is recorded as interrupted, not as a network failure (R12B-F004)", async () => {
+		const r = rig();
+		let runner: ProjectsRunner | undefined;
+		runner = new ProjectsRunner({
+			...r.deps,
+			probe: async () => {
+				runner?.dispose();
+				return "unreachable";
+			},
+		});
+		await runner.begin([spec("web")]);
+		assert.deepEqual(runner.view().rows[0]?.failure, { kind: "interrupted" });
+	});
+
 	it("a failed clone removes its staging folder and leaves the target absent", async () => {
 		const r = rig();
 		await r.runner.begin([spec("missing")]);

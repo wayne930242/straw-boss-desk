@@ -2,7 +2,7 @@ import type { RuntimeEvent } from "../runtime/log.ts";
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { removeTree, renameRetry } from "../bootstrap/fsutil.ts";
+import { removeTreeAsync, renameRetry } from "../bootstrap/fsutil.ts";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../shared/projects.ts";
 import type { AppPlatform } from "../paths.ts";
 import { cloneCause, ProjectGit } from "./git.ts";
@@ -36,12 +36,12 @@ export interface ProjectsDeps {
 	/** Opens `dir` as a base. `onTrust` says when a project trust question holds the opening. */
 	openBase(input: { dir: string; label: string; deploy: string }, hooks: { onTrust(asking: boolean): void; signal: AbortSignal }): Promise<OpenOutcome>;
 	record: ProjectRecordStore;
+	/** Asks whether a repository's code host answers, before it is cloned or fetched (a host that is reachable only on the company network gets its own sentence). Default: not asked. */
+	probe?: HostProbe;
 	/**
 	 * Runs one row's Git work (the clone or fetch, `set-head`, the link listing) as a job of the supervisor's queue, beside the installs that also use the tools folder (R12-F002). The open as a base
 	 * is not part of it: it needs the stack running, and a trust question can hold it for minutes. Default: the work runs at once.
 	 */
-	/** Asks whether a repository's code host answers, before it is cloned or fetched (a host that is reachable only on the company network gets its own sentence). Default: not asked. */
-	probe?: HostProbe;
 	gitJob?: <T>(work: () => Promise<T>) => Promise<T>;
 	redact: Redact;
 	log: RuntimeEvent;
@@ -61,7 +61,7 @@ const hostOf = (url: string): string => {
 	}
 };
 
-/** The folder a clone is made in before it takes its name: `.<folder>.sbd-partial-<12 hex digits>`, beside the target. The validator's folder rule never makes such a name for a repository. */
+/** The folder a clone is made in before it takes its name: `.<folder>.sbd-partial-<12 hex digits>`, beside the target. The validator refuses a folder that starts with a dot, so a recipe never names such a folder; the sweep still skips any folder the active recipe lists (R12B-F001). */
 const stagingName = (folder: string): string => `.${folder}.sbd-partial-${randomBytes(6).toString("hex")}`;
 const isStagingOf = (folder: string, name: string): boolean => name.startsWith(`.${folder}.sbd-partial-`) && /^[0-9a-f]{12}$/.test(name.slice(`.${folder}.sbd-partial-`.length));
 
@@ -257,7 +257,11 @@ export class ProjectsRunner {
 			if (!headDone) await this.#open(spec, await this.#job(() => this.#prepare(spec)));
 			this.#patch(spec.folder, { phase: "done", step: null, failure: null, detail: "" });
 		} catch (error) {
-			if (error instanceof RowFailed) {
+			if (this.#abort.signal.aborted) {
+				// A quit in the middle of the host check or the clone is not a failure of the repository (R12B-F004).
+				this.#d.log({ event: "project-failed", folder: spec.folder, failure: "interrupted" });
+				this.#patch(spec.folder, { phase: "failed", step: null, failure: { kind: "interrupted" }, detail: "" });
+			} else if (error instanceof RowFailed) {
 				this.#d.log({ event: "project-failed", folder: spec.folder, failure: error.failure.kind, ...("cause" in error.failure ? { cause: error.failure.cause } : {}) });
 				this.#patch(spec.folder, { phase: "failed", step: null, failure: error.failure, detail: this.#d.redact(error.line).slice(0, 300) });
 			} else {
@@ -299,8 +303,9 @@ export class ProjectsRunner {
 		throw new RowFailed({ kind: "git", step: "head" }, line);
 	}
 
-	/** Removes the staging folders of this repository that an earlier run left (a quit or a crash in the middle of a clone). Only a folder with the name this app gives a staging folder is touched. */
-	#clearLeftovers(work: string, folder: string): void {
+	/** Removes the staging folders of this repository that an earlier run left (a quit or a crash in the middle of a clone). Only a folder with the name this app gives a staging folder is touched, and never one that the active recipe names as a repository. */
+	async #clearLeftovers(work: string, folder: string): Promise<void> {
+		const named = new Set(this.#rows.keys());
 		const listDir = this.#d.listDir ?? ((p: string) => readdirSync(p));
 		let names: string[];
 		try {
@@ -308,11 +313,11 @@ export class ProjectsRunner {
 		} catch {
 			return;
 		}
-		for (const name of names.filter((n) => isStagingOf(folder, n))) {
+		for (const name of names.filter((n) => isStagingOf(folder, n) && !named.has(n))) {
 			const path = join(work, name);
 			try {
 				const stat = lstatSync(path);
-				if (stat.isDirectory() && !stat.isSymbolicLink()) removeTree(path);
+				if (stat.isDirectory() && !stat.isSymbolicLink()) await removeTreeAsync(path);
 			} catch (error) {
 				this.#d.log({ event: "project-leftover-kept", folder, detail: (error as Error).message.slice(0, 200) });
 			}
@@ -333,7 +338,7 @@ export class ProjectsRunner {
 			throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message);
 		}
 		const target = this.#targetOf(spec);
-		this.#clearLeftovers(work, spec.folder);
+		await this.#clearLeftovers(work, spec.folder);
 		let reuse = false;
 		if (exists(target)) {
 			if (!isDirectory(target)) throw new RowFailed({ kind: "not-empty" });
@@ -398,7 +403,7 @@ export class ProjectsRunner {
 			}
 		} finally {
 			try {
-				removeTree(staging);
+				await removeTreeAsync(staging);
 			} catch (error) {
 				d.log({ event: "project-leftover-kept", folder: spec.folder, detail: (error as Error).message.slice(0, 200) });
 			}

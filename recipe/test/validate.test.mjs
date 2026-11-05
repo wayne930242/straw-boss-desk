@@ -259,7 +259,7 @@ describe("fields", () => {
 
   it("checks repo folders", () => {
     const repo = (folder) => ({ repos: [{ url: "https://github.com/a/b.git", folder }] });
-    for (const folder of ["..", ".", "a/b", "a\\b", "a:b", "a*", "a?", 'a"b', "a<b", "a|b", "a\nb", " a", "a ", "a.", ""]) {
+    for (const folder of ["..", ".", "a/b", "a\\b", "a:b", "a*", "a?", 'a"b', "a<b", "a|b", "a\nb", " a", "a ", "a.", "", ".web", ".web.sbd-partial-0123456789ab"]) {
       const result = validateRecipe(withField(repo(folder)));
       assert.equal(result.ok, false, JSON.stringify(folder));
     }
