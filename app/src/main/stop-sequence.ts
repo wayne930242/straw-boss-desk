@@ -58,3 +58,6 @@ export function stopSequenceReport(p: StopParts, options: { waitForTools?: boole
 			return { ok: false, leftovers: [] };
 		});
 }
+
+/** The stop of **Remove all data**: the report, with the wait for programs under `<root>/tools` that Repair's stop also does, so a pane's pi helper that ends within 30 s does not make the removal refuse. */
+export const stopForRemoval = (p: StopParts): Promise<StopOutcome> => stopSequenceReport(p, { waitForTools: true });

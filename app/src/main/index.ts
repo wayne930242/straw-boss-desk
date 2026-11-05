@@ -34,7 +34,7 @@ import { spawnLogin } from "./accounts/cli.ts";
 import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
 import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
-import { stopSequence, stopSequenceReport, type StopParts } from "./stop-sequence.ts";
+import { stopForRemoval, stopSequence, type StopParts } from "./stop-sequence.ts";
 import { preLaunch } from "./pre-launch.ts";
 import { KeepAwake } from "./computer/keep-awake.ts";
 import { ComputerService } from "./computer/service.ts";
@@ -490,7 +490,7 @@ const removal = new RemovalService({
 	stop: async () => {
 		if (stopping) return { ok: false, leftovers: [] };
 		stopping = true;
-		const outcome = await stopSequenceReport(stopParts(), { waitForTools: true });
+		const outcome = await stopForRemoval(stopParts());
 		stopped = outcome.ok;
 		return outcome;
 	},

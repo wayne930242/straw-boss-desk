@@ -84,6 +84,8 @@ export interface FakeCliOptions {
 	onGlabLogin?: (host: string) => void;
 	/** The logout's exit code. */
 	logoutExit?: number;
+	/** Runs when a logout is called, before it acts (something else writes into the store while the logout runs). */
+	onLogout?: (host: string) => void;
 	/** The logout leaves the entries in the store (a logout that did not finish). */
 	logoutKeepsEntries?: boolean;
 	/** glab's login waits for this after it wrote its entry (a login that takes its time). */
@@ -123,6 +125,7 @@ export function fakeRun(store: FakeStore, options: FakeCliOptions = {}): { run: 
 			return { code: 0, stdout: JSON.stringify({ hosts: { [host]: [{ state: "success", active: true, host, login: "someone", tokenSource: source }] } }), stderr: "" };
 		}
 		if (verb === "auth logout") {
+			options.onLogout?.(host);
 			const code = options.logoutExit ?? 0;
 			if (code === 0 && options.logoutKeepsEntries !== true) store.entries = store.entries.filter((e) => !(cli === "glab" ? e.name === `glab:${host}:token` || e.name === `glab:${host}` : e.name === `gh:${host}` || e.name === `gh:_refreshable:${host}`));
 			// What the real CLIs do besides the store: the host leaves their own file, a plain-text token with it.

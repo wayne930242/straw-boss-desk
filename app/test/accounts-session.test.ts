@@ -788,6 +788,19 @@ describe("the CLI's logout after a plain-text logout took the host out of the ap
 		assert.equal(readAccountsRecord(r.layout).entries.length, 0);
 	});
 
+	it("Sign out whose logout fails while something else writes over the app's entry deletes nothing: the entry is foreign by the time of the second listing", async () => {
+		const writeOver = (r: ReturnType<typeof rig>): void => void r.store.write("glab:gitlab.com:token", "");
+		const r = rig({ logoutExit: 1, onLogout: () => writeOver(r) });
+		await r.accounts.begin("gitlab", "gitlab.com");
+		await r.accounts.signInGitlab("gitlab.com", TOKEN);
+		writeFileSync(join(r.layout.glabConfig, "config.yml"), "git_protocol: https\n");
+		const written = (): string | undefined => r.store.get("glab:gitlab.com:token")?.modified;
+		await r.accounts.signOut("gitlab", "gitlab.com");
+		assert.equal(phase(r, "gitlab.com"), "failed", "the step says it did not finish");
+		assert.ok(written(), "the entry is still in the store");
+		assert.ok(!r.store.calls.some((c) => c.startsWith("delete ")), "no delete was issued");
+	});
+
 	it("a plain-text login whose logout fails while the host is still in the CLI's file: the app takes the token out of the file and deletes its own store entry, and says no token stays", async () => {
 		const plainGlab = (r: ReturnType<typeof rig>): void => {
 			mkdirSync(r.layout.glabConfig, { recursive: true });

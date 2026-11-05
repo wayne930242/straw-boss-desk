@@ -10,7 +10,7 @@ import { anchorOf, guideUrl, GUIDE_REMOVE_HEADING, GUIDE_REPO } from "../src/mai
 import { preLaunch } from "../src/main/pre-launch.ts";
 import { claudeItem, safeStorageItem } from "../src/main/removal/names.ts";
 import { hasRemoveUserPath, hasStopStack } from "../src/main/runtime/args.ts";
-import { stopSequenceReport, type StopParts } from "../src/main/stop-sequence.ts";
+import { stopForRemoval, stopSequenceReport, type StopParts } from "../src/main/stop-sequence.ts";
 import type { UserPath } from "../src/main/platform/types.ts";
 
 const bases: string[] = [];
@@ -148,6 +148,12 @@ describe("stopSequenceReport", () => {
 		let seen: unknown;
 		const outcome = await stopSequenceReport(parts(async (o) => ((seen = o), { ok: false, leftovers: [{ pid: 7, file: "node" }, "junk"] })), { waitForTools: true });
 		assert.deepEqual(outcome, { ok: false, leftovers: [{ pid: 7, file: "node" }] });
+		assert.deepEqual(seen, { waitForTools: true });
+	});
+	it("stopForRemoval always waits for the tools folder to empty, as Repair's stop does", async () => {
+		let seen: unknown = "unset";
+		const outcome = await stopForRemoval(parts(async (o) => ((seen = o), { ok: true, leftovers: [] })));
+		assert.deepEqual(outcome, { ok: true, leftovers: [] });
 		assert.deepEqual(seen, { waitForTools: true });
 	});
 	it("reports a stop that throws as not stopped", async () => {
