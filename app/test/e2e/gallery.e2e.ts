@@ -129,7 +129,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 	};
 	/**
 	 * SA-T12-6: a path wraps only after a 「/」, never inside a name that would fit on a line of its own. For every character of every `.path-item` the line it sits on is read from its rect; where the line
-	 * changes after anything but a slash, the name around that point is measured unbroken, and it must be wider than the paragraph (then there is nowhere else to break it).
+	 * changes after anything but a slash or a hyphen (the browser's own break after a hyphen is no split of a word), the name around that point is measured unbroken, and it must be wider than the paragraph (then there is nowhere else to break it).
 	 */
 	const pathsBreakAtSeparators = async (name: string): Promise<void> => {
 		const bad = await page.evaluate(() => {
