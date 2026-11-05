@@ -193,7 +193,8 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		// The wizard is done and the work folder is the PM's: a folder with a file of theirs in it.
 		mkdirSync(join(workFolder(), "web"), { recursive: true });
 		writeFileSync(join(workFolder(), "web", "README.md"), "mine\n");
-		writeWizardFile(world.layout, { schema: 1, step: "done", done: true, later: [], hostsIndex: 0, locale: "en", workFolder: workFolder() });
+		// The code hosts the app knows are the recipe's, or, with none, the ones the PM named: the app reads them from the wizard record, so the foreign entry's host is named there.
+		writeWizardFile(world.layout, { schema: 1, step: "done", done: true, later: [], hostsIndex: 0, locale: "en", workFolder: workFolder(), noRecipeForges: [{ kind: "github", host: HOST_FOREIGN }] });
 		// The entries: the owned one and the changed one are recorded with the time the store gave them; the changed one is then rewritten, which is a write by someone else.
 		await seeder.write(OWNED.name, OWNED.account, SECRET);
 		await seeder.write(CHANGED.name, CHANGED.account, SECRET);
