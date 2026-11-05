@@ -676,7 +676,15 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await page.locator("#linear-save").click();
 		await page.locator('[data-role="restart-offer"]').waitFor({ timeout: 300_000 });
 		assert.equal(await fieldsEmpty(page), true, "the field was cleared when the key was sent");
-		assert.equal(await page.locator('#linear-restart').evaluate((el) => el.classList.contains("primary")), true, "Restart now is the primary action");
+		const primary = await page.locator('#linear-restart').evaluate((el) => el.classList.contains("primary"));
+		if (!primary) {
+			// Something came before Restart now in the row (a failed setup): say what, with the page and the log, so the run explains itself.
+			await shot(page, "linear-restart-not-primary-zh-TW");
+			const buttons = await page.locator("button").evaluateAll((all) => all.map((b) => `${b.id}:${b.className}`));
+			const flow = await page.locator("[data-role]").evaluateAll((all) => all.map((e) => `${e.getAttribute("data-role")}=${(e.textContent ?? "").slice(0, 160)}`));
+			const events = logEvents().filter((e) => /linear|ttt|engine|stage/i.test(String(e.event))).slice(-12).map((e) => JSON.stringify(e).slice(0, 300));
+			assert.fail(`Restart now is not the primary action; buttons ${buttons.join(", ")}; roles ${flow.join(" | ")}; log ${events.join(" / ")}`);
+		}
 		assert.equal(await page.locator("#linear-restart-later").isVisible(), true);
 		assert.equal(await page.locator('[data-role="done"]').count(), 1);
 		await shotBoth(page, "linear-restart-offered");

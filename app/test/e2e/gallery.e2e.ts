@@ -1,22 +1,24 @@
-// The page gallery (task 12): every state of the projects step and of the Team recipe card, drawn by the real pages from `dist/renderer` through the real shell preload, in zh-TW and in English, one
-// picture each (artifact `gallery-screenshots-<os>`). The views are scripted (`harness/views.ts`), so each state is there on purpose, not by luck of timing; the real flows (a real clone, a real update
-// served by a local server) are `wizard.e2e.ts`'s. The test opens a window, so it runs on the CI runners only; it needs `npm run build` first and no packaged app.
+// The page gallery (task 12): every state of the projects step and of the Team recipe card, drawn by the real pages of the packaged development build through the real shell preload, in zh-TW and in
+// English, one picture each (artifact folder `gallery`). The views are scripted (`harness/views.ts`), so each state is there on purpose, not by luck of timing; the real flows (a real clone, a real
+// update served by a local server) are `wizard.e2e.ts`'s. The app is started on a scratch data root and sits on its welcome page; the test then opens a second window of its own in the app's main
+// process, with the app's shell preload, and answers that window's state calls itself (the app's handlers for those calls are replaced in this throw-away instance). It opens windows, so it runs on
+// the CI runners only.
 //   SBD_E2E=1 SBD_E2E_KIND=dev node --test test/e2e/gallery.e2e.ts
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../src/shared/projects.ts";
 import type { FetchReason, RecipeCardState, RecipeCardView, RecipeChange } from "../../src/shared/recipe-update.ts";
 import type { Locale } from "../../src/shared/locale.ts";
-import { appRoot } from "../harness/packaged.ts";
+import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { settingsView, wizardView } from "../harness/views.ts";
 
 const enabled = process.env.SBD_E2E === "1" && process.env.SBD_E2E_KIND !== "release";
 const skip = enabled ? false : "opens a real window: runs on the CI runners only (SBD_E2E=1, development kind)";
-const dist = join(appRoot, "dist");
+const packaged: Packaged | undefined = enabled ? locatePackaged("dev") : undefined;
 const screenshotDir = join(process.env.SBD_SCREENSHOT_DIR ?? join(appRoot, "test-results", "screenshots"), "gallery");
 const LOCALES: readonly Locale[] = ["zh-TW", "en"];
 
@@ -83,6 +85,7 @@ const RECIPE_STATES: Array<[string, RecipeCardState, ProjectsView?]> = [
 describe("every state of the projects step and the Team recipe card (gallery)", { skip }, () => {
 	let app: ElectronApplication;
 	let page: Page;
+	let parent = "";
 
 	const shot = async (name: string, locale: Locale): Promise<void> => {
 		mkdirSync(screenshotDir, { recursive: true });
@@ -92,7 +95,7 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 		const deadline = Date.now() + 10_000;
 		while (Date.now() < deadline && (await page.evaluate(() => document.documentElement.lang)) !== locale) await new Promise((r) => setTimeout(r, 50));
 		assert.equal(await page.evaluate(() => document.documentElement.lang), locale);
-		// The page redraws on the next frame after a view arrives.
+		// The page redraws as soon as a view arrives; a short pause lets the layout settle before the picture.
 		await new Promise((r) => setTimeout(r, 150));
 	};
 	/** The facts every picture must meet: no unfilled placeholder, no sideways scroll, no duplicate id. */
@@ -106,28 +109,71 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 		assert.equal(facts.overflow, false, `${what}: the page scrolls sideways`);
 		assert.deepEqual(facts.duplicates, [], `${what}: an id repeats`);
 	};
+	/** Loads a page in the gallery window with `view`, and returns once it has loaded. */
+	const load = (file: "wizard" | "settings", view: unknown): Promise<unknown> =>
+		app.evaluate(
+			async (_, input: { file: string; view: unknown }) => {
+				const g = globalThis as unknown as { __gallery: { state: Record<string, unknown>; win: { loadFile(p: string): Promise<void> }; dist: string } };
+				g.__gallery.state[input.file] = input.view;
+				g.__gallery.state.locale = (input.view as { locale: string }).locale;
+				await g.__gallery.win.loadFile(`${g.__gallery.dist}/renderer/${input.file}.html`);
+			},
+			{ file, view },
+		);
+	const push = (file: "wizard" | "settings", view: unknown): Promise<unknown> =>
+		app.evaluate(
+			(_, input: { file: string; view: unknown }) => {
+				const g = globalThis as unknown as { __gallery: { state: Record<string, unknown>; win: { webContents: { send(c: string, v: unknown): void } } } };
+				g.__gallery.state[input.file] = input.view;
+				g.__gallery.state.locale = (input.view as { locale: string }).locale;
+				g.__gallery.win.webContents.send(input.file === "wizard" ? "sbd:wizard-changed" : "sbd:settings-changed", input.view);
+			},
+			{ file, view },
+		);
 
 	before(async () => {
-		assert.ok(existsSync(join(dist, "renderer", "wizard.html")), "run `npm run build` first");
-		const electronPath = createRequire(import.meta.url)("electron") as string;
-		app = await electron.launch({ executablePath: electronPath, args: [join(import.meta.dirname, "..", "harness", "gallery-main.cjs")], env: { ...process.env, SBD_GALLERY_DIST: dist } as Record<string, string>, timeout: 60_000 });
-		page = await app.firstWindow();
+		assert.ok(packaged, "no packaged development build in app/out/dev");
+		parent = mkdtempSync(join(tmpdir(), "sbd-gallery-"));
+		const env: Record<string, string> = {};
+		for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(PI_|HERDR_|ELECTRON_RUN_AS_NODE$)/.test(k)) env[k] = v;
+		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: { ...env, STRAW_BOSS_DESK_ROOT: join(parent, "sbd 測試") }, timeout: 90_000 });
+		// A window of the test's own, in the app's main process, with the app's shell preload.
+		const [opened] = await Promise.all([
+			app.waitForEvent("window", { timeout: 60_000 }),
+			app.evaluate(({ app: electronApp, BrowserWindow, ipcMain }) => {
+				const dist = `${electronApp.getAppPath()}/dist`;
+				const state: Record<string, unknown> = { wizard: null, settings: null, locale: "en" };
+				for (const channel of ["sbd:wizard-state", "sbd:settings-state", "sbd:locale", "sbd:wizard-act", "sbd:settings-act"]) ipcMain.removeHandler(channel);
+				ipcMain.handle("sbd:wizard-state", () => state.wizard);
+				ipcMain.handle("sbd:settings-state", () => state.settings);
+				ipcMain.handle("sbd:locale", () => state.locale);
+				ipcMain.handle("sbd:wizard-act", () => undefined);
+				ipcMain.handle("sbd:settings-act", () => undefined);
+				const win = new BrowserWindow({
+					width: 1000,
+					height: 900,
+					show: true,
+					webPreferences: { preload: `${dist}/preload/shell.cjs`, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ["--sbd-locale=en", "--sbd-build=dev", "--sbd-product=Gallery"] },
+				});
+				(globalThis as unknown as { __gallery: unknown }).__gallery = { state, win, dist };
+			}),
+		]);
+		page = opened;
 	});
 	after(async () => {
 		await app?.close().catch(() => undefined);
+		if (parent !== "") rmSync(parent, { recursive: true, force: true });
 	});
 
 	it("draws each state of the projects step in both languages", async () => {
-		const first = wizardView({ locale: "zh-TW", projects: PROJECT_STATES[0]?.[1] as ProjectsView });
-		await app.evaluate((_, v) => (globalThis as unknown as { __gallery: { load: (p: string, k: string, v: unknown) => Promise<void> } }).__gallery.load("wizard", "wizard", v), first);
+		await load("wizard", wizardView({ locale: "zh-TW", projects: PROJECT_STATES[0]?.[1] as ProjectsView }));
 		await page.waitForLoadState("domcontentloaded");
 		for (const [name, view] of PROJECT_STATES) {
 			for (const locale of LOCALES) {
-				await app.evaluate((_, v) => (globalThis as unknown as { __gallery: { push: (k: string, v: unknown) => void } }).__gallery.push("wizard", v), wizardView({ locale, projects: view }));
+				await push("wizard", wizardView({ locale, projects: view }));
 				await settled(locale);
 				assert.equal(await page.evaluate(() => document.body.dataset.step), "projects");
-				const cards = await page.locator("li.project-card").count();
-				assert.equal(cards, view.rows.length, name);
+				assert.equal(await page.locator("li.project-card").count(), view.rows.length, name);
 				await sound(`projects ${name} ${locale}`);
 				await shot(`projects-${name}`, locale);
 			}
@@ -135,13 +181,11 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 	});
 
 	it("draws each state of the Team recipe card in both languages", async () => {
-		const first = settingsView({ locale: "zh-TW", section: "recipe", recipeCard: { active: ACTIVE, state: RECIPE_STATES[0]?.[1] as RecipeCardState, projects: projects([]), enabled: true } });
-		await app.evaluate((_, v) => (globalThis as unknown as { __gallery: { load: (p: string, k: string, v: unknown) => Promise<void> } }).__gallery.load("settings", "settings", v), first);
+		await load("settings", settingsView({ locale: "zh-TW", section: "recipe", recipeCard: { active: ACTIVE, state: RECIPE_STATES[0]?.[1] as RecipeCardState, projects: projects([]), enabled: true } }));
 		await page.waitForLoadState("domcontentloaded");
 		for (const [name, state, rows] of RECIPE_STATES) {
 			for (const locale of LOCALES) {
-				const view = settingsView({ locale, section: "recipe", recipeCard: { active: ACTIVE, state, projects: rows ?? projects([done({ folder: "web", label: "Web app" })]), enabled: true } });
-				await app.evaluate((_, v) => (globalThis as unknown as { __gallery: { push: (k: string, v: unknown) => void } }).__gallery.push("settings", v), view);
+				await push("settings", settingsView({ locale, section: "recipe", recipeCard: { active: ACTIVE, state, projects: rows ?? projects([done({ folder: "web", label: "Web app" })]), enabled: true } }));
 				await settled(locale);
 				await page.locator("#recipe-cards").waitFor({ timeout: 10_000 });
 				assert.equal(await page.locator('li[data-role="update"]').getAttribute("data-state"), state.phase, name);
