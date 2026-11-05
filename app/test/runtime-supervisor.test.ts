@@ -427,6 +427,8 @@ describe("a start from nothing", () => {
 		// The constructed environment: the app's own SSH agent, token, and pane ids never reach a child.
 		const env = spawned?.env ?? {};
 		assert.equal(env.STRAW_BOSS_DESK, "1");
+		assert.equal(env.STRAW_BOSS_INTEGRATION, "off", "the Herdr server, whose panes the mains and tower runs start in, carries the switch");
+		assert.equal(w.callsOf("up")[0]?.options?.env?.STRAW_BOSS_INTEGRATION, "off", "the sb server (`up`) carries it too");
 		assert.equal(env.PI_CODING_AGENT_DIR, w.layout.agent);
 		assert.equal(env.HERDR_SOCKET_PATH, w.layout.herdrSocket);
 		assert.equal(env.XDG_CONFIG_HOME, w.layout.configHome);
