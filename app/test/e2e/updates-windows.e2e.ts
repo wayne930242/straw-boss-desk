@@ -3,6 +3,9 @@
 //   - a 0.0.2 installer with one byte changed, its `latest.yml` SHA512 regenerated, is refused by the Ed25519 check, deleted, and never offered;
 //   - the signed 0.0.2 is downloaded and checked; **Restart to update** stops the stack, runs the installer silently, and starts 0.0.2, which reaches the GUI with the stack back;
 //   - the signing is done by `scripts/sign-stack.mjs` with a key made for this run (passed as a JWK in the environment, never a file).
+//   - (task 14) the user PATH entry (`<root>\tools\shims`) is still there after the update, since the old uninstaller runs during an update and `${isUpdated}` keeps it from removing the entry;
+//   - (task 14) the uninstaller, run silently with the app and its stack running, stops the stack through `--stop-stack`, removes the entry through `--remove-user-path`, and removes the program: nothing runs
+//     from under the install folder or `<root>/tools`, the user PATH holds no entry of the app, and `<root>` is kept (Remove all data is the full removal).
 // The install writes the per-user uninstall entry and the app's own sign-in-free setup writes the user PATH entry: a guarded fixture, GitHub-hosted runners only.
 //   SBD_E2E=1 SBD_UPDATE_INSTALLERS=<folder with straw-boss-desk-Setup-0.0.1.exe and -0.0.2.exe> node --test test/e2e/updates-windows.e2e.ts
 import assert from "node:assert/strict";
@@ -146,6 +149,8 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		}
 		return found;
 	};
+	/** True when the user PATH holds the app's entry (`<root>\tools\shims`), compared the way Windows does, without case. */
+	const pathHasEntry = async (): Promise<boolean> => ((await world.userPath.read())?.value ?? "").split(";").some((p) => p.toLowerCase() === world.layout.tools.shims.toLowerCase());
 	const guiUp = async (): Promise<boolean> => {
 		const record = startRecord();
 		return record.sb !== null && (await platform.processes.inspect([record.sb.pid]))[0]?.startTime !== null && (await herdrAnswers());
@@ -258,5 +263,21 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		assert.equal(existsSync(world.layout.state), true, "the data root is kept");
 		const log = readFileSync(join(world.layout.logs, "start.jsonl"), "utf8");
 		assert.match(log, /"event":"update-stop"/);
+		assert.equal(await pathHasEntry(), true, "the user PATH entry is still there after the update (the old uninstaller ran under ${isUpdated})");
+	});
+
+	it("uninstalls silently with the app and its stack running: the stack is stopped, the PATH entry is removed, the program is gone, and the data root is kept", async () => {
+		assert.equal(await pathHasEntry(), true, "the entry is there before the uninstall");
+		assert.ok((await platform.processes.listUnder(world.root)).length > 0, "the stack runs from under the root before the uninstall");
+		const uninstaller = join(installDir, `Uninstall ${productName}.exe`);
+		assert.ok(existsSync(uninstaller), "the uninstaller is in the install folder");
+		// `_?=` keeps the uninstaller from copying itself away and returning at once, so spawnSync waits for the whole uninstall; the environment reaches the app that the script starts.
+		const r = spawnSync(uninstaller, ["/S", `_?=${installDir}`], { env: env(), timeout: 300_000 });
+		assert.equal(r.status, 0, `the uninstaller exited ${r.status}: ${r.stderr?.toString()}`);
+		await until("the program to be gone", 120_000, () => !existsSync(exe));
+		assert.deepEqual((await platform.processes.listUnder(world.root)).map((p) => p.pid), [], "no process runs from under the root (the leftover listing's rule: the full path of the executable)");
+		assert.deepEqual((await platform.processes.listUnder(installDir)).map((p) => p.pid), [], "no process runs from the install folder");
+		assert.equal(await pathHasEntry(), false, "the user PATH entry of the app is gone");
+		assert.equal(existsSync(world.layout.state), true, "the data root is kept");
 	});
 });

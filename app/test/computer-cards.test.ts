@@ -284,3 +284,13 @@ describe("the requests the page may send", () => {
 		assert.equal(isDiagnosticsAction("diagnostics-repair"), false);
 	});
 });
+
+describe("the dialog of a pending removal that could not finish", () => {
+	it("is worded in both languages and names the folder", () => {
+		for (const locale of ["en", "zh-TW"] as const) {
+			const p = catalogs[locale].pending;
+			assert.ok(p.failedTitle.length > 5);
+			assert.match(p.failedBody, /\{folder\}/);
+		}
+	});
+});
