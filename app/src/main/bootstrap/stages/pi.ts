@@ -18,7 +18,8 @@ export interface NpmStageSpec {
 	needs: readonly string[];
 	/**
 	 * Wait for the programs of the data root to end before the install (the stack is stopped for this stage). `ttt` is installed beside a stack that runs, so it does not wait; it still marks its
-	 * prefix, so a cancel or a time limit leaves the record `running` for the start gate.
+	 * prefix, so a cancel or a time limit leaves the record `running` and its own next run installs it again. The start gate does not read it (`isPackageStage` covers `pi`, the profile and the
+	 * packages, not `ttt`): a start does not need `ttt`.
 	 */
 	waitForQuiet?: boolean;
 	/** Extra environment for npm, for tests (a local registry). The product passes none. */

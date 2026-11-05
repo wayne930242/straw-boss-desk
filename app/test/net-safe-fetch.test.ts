@@ -280,6 +280,19 @@ describe("other refusals", () => {
 		await expectRefused("https://recipes.fetch-test.example/r.json", "network", { ca: undefined });
 	});
 
+	it("trusts an authority the OS store holds, and still the bundled roots when the store cannot be read (R12-F008)", async () => {
+		route = (_request, response) => response.writeHead(200).end("ok");
+		const got = await fetchPublicText("https://recipes.fetch-test.example/r.json", deps({ ca: undefined, systemRoots: () => [ca.caPem] }));
+		assert.equal(got.text, "ok");
+		await expectRefused("https://recipes.fetch-test.example/r.json", "network", { ca: undefined, systemRoots: () => [] });
+		await expectRefused("https://recipes.fetch-test.example/r.json", "network", {
+			ca: undefined,
+			systemRoots: () => {
+				throw new Error("no store");
+			},
+		});
+	});
+
 	it("gives up on a server that never answers", async () => {
 		route = () => undefined;
 		await expectRefused("https://recipes.fetch-test.example/r.json", "network", { timeoutMs: 300 });

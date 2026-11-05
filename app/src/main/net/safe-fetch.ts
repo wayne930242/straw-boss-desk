@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { request, type RequestOptions } from "node:https";
+import { getCACertificates, rootCertificates } from "node:tls";
 import { isIP } from "node:net";
 import { isPublicAddress } from "./public-address.ts";
 
@@ -11,7 +12,8 @@ import { isPublicAddress } from "./public-address.ts";
 //   - at most 256 KB of body, counted as it arrives (a `Content-Length` over it is refused before the body starts);
 //   - the host is public: its name passes the recipe validator's lexical rule, and every address it resolves to is public (`isPublicAddress`), at the first address and at every redirect. The
 //     connection goes to the address that was checked, not to the name, so the answer cannot change between the check and the connect (DNS rebinding).
-// The fetch does not use the OS proxy: through a proxy the address that is dialled is the proxy's, and the check above would say nothing about where the request goes.
+// The fetch does not use the OS proxy: through a proxy the address that is dialled is the proxy's, and the check above would say nothing about where the request goes. Its certificate roots are Node's
+// bundled ones plus the OS store's (`getCACertificates("system")`), so a company's own authority that the OS trusts is trusted here as it is by every other network call of the app (R12-F008).
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_REDIRECTS = 3;
@@ -63,8 +65,10 @@ export interface FetchDeps {
 	privateOrLocalHost: (hostname: string) => boolean;
 	/** A test points a checked address at a local server; production dials the address itself. */
 	dial?: Dial;
-	/** Extra certificate authorities (PEM) for a test server's certificate. Production uses the system's. */
+	/** Certificate authorities (PEM) that replace the defaults, for a test server's certificate. Production: Node's bundled roots and the OS store's. */
 	ca?: string;
+	/** The OS store's roots (PEM). Default: `tls.getCACertificates("system")`; a failure to read it leaves the bundled roots alone. A test passes its own. */
+	systemRoots?: () => readonly string[];
 	timeoutMs?: number;
 }
 
@@ -73,6 +77,17 @@ export interface Fetched {
 	/** The address that answered, without user info (there is none), query or fragment. */
 	finalUrl: string;
 	redirects: number;
+}
+
+/** What the connection trusts when no `ca` replaces it: Node's bundled Mozilla roots, then the OS store's. */
+function trustedRoots(deps: FetchDeps): string[] {
+	let system: readonly string[] = [];
+	try {
+		system = (deps.systemRoots ?? (() => getCACertificates("system")))();
+	} catch {
+		// The bundled roots still apply: a machine whose store cannot be read is no worse off than before.
+	}
+	return [...rootCertificates, ...system];
 }
 
 const plainUrl = (url: URL): string => `${url.protocol}//${url.host}${url.pathname}`;
@@ -121,7 +136,7 @@ function oneRequest(url: URL, address: string, deps: FetchDeps): Promise<Hop> {
 			servername: url.hostname,
 			headers: { host: url.host, accept: "application/json, text/plain;q=0.5", "accept-encoding": "identity", "user-agent": "straw-boss-desk", connection: "close" },
 			agent: false,
-			...(deps.ca === undefined ? {} : { ca: deps.ca }),
+			ca: deps.ca ?? trustedRoots(deps),
 		};
 		let settled = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
