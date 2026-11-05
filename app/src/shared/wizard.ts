@@ -1,4 +1,5 @@
 import type { AccountAction, ClaudeView, ForgeView, LinearView } from "./accounts.ts";
+import type { ComputerAction, ComputerView, DiagnosticsAction, DiagnosticsView } from "./computer.ts";
 import type { Locale } from "./locale.ts";
 import type { ProjectsView } from "./projects.ts";
 import type { RecipeAction, RecipeCardView } from "./recipe-update.ts";
@@ -180,6 +181,10 @@ export interface SettingsView {
 	updates?: UpdatesView;
 	/** The Team recipe card: the active recipe, an update offered, and the repository rows. Absent before main has built it. */
 	recipeCard?: RecipeCardView;
+	/** Computer: keep awake and **Remove all data**. Absent before main has built it. */
+	computer?: ComputerView;
+	/** Diagnostics: the status, the logs, **Collect diagnostics** and **Repair**. Absent before main has built it. */
+	diagnostics?: DiagnosticsView;
 }
 
-export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | AccountAction | UpdateAction | RecipeAction;
+export type SettingsAction = { type: "close" } | { type: "section"; section: SettingsSection } | { type: "set-locale"; locale: Locale } | AccountAction | UpdateAction | RecipeAction | ComputerAction | DiagnosticsAction;

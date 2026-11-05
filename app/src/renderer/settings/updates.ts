@@ -10,27 +10,27 @@ import { sectionBox, type SettingsCtx } from "./common.ts";
 type Tr = SettingsCtx["tr"];
 
 const BADGE_CLASS = { working: "badge-working", done: "badge-done", failed: "badge-failed", warn: "badge-warn", quiet: "badge-blocked" } as const;
-type BadgeKind = keyof typeof BADGE_CLASS;
+export type BadgeKind = keyof typeof BADGE_CLASS;
 
-const badge = (cls: BadgeKind, phase: string, text: string): HTMLElement => h("span", { class: `badge ${BADGE_CLASS[cls]}`, "data-badge": phase }, text);
+export const badge = (cls: BadgeKind, phase: string, text: string): HTMLElement => h("span", { class: `badge ${BADGE_CLASS[cls]}`, "data-badge": phase }, text);
 
 /** The raw text of an error, under a Details fold: the sentence above it is the catalog's, and this is for whoever helps the PM. Null when there is none. */
-function details(tr: Tr, raw: string | undefined): HTMLElement | null {
+export function details(tr: Tr, raw: string | undefined): HTMLElement | null {
 	if (raw === undefined || raw === "") return null;
 	return h("details", { class: "update-details" }, h("summary", {}, tr("settings.updates.details")), h("p", { class: "note update-detail" }, raw));
 }
 
 /** A card: its head (name, what it is about, the badge, the one row of buttons), then the sentence, then whatever the state adds. */
-function card(role: string, state: string, head: Array<HTMLElement | null>, ...below: Array<HTMLElement | null>): HTMLElement {
+export function card(role: string, state: string, head: Array<HTMLElement | null>, ...below: Array<HTMLElement | null>): HTMLElement {
 	return h("li", { class: "update-card", "data-role": role, "data-state": state }, h("div", { class: "update-head" }, ...head), ...below);
 }
 
-const row = (...buttons: Array<HTMLElement | null>): HTMLElement | null => {
+export const row = (...buttons: Array<HTMLElement | null>): HTMLElement | null => {
 	const present = buttons.filter((b): b is HTMLElement => b !== null);
 	return present.length === 0 ? null : h("span", { class: "update-buttons" }, ...present);
 };
 
-const button = (id: string, text: string, onclick: () => void, options: { primary?: boolean; disabled?: boolean } = {}): HTMLElement =>
+export const button = (id: string, text: string, onclick: () => void, options: { primary?: boolean; disabled?: boolean } = {}): HTMLElement =>
 	h("button", { type: "button", id, class: options.primary === true ? "primary" : null, disabled: options.disabled === true, onclick }, text);
 
 // ---- the check ---------------------------------------------------------------------------------------------------------

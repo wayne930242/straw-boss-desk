@@ -108,12 +108,16 @@ describe("stop sequence", () => {
 		assert.match(source, /prepareQuit: \(\) => stopForUpdate\(\)/);
 		assert.match(body(source, "stopForUpdate"), /await stopAll\(\)/);
 		assert.match(body(source, "stopThenExit"), /stopAll\(\)/);
-		const all = body(source, "stopAll");
-		assert.match(all, /stopSequence\(\{[^]*\bupdates\b[^]*\baccounts\b[^]*\bclaude\b[^]*\blinear\b[^]*\bengineHost\b[^]*\}\)/);
+		assert.match(body(source, "stopAll"), /stopSequence\(stopParts\(\)\)/);
+		// Remove all data stops through the same parts, so it ends the same sign-ins and the same engine.
+		assert.match(source, /stopSequenceReport\(stopParts\(\)/);
+		assert.match(body(source, "stopParts"), /\bupdates\b[^]*\baccounts\b[^]*\bclaude\b[^]*\blinear\b[^]*\bengineHost\b/);
 	});
 
-	it("resumeAfterFailedUpdate resumes every sign-in (comments ignored)", () => {
-		const resume = body(code("../src/main/index.ts"), "resumeAfterFailedUpdate");
+	it("resumeAfterStop, which a failed update install and a refused Remove all data both end in, resumes every sign-in (comments ignored)", () => {
+		const source = code("../src/main/index.ts");
+		assert.match(body(source, "resumeAfterFailedUpdate"), /resumeAfterStop\("update-resume"\)/);
+		const resume = body(source, "resumeAfterStop");
 		for (const name of ["accounts", "claude", "linear"]) assert.match(resume, new RegExp(`\\b${name}\\.resume\\(\\)`));
 	});
 });

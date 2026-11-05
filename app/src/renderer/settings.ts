@@ -29,14 +29,22 @@ function draw(): void {
 	if (view === null) return;
 	const ctx = makeSettingsCtx(view, locale, (action) => void shell?.settingsAct(action));
 	clear(nav as HTMLElement);
-	(nav as HTMLElement).append(
-		h("button", { type: "button", id: "settings-back", class: "back", onclick: () => ctx.act({ type: "close" }) }, t(locale, "settings.back")),
-		h("h2", {}, t(locale, "settings.title")),
-		...SETTINGS_SECTIONS.map((s) => h("button", { type: "button", class: "nav-item", "data-section": s, "aria-current": String(s === view?.section), onclick: () => ctx.act({ type: "section", section: s }) }, t(locale, `menu.${s}`))),
-	);
+	// While **Remove all data** works and after it, nothing else in settings may write into the root that is going: the list of sections and **Back** are gone, and the section is Computer.
+	const phase = view.computer?.remove.phase;
+	const locked = phase === "working" || phase === "done";
+	const section: SettingsSection = locked ? "computer" : view.section;
+	if (locked) {
+		(nav as HTMLElement).append(h("h2", {}, t(locale, "settings.title")));
+	} else {
+		(nav as HTMLElement).append(
+			h("button", { type: "button", id: "settings-back", class: "back", onclick: () => ctx.act({ type: "close" }) }, t(locale, "settings.back")),
+			h("h2", {}, t(locale, "settings.title")),
+			...SETTINGS_SECTIONS.map((s) => h("button", { type: "button", class: "nav-item", "data-section": s, "aria-current": String(s === view?.section), onclick: () => ctx.act({ type: "section", section: s }) }, t(locale, `menu.${s}`))),
+		);
+	}
 	const typed = carryPasswords(body as HTMLElement);
 	clear(body as HTMLElement);
-	(body as HTMLElement).append(SECTIONS[view.section](ctx));
+	(body as HTMLElement).append(SECTIONS[section](ctx));
 	restorePasswords(body as HTMLElement, typed);
 }
 

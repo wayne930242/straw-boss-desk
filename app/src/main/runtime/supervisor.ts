@@ -72,6 +72,9 @@ export interface SupervisorTimeouts {
 	sessionEndStopMs: number;
 }
 
+/** `cli.mjs status` on Windows spends one owner-gate PowerShell start (2 to 5 s; desk B7 plan); a slow machine under antivirus may take longer. */
+const STATUS_MS = 60_000;
+
 export const DEFAULT_TIMEOUTS: SupervisorTimeouts = { herdrStartMs: 45_000, upTimeoutSec: 120, upProcessMs: 150_000, sessionEndStopMs: 10_000 };
 
 export interface SupervisorDeps {
@@ -685,8 +688,8 @@ export class Supervisor {
 	// ---- stop --------------------------------------------------------------------------------------------------------
 
 	/** The stop sequence. Always runs the CLIs; the kill step goes by the kill rule. Emits `stopped`. */
-	stop(): Promise<StopReport> {
-		return this.#queue.run(() => this.#stop());
+	stop(options: { waitForTools?: boolean } = {}): Promise<StopReport> {
+		return this.#queue.run(() => this.#stop(options.waitForTools ? TOOLS_WAIT_MS : undefined));
 	}
 
 	async #stop(leftoversWaitMs?: number): Promise<StopReport> {
@@ -837,6 +840,26 @@ export class Supervisor {
 	 */
 	restart(): Promise<void> {
 		return this.withStackStopped(async () => undefined, { waitForTools: true });
+	}
+
+	/**
+	 * One `cli.mjs status` (Diagnostics). It is gated like `stop`: it loads pi-straw-boss from disk, so it runs only while no engine run holds the tools and the `pkg:pi-straw-boss` stage is
+	 * `ok` (R8A-F001). On Windows each call costs a PowerShell start, so only a button asks for it (desk B7 plan: the shell never polls `status`). The answer is the raw output; the caller passes on
+	 * named fields only, since it holds the page's token.
+	 */
+	async cliStatus(): Promise<{ ok: true; stdout: string } | { ok: false; reason: "not-installed" | "package" | "busy" | "failed"; detail: string }> {
+		const prepared = this.#prepareForStop();
+		if (prepared === null) return { ok: false, reason: "not-installed", detail: "" };
+		if (!this.#sbPackageVerified()) return { ok: false, reason: "package", detail: "" };
+		try {
+			await this.#requireIdleEngine();
+		} catch (error) {
+			return { ok: false, reason: "busy", detail: firstLineOf((error as Error).message) };
+		}
+		const result = await this.#d.run(prepared.installed.node, [prepared.installed.sbCli, "status"], { env: prepared.env, replaceEnv: true, timeoutMs: STATUS_MS });
+		this.#d.log({ event: "cli-status", exit: result.code, ...(result.timedOut ? { timedOut: true } : {}) });
+		if (result.code !== 0) return { ok: false, reason: "failed", detail: result.timedOut ? `no answer within ${STATUS_MS / 1000} s` : firstLineOf(result.stderr || result.stdout) };
+		return { ok: true, stdout: result.stdout };
 	}
 
 	/** Repair for the engine lock: removes a lock whose owner pid is not an engine of this app. */

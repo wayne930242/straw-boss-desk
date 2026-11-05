@@ -24,3 +24,11 @@ html, body { height: 100%; }
 /* The Team recipe card: the change list's long text (the team's instructions, in full) and the projects it sets up. */
 .change-text { max-height: 240px; overflow: auto; }
 #recipe-refusals { margin: 8px 0 0; }
+
+/* Computer and Diagnostics (task 14): layout only, the colours are the shared panels', findings' and refusals'. */
+.remove-entries { margin: 6px 0; padding-left: 20px; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.remove-entry { font-family: var(--mono); font-size: 12.5px; }
+.remove-detail { font-family: var(--mono); font-size: 12.5px; }
+.diag-facts { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+#remove-panel > h2, #keep-awake-panel .check { margin-top: 0; }
+#remove-panel .update-buttons, #remove-confirm-panel .update-buttons, #remove-done-panel .update-buttons { margin: 8px 0 0; }

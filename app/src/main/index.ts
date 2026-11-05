@@ -1,8 +1,8 @@
-import { app, clipboard, dialog, Menu, net, powerMonitor, safeStorage, session, shell, utilityProcess } from "electron";
+import { app, clipboard, dialog, Menu, net, powerMonitor, powerSaveBlocker, safeStorage, session, shell, utilityProcess } from "electron";
 import electronUpdater from "electron-updater";
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { arch, homedir, release } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { pickLocale } from "../shared/locale.ts";
@@ -15,6 +15,7 @@ import { bannerState, failureState, screenState } from "./shell-state.ts";
 import { tailLines } from "./bootstrap/log.ts";
 import { menuTemplate } from "./menu.ts";
 import { catalogs } from "../renderer/i18n/index.ts";
+import { format } from "../renderer/i18n/index.ts";
 import type { SettingsSection, SettingsView, ShellNotice } from "../shared/wizard.ts";
 import { UtilityEngineHost, type UtilityChild } from "./wizard/engine-host.ts";
 import { WizardController } from "./wizard/controller.ts";
@@ -33,7 +34,14 @@ import { spawnLogin } from "./accounts/cli.ts";
 import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
 import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
-import { stopSequence } from "./stop-sequence.ts";
+import { stopSequence, stopSequenceReport, type StopParts } from "./stop-sequence.ts";
+import { preLaunch } from "./pre-launch.ts";
+import { KeepAwake } from "./computer/keep-awake.ts";
+import { ComputerService } from "./computer/service.ts";
+import { DiagnosticsService } from "./diagnostics/service.ts";
+import { RemovalService } from "./removal/service.ts";
+import { cleanupCommand, spawnCleanup } from "./removal/cleanup.ts";
+import { guideUrl } from "./guide.ts";
 import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
 import { loadActiveStack } from "./wizard/stack-source.ts";
@@ -59,6 +67,14 @@ import { feedUrlProblem, updateConfig } from "./update/verify.ts";
 
 const identity = identityFromProductName(app.getName());
 const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform: process.platform, home: homedir() });
+
+// Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
+// and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock.
+const early = await preLaunch({ argv: process.argv, root, home: homedir(), platform: process.platform, userPath: createPlatform().userPath });
+if (early.action === "stop") {
+	dialog.showErrorBox(format(catalogs.en.pending.failedTitle, {}), `${format(catalogs.en.pending.failedBody, { folder: early.folder })}\n\n${format(catalogs["zh-TW"].pending.failedBody, { folder: early.folder })}\n\n${early.detail}`);
+}
+if (early.action !== "continue") process.exit(early.code);
 
 // userData moves first: the single-instance lock is keyed on it, and Chromium must never write into the roaming %APPDATA%.
 mkdirSync(electronDir(root), { recursive: true });
@@ -442,6 +458,87 @@ const recipeCard = new RecipeService({
 	enabled: () => wizard.done,
 });
 
+// ---- Diagnostics, Computer and Remove all data (task 14) ----------------------------------------------------------------------------------------------------------------------------
+
+/** The cleanup that deletes `<root>` after the app has gone (`removal/cleanup.ts`): armed by **Remove all data**, started once, at the app's exit. */
+let pendingCleanup: { root: string; fallbackDir: string | null } | null = null;
+
+function runCleanup(): void {
+	if (pendingCleanup === null) return;
+	const spec = pendingCleanup;
+	pendingCleanup = null;
+	try {
+		spawnCleanup(cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir }, platform.locate));
+	} catch {
+		// The marker `remove-pending` is in the root: the next launch deletes it.
+	}
+}
+
+const keepAwake = new KeepAwake(layout, powerSaveBlocker);
+
+const removal = new RemovalService({
+	layout,
+	home,
+	platform,
+	productName: identity.productName,
+	accounts,
+	forges: () => wizard.forges,
+	claude,
+	linear,
+	workFolder: () => loadStartConfig(layout, home).workFolder,
+	// The stop of a quit, waiting out the helper a pane's pi leaves for 30 s (seam U13) as Repair's stop does. The quit's own stop does not run again after it.
+	stop: async () => {
+		if (stopping) return { ok: false, leftovers: [] };
+		stopping = true;
+		const outcome = await stopSequenceReport(stopParts(), { waitForTools: true });
+		stopped = outcome.ok;
+		return outcome;
+	},
+	resume: () => resumeAfterStop("remove-resume"),
+	arm: (spec) => {
+		pendingCleanup = spec;
+	},
+	quit: () => app.quit(),
+	log: (fields) => runtimeLog.event(fields),
+});
+
+const computerCard = new ComputerService({ platform: layout.platform, keepAwake, removal, openGuide: () => void shell.openExternal(guideUrl()), log: (fields) => shellLog.event(fields) });
+
+/**
+ * Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped. `runRepair` is the runtime page's button and shows a failure on that page; the Diagnostics card calls
+ * `repairOnce` and shows the failure in its own state.
+ */
+async function repairOnce(): Promise<{ ok: true } | { ok: false; reason: string; failure: Extract<Awaited<ReturnType<typeof wizard.repair>>, { ok: false }>["failure"] }> {
+	const outcome = await wizard.repair(lastFailureKind);
+	if (!outcome.ok) return { ok: false, reason: outcome.failure.reason ?? "", failure: outcome.failure };
+	lastFailureKind = undefined;
+	if (supervisor.state !== "running") await supervisor.start().catch(() => undefined);
+	return { ok: true };
+}
+
+const diagnostics = new DiagnosticsService({
+	layout,
+	redactor: runtimeLog.redactor,
+	status: () => supervisor.cliStatus(),
+	downloads: () => app.getPath("downloads"),
+	facts: () => ({
+		app: `${identity.productName} ${app.getVersion()} (${identity.kind} build)`,
+		platform: `${process.platform} ${arch()} ${release()}`,
+		electron: process.versions.electron ?? "",
+		node: process.versions.node,
+		locale: wizard.locale,
+		wizardDone: String(wizard.done),
+	}),
+	openPath: (path) => shell.openPath(path),
+	reveal: (file) => shell.showItemInFolder(file),
+	repair: async () => {
+		const outcome = await repairOnce();
+		return outcome.ok ? { ok: true, detail: "" } : { ok: false, detail: outcome.reason };
+	},
+	wslBash: () => wslNotice?.id === "wsl" ? wslNotice.path : null,
+	log: (fields) => runtimeLog.event(fields),
+});
+
 /** The WSL sentence, until dismissed for this start. */
 let wslNotice: ShellNotice | null = null;
 
@@ -454,7 +551,7 @@ function refreshNotices(): void {
 
 function settingsView(section: SettingsSection): SettingsView {
 	const recipe = wizard.recipe;
-	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev", updates: updates.view(), recipeCard: recipeCard.view() };
+	return { locale: wizard.locale, section, later: wizard.later, forges: accounts.views(wizard.forges), claude: claude.view(), linear: wizard.linearOffered || linear.state !== "not-saved" ? linear.view() : null, recipe: recipe === null ? null : { id: recipe.id, name: recipe.name, version: recipe.version }, appVersion: app.getVersion(), dev: identity.kind === "dev", updates: updates.view(), recipeCard: recipeCard.view(), computer: computerCard.view(), diagnostics: diagnostics.view() };
 }
 
 /** Repair (spec: Settings, Diagnostics): the engine runs again with the stack stopped; a stack that was not running is started after. A failure shows on the screen with Repair again. */
@@ -462,13 +559,8 @@ function settingsView(section: SettingsSection): SettingsView {
 let lastFailureKind: string | undefined;
 
 async function runRepair(): Promise<void> {
-	const outcome = await wizard.repair(lastFailureKind);
-	if (!outcome.ok) {
-		desk?.setState({ mode: "screen", screen: "failed", failure: outcome.failure });
-		return;
-	}
-	lastFailureKind = undefined;
-	if (supervisor.state !== "running") await supervisor.start().catch(() => undefined);
+	const outcome = await repairOnce();
+	if (!outcome.ok) desk?.setState({ mode: "screen", screen: "failed", failure: outcome.failure });
 }
 
 // No page of the app may attach a <webview>.
@@ -535,8 +627,8 @@ function buildMenu(): void {
 let stopping = false;
 let stopped = false;
 
-/** The stop sequence of a quit and of an update's stop (`stop-sequence.ts`). */
-function stopAll(): Promise<boolean> {
+/** The parts the stop sequence works on (`stop-sequence.ts`). */
+function stopParts(): StopParts {
 	// The checks of the Team recipe card and the repositories in flight end with the app's other background work.
 	const background = {
 		dispose: () => {
@@ -545,7 +637,12 @@ function stopAll(): Promise<boolean> {
 			projects.dispose();
 		},
 	};
-	return stopSequence({ supervisor, updates: background, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) });
+	return { supervisor, updates: background, accounts, claude, linear, engineHost, log: (fields) => runtimeLog.event(fields) };
+}
+
+/** The stop sequence of a quit and of an update's stop (`stop-sequence.ts`). */
+function stopAll(): Promise<boolean> {
+	return stopSequence(stopParts());
 }
 
 function stopThenExit(code: (ok: boolean) => number): void {
@@ -553,6 +650,7 @@ function stopThenExit(code: (ok: boolean) => number): void {
 	stopping = true;
 	void stopAll().then((ok) => {
 		stopped = true;
+		runCleanup();
 		app.exit(code(ok));
 	});
 }
@@ -571,6 +669,11 @@ async function stopForUpdate(): Promise<void> {
 
 /** The installer could not start (spec: Updater): the app goes on as it was before the click. The stack starts again, the engine and the supervisor take work, and the checks run again. */
 async function resumeAfterFailedUpdate(): Promise<void> {
+	await resumeAfterStop("update-resume");
+}
+
+/** The stop did not end the app (the installer could not start, or **Remove all data** found programs still running): everything the stop put down is taken up again. */
+async function resumeAfterStop(event: string): Promise<void> {
 	stopping = false;
 	stopped = false;
 	supervisor.cancelQuit();
@@ -581,7 +684,7 @@ async function resumeAfterFailedUpdate(): Promise<void> {
 	updates.start();
 	projects.resume();
 	recipeCard.start();
-	runtimeLog.event({ event: "update-resume" });
+	runtimeLog.event({ event });
 	// A start that fails shows on the runtime page through the supervisor's `failure` event.
 	await supervisor.start().catch(() => undefined);
 }
@@ -612,8 +715,10 @@ if (!app.requestSingleInstanceLock()) {
 	});
 	// macOS keeps the app and the stack running when the window closes; Windows quits and stops (design: Window close).
 	app.on("window-all-closed", () => {
-		if (process.platform !== "darwin") app.quit();
+		// After **Remove all data** the app has nothing left to run, so closing its window ends it on macOS too; the rest of the root goes with it (`runCleanup`).
+		if (process.platform !== "darwin" || removal.state.phase === "done") app.quit();
 	});
+	app.on("will-quit", () => runCleanup());
 	app.on("activate", () => openWindow());
 	void app.whenReady().then(() => {
 		const mode = wizard.launchMode();
@@ -642,6 +747,8 @@ if (!app.requestSingleInstanceLock()) {
 				void claude.refresh().catch((error: Error) => runtimeLog.event({ event: "accounts-refresh-failed", detail: error.message.slice(0, 300) }));
 				if (wizard.linearOffered || linear.state !== "not-saved") void linear.probe();
 			},
+			onComputerAction: (action) => computerCard.act(action).catch((error: Error) => runtimeLog.event({ event: "computer-action-failed", detail: error.message.slice(0, 300) })),
+			onDiagnosticsAction: (action) => diagnostics.act(action).catch((error: Error) => runtimeLog.event({ event: "diagnostics-action-failed", detail: error.message.slice(0, 300) })),
 			onSessionEnd: () => supervisor.stopForSessionEnd(),
 			log: (fields) => runtimeLog.event(fields),
 		});
@@ -666,6 +773,9 @@ if (!app.requestSingleInstanceLock()) {
 			refreshNotices();
 		});
 		recipeCard.onChange(() => desk?.pushSettings());
+		removal.onChange(() => desk?.pushSettings());
+		diagnostics.onChange(() => desk?.pushSettings());
+		keepAwake.apply();
 		desk.setWizardActive(mode === "wizard");
 		refreshNotices();
 		attachPower(powerMonitor, supervisor, (fields) => runtimeLog.event(fields));

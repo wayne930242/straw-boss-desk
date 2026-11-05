@@ -4,6 +4,7 @@ import { CHANNELS, type ShellAction, type ShellState } from "../shared/shell-sta
 import type { Locale } from "../shared/locale.ts";
 import { isAccountAction, type AccountAction } from "../shared/accounts.ts";
 import { isRecipeAction, type RecipeAction } from "../shared/recipe-update.ts";
+import { isComputerAction, isDiagnosticsAction, type ComputerAction, type DiagnosticsAction } from "../shared/computer.ts";
 import { isUpdateAction, type UpdateAction } from "../shared/updates.ts";
 import { SETTINGS_SECTIONS, type SettingsAction, type SettingsSection, type SettingsView, type ShellNotice, type WizardAction, type WizardView } from "../shared/wizard.ts";
 import { dialogTitle, externalLink, guiOriginOf, guiPortOf, isGuiUrl, permissionAllowed } from "./page-security.ts";
@@ -44,6 +45,10 @@ export interface DeskWindowDeps {
 	onUpdateAction(action: UpdateAction): Promise<void>;
 	/** A request of settings' Team recipe card (check now, apply, keep, replace, retry a repository). */
 	onRecipeAction(action: RecipeAction): Promise<void>;
+	/** A request of settings' Computer section (keep awake, Remove all data). */
+	onComputerAction(action: ComputerAction): Promise<void>;
+	/** A request of settings' Diagnostics section (status, logs, collect, repair). */
+	onDiagnosticsAction(action: DiagnosticsAction): Promise<void>;
 	/** Windows log off or shutdown (`session-end`): the stop that fits in the time Windows gives. */
 	onSessionEnd(): void;
 	log: RuntimeEvent;
@@ -428,6 +433,8 @@ export class DeskWindow {
 			else if (isAccountAction(a)) await this.#d.onAccountAction(a);
 			else if (isUpdateAction(a)) await this.#d.onUpdateAction(a);
 			else if (isRecipeAction(a)) await this.#d.onRecipeAction(a);
+			else if (isComputerAction(a)) await this.#d.onComputerAction(a);
+			else if (isDiagnosticsAction(a)) await this.#d.onDiagnosticsAction(a);
 		});
 	}
 }

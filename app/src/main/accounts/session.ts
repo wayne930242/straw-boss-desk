@@ -6,6 +6,7 @@ import type { CurrentTools, Layout } from "../paths.ts";
 import type { CommandRunner, CredentialStore, StoreEntry } from "../platform/types.ts";
 import type { RuntimeEvent } from "../runtime/log.ts";
 import type { EntryName, ForgeAction, ForgeFlow, ForgeState, ForgeView } from "../../shared/accounts.ts";
+import type { LeftEntry } from "../../shared/computer.ts";
 import type { Forge } from "../../shared/wizard.ts";
 import { cliOf, forgeBinary, forgeConfigDir, forgeEnv, loginLine, parseDeviceCode, type LoginChild, type SpawnLogin } from "./cli.ts";
 import {
@@ -572,6 +573,60 @@ export class ForgeAccounts {
 		} catch (error) {
 			this.#d.log({ event: "forge-own-file-unreadable", cli: cliOf(kind), host, detail: String((error as Error).message).slice(0, 200) });
 		}
+	}
+
+	// ---- Remove all data ---------------------------------------------------------------------------------------------------
+
+	/**
+	 * The hosts a removal has to look at: the recipe's forges and every host the record names (a recipe replaced since the login leaves entries under a host no forge lists any more). Each host
+	 * appears once, under the kind its entries were recorded with.
+	 */
+	removalHosts(forges: readonly Forge[]): Array<{ kind: ForgeKind; host: string }> {
+		const record = readAccountsRecord(this.#d.layout);
+		const out: Array<{ kind: ForgeKind; host: string }> = [];
+		for (const h of [...forges, ...record.entries, ...record.left]) if (!out.some((o) => o.kind === h.kind && hostKey(o.host) === hostKey(h.host))) out.push({ kind: h.kind, host: h.host });
+		return out;
+	}
+
+	/**
+	 * What **Remove all data** would leave in the store (spec: Uninstall and data): the entries of these hosts that the app does not own, each marked `changed` when the app made it and something
+	 * else wrote over it, `foreign` when another program made it. With `owned`, an entry the app still owns is listed as well (`failed`): after a removal it means the removal did not work.
+	 * Lists the store afresh and settles the record against it, as every other check does; a listing that fails is a failure, never an empty answer.
+	 */
+	async survey(hosts: ReadonlyArray<{ kind: ForgeKind; host: string }>, options: { owned?: boolean } = {}): Promise<{ ok: true; entries: LeftEntry[] } | { ok: false; detail: string }> {
+		const entries: LeftEntry[] = [];
+		for (const { kind, host } of hosts) {
+			const slot = this.#slot(kind, host);
+			const outcome = await this.#exclusive(slot, async () => {
+				const settled = await this.#settle(kind, host, slot);
+				if ("failed" in settled) return settled;
+				const split = classify(settled.entries, settled.record);
+				const changed = new Set(split.changed.map((e) => JSON.stringify([e.name, e.account])));
+				const found: LeftEntry[] = split.foreign.map((e) => ({ name: e.name, account: e.account, host, why: changed.has(JSON.stringify([e.name, e.account])) ? "changed" : "foreign" }));
+				if (options.owned === true) found.push(...split.owned.map((e): LeftEntry => ({ name: e.name, account: e.account, host, why: "failed" })));
+				return { found };
+			});
+			if ("failed" in outcome) return { ok: false, detail: outcome.failed };
+			entries.push(...outcome.found);
+		}
+		return { ok: true, entries };
+	}
+
+	/**
+	 * Signs out of every host, one after another, through the ownership rule of **Removing a login**: the CLI's logout runs only when every entry of the host is the app's own; with a foreign
+	 * entry beside them it runs none, and marks the app's entries `left`. Called after the stop sequence, so a sign-in that was waiting is put back to rest first (`cancel`), and the limits of the
+	 * calls are the normal ones again (`resume`). Returns the first line of each host whose logout failed.
+	 */
+	async removeLogins(hosts: ReadonlyArray<{ kind: ForgeKind; host: string }>): Promise<string[]> {
+		this.resume();
+		const problems: string[] = [];
+		for (const { kind, host } of hosts) {
+			this.cancel(host);
+			await this.signOut(kind, host);
+			const flow = this.flowOf(host);
+			if (flow.phase === "failed" || flow.phase === "store-unavailable") problems.push(`${host}: ${flow.detail}`);
+		}
+		return problems;
 	}
 
 	// ---- the rest of the actions -----------------------------------------------------------------------------------------
