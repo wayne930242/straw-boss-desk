@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           name="$(node -p "require('./package.json').name")"
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if integrity="$(npm view "${name}@${VERSION}" dist.integrity 2>/dev/null)" && [ -n "$integrity" ]; then
               echo "${name}@${VERSION} integrity: ${integrity}"
               exit 0
