@@ -34,9 +34,9 @@ export interface RemovalDeps {
 	linear: { resume(): void; signOut(): Promise<void> };
 	/** The work folder, which the removal leaves with its clones; null when none was chosen. */
 	workFolder(): string | null;
-	/** The stop sequence of a quit. `ok` is false when a program of this app still runs from `<root>/tools`. */
-	stop(): Promise<{ ok: boolean; leftovers: Leftover[] }>;
-	/** Takes the app up again after a stop that could not finish: the stack starts if it ran before, and the sign-in services work again. */
+	/** The stop sequence of a quit. `ok` is false when a program of this app still runs from `<root>/tools`, and `busy` when another stop (a quit's, an update's) was under way: nothing was started, and that stop goes on. */
+	stop(): Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>;
+	/** Takes the app up again after a stop that could not finish: the stack starts if it ran before, and the sign-in services work again. Not called after a `busy` stop, which put nothing down. */
 	resume(): Promise<void>;
 	/** Records that the cleanup must run when the app exits. */
 	arm(spec: { root: string; fallbackDir: string | null }): void;
@@ -71,8 +71,8 @@ export class RemovalService {
 		return this.#state;
 	}
 
-	/** True from the moment files are being deleted: every other part of the app is to be left alone. */
-	get locked(): boolean {
+	/** True from the first step of the removal on: the other parts of the app (keep awake, a second plan) are left alone. */
+	#locked(): boolean {
 		return this.#state.phase === "working" || this.#state.phase === "done";
 	}
 
@@ -93,7 +93,7 @@ export class RemovalService {
 	// ---- 1. the plan -----------------------------------------------------------------------------------------------------
 
 	async plan(): Promise<void> {
-		if (this.#state.phase === "planning" || this.locked) return;
+		if (this.#state.phase === "planning" || this.#locked()) return;
 		this.#set({ phase: "planning" });
 		const { layout, home } = this.#d;
 		try {
@@ -139,6 +139,12 @@ export class RemovalService {
 		let left: LeftEntry[] = shown.plan.left;
 		try {
 			const stopped = await this.#d.stop();
+			if (stopped.busy === true) {
+				// Another stop (an update's, a quit's) is under way and owns the stack; starting it again here would undo that stop.
+				this.#log({ event: "remove-stop-busy" });
+				this.#set({ phase: "busy" });
+				return;
+			}
 			if (!stopped.ok) {
 				this.#log({ event: "remove-stop-failed", leftovers: stopped.leftovers.length });
 				await this.#d.resume().catch(() => undefined);

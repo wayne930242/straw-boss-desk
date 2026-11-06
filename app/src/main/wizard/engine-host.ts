@@ -60,6 +60,11 @@ export class UtilityEngineHost implements EngineHost {
 		return this.#child?.pid ?? null;
 	}
 
+	/** True from `dispose()` until `resume()`: a run that ends meanwhile was cut short by the quit, whatever its end says. */
+	get disposed(): boolean {
+		return this.#disposed;
+	}
+
 	run(config: EngineConfig, onEvent: (event: EngineEvent) => void): Promise<EngineEnd> {
 		if (this.#disposed) return Promise.reject(new Error("the engine host is disposed"));
 		if (this.#child !== null) return Promise.reject(new Error("an engine run is already active"));

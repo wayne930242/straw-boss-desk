@@ -1,6 +1,6 @@
 import type { RuntimeEvent } from "../runtime/log.ts";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { removeTreeAsync, renameRetry } from "../bootstrap/fsutil.ts";
 import type { ProjectFailure, ProjectRow, ProjectsView } from "../../shared/projects.ts";
@@ -64,6 +64,9 @@ const hostOf = (url: string): string => {
 /** The folder a clone is made in before it takes its name: `.<folder>.sbd-partial-<12 hex digits>`, beside the target. The validator refuses a folder that starts with a dot, so a recipe never names such a folder; the sweep still skips any folder the active recipe lists (R12B-F001). */
 const stagingName = (folder: string): string => `.${folder}.sbd-partial-${randomBytes(6).toString("hex")}`;
 const isStagingOf = (folder: string, name: string): boolean => name.startsWith(`.${folder}.sbd-partial-`) && /^[0-9a-f]{12}$/.test(name.slice(`.${folder}.sbd-partial-`.length));
+/** The file beside a staging folder that says Git finished in it: a clone whose rename failed is kept with it and renamed into place by the next run (R12B-F005). */
+const DONE_SUFFIX = ".done";
+const doneMarker = (staging: string): string => `${staging}${DONE_SUFFIX}`;
 
 const fresh = (spec: RepoSpec): ProjectRow => ({
 	folder: spec.folder,
@@ -82,10 +85,13 @@ const fresh = (spec: RepoSpec): ProjectRow => ({
 class RowFailed extends Error {
 	readonly failure: ProjectFailure;
 	readonly line: string;
-	constructor(failure: ProjectFailure, line = "") {
+	/** The step the GUI server says an opening failed at. */
+	readonly step: string | undefined;
+	constructor(failure: ProjectFailure, line = "", step?: string) {
 		super(failure.kind);
 		this.failure = failure;
 		this.line = line;
+		this.step = step;
 	}
 }
 
@@ -262,7 +268,15 @@ export class ProjectsRunner {
 				this.#d.log({ event: "project-failed", folder: spec.folder, failure: "interrupted" });
 				this.#patch(spec.folder, { phase: "failed", step: null, failure: { kind: "interrupted" }, detail: "" });
 			} else if (error instanceof RowFailed) {
-				this.#d.log({ event: "project-failed", folder: spec.folder, failure: error.failure.kind, ...("cause" in error.failure ? { cause: error.failure.cause } : {}) });
+				// The reason is what the row's Details shows (redacted); without it in the log, a failed open leaves only its cause (CIN-F002).
+				this.#d.log({
+					event: "project-failed",
+					folder: spec.folder,
+					failure: error.failure.kind,
+					...("cause" in error.failure ? { cause: error.failure.cause } : {}),
+					...(error.step !== undefined ? { step: error.step } : {}),
+					...(error.line !== "" ? { detail: this.#d.redact(error.line).slice(0, 300) } : {}),
+				});
 				this.#patch(spec.folder, { phase: "failed", step: null, failure: error.failure, detail: this.#d.redact(error.line).slice(0, 300) });
 			} else {
 				const line = (error as Error).message.split(/\r?\n/)[0] ?? "";
@@ -313,15 +327,58 @@ export class ProjectsRunner {
 		} catch {
 			return;
 		}
-		for (const name of names.filter((n) => isStagingOf(folder, n) && !named.has(n))) {
+		// A staging folder with its marker is a finished clone that `#adopt` keeps for as long as it can be used; a marker whose folder is gone is removed.
+		const leftover = (n: string): boolean => {
+			if (isStagingOf(folder, n)) return !names.includes(`${n}${DONE_SUFFIX}`);
+			return n.endsWith(DONE_SUFFIX) && isStagingOf(folder, n.slice(0, -DONE_SUFFIX.length)) && !names.includes(n.slice(0, -DONE_SUFFIX.length));
+		};
+		for (const name of names.filter((n) => leftover(n) && !named.has(n))) {
 			const path = join(work, name);
 			try {
 				const stat = lstatSync(path);
-				if (stat.isDirectory() && !stat.isSymbolicLink()) await removeTreeAsync(path);
+				if (name.endsWith(DONE_SUFFIX)) {
+					if (stat.isFile()) await removeTreeAsync(path);
+				} else if (stat.isDirectory() && !stat.isSymbolicLink()) await removeTreeAsync(path);
 			} catch (error) {
 				this.#d.log({ event: "project-leftover-kept", folder, detail: (error as Error).message.slice(0, 200) });
 			}
 		}
+	}
+
+	/**
+	 * A finished clone whose rename into place failed an earlier time (a file held open, a folder that appeared) is renamed now instead of downloaded again (R12B-F005). Only a staging folder with the
+	 * marker Git's success wrote, from the same address, and only into a target that is absent or an empty folder. Returns whether a folder was put in place.
+	 */
+	async #adopt(spec: RepoSpec, target: string, work: string): Promise<boolean> {
+		const d = this.#d;
+		const listDir = d.listDir ?? ((p: string) => readdirSync(p));
+		let names: string[];
+		try {
+			names = listDir(work);
+		} catch {
+			return false;
+		}
+		for (const name of names.filter((n) => isStagingOf(spec.folder, n) && names.includes(`${n}${DONE_SUFFIX}`))) {
+			const staging = join(work, name);
+			try {
+				const stat = lstatSync(staging);
+				if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+				const origin = await d.git.originOf(staging);
+				// Another address, or a clone that is no longer the repository's (it has no commit and the origin does), is of no use to anyone.
+				if (origin === null || !sameOrigin(origin, spec.url) || !((await d.git.hasCommit(staging)) || (await d.git.remoteIsEmpty(staging)))) {
+					await removeTreeAsync(staging);
+					await removeTreeAsync(doneMarker(staging));
+					continue;
+				}
+				if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) rmdirSync(target);
+				renameRetry(staging, target);
+				await removeTreeAsync(doneMarker(staging));
+				return true;
+			} catch (error) {
+				d.log({ event: "project-leftover-kept", folder: spec.folder, detail: (error as Error).message.slice(0, 200) });
+			}
+		}
+		return false;
 	}
 
 	/** The Git half of a row in full: the folder is checked, then cloned or fetched, then `set-head` and the link listing. Returns the folder that is ready to open. */
@@ -338,10 +395,12 @@ export class ProjectsRunner {
 			throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message);
 		}
 		const target = this.#targetOf(spec);
+		await this.#adopt(spec, target, work);
 		await this.#clearLeftovers(work, spec.folder);
 		let reuse = false;
 		if (exists(target)) {
-			if (!isDirectory(target)) throw new RowFailed({ kind: "not-empty" });
+			// A link, even to an empty folder, is not a folder to clone into: the rename into place would fail after the whole download (R12B-F007).
+			if (!isDirectory(target) || lstatSync(target).isSymbolicLink()) throw new RowFailed({ kind: "not-empty" });
 			if (exists(join(target, ".git"))) {
 				let origin: string | null;
 				try {
@@ -350,10 +409,11 @@ export class ProjectsRunner {
 					throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
 				}
 				if (origin === null || !sameOrigin(origin, spec.url)) throw new RowFailed({ kind: "other-origin" }, origin === null ? "the folder's repository has no origin" : `origin is ${plainOrigin(origin)}`);
-				// A repository without a commit is what a clone leaves when it is killed; the app now clones into a staging folder, so one here came from elsewhere or from an older version, and is left alone.
+				// A repository without a commit is what a clone leaves when it is killed, and the app now clones into a staging folder, so one here came from elsewhere or from an older version and is left
+				// alone. The exception is a repository whose origin has no commit either: that is this app's finished clone of an empty repository, which may be used once the team pushes (R12B-F006).
 				let committed: boolean;
 				try {
-					committed = await d.git.hasCommit(target);
+					committed = (await d.git.hasCommit(target)) || (await d.git.remoteIsEmpty(target));
 				} catch (error) {
 					throw new RowFailed({ kind: "git", step: "origin" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
 				}
@@ -391,19 +451,35 @@ export class ProjectsRunner {
 		const d = this.#d;
 		this.#step(spec.folder, "cloning");
 		const staging = join(work, stagingName(spec.folder));
+		// Set once Git has finished and the marker is written: a rename that then fails keeps the finished clone for the next run to rename (R12B-F005).
+		let keep = false;
 		try {
 			const cloned = await d.git.clone(spec.url, staging, work);
 			if (cloned.code !== 0) throw new RowFailed({ kind: "clone", cause: cloneCause(cloned) }, cloned.stderr.trim().split(/\r?\n/)[0] ?? "");
 			try {
+				writeFileSync(doneMarker(staging), "");
+				keep = true;
+			} catch {
+				// Without the marker the next run cannot tell a finished clone from a cut-off one, so a failed rename discards it as before.
+			}
+			try {
 				// An empty folder the PM made is the one thing that may stand in the way (rename onto a folder fails on Windows); `rmdir` refuses a folder that holds anything.
 				if ((d.exists ?? existsSync)(target)) rmdirSync(target);
 				renameRetry(staging, target);
+				keep = false;
+				await removeTreeAsync(doneMarker(staging)).catch(() => undefined);
 			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				// A folder that is not empty any more, or no folder at all, is the PM's: the same sentence as a folder that was there from the start.
+				if (code === "ENOTEMPTY" || code === "ENOTDIR") throw new RowFailed({ kind: "not-empty" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
 				throw new RowFailed({ kind: "clone", cause: "other" }, (error as Error).message.split(/\r?\n/)[0] ?? "");
 			}
 		} finally {
 			try {
-				await removeTreeAsync(staging);
+				if (!keep) {
+					await removeTreeAsync(staging);
+					await removeTreeAsync(doneMarker(staging)).catch(() => undefined);
+				}
 			} catch (error) {
 				d.log({ event: "project-leftover-kept", folder: spec.folder, detail: (error as Error).message.slice(0, 200) });
 			}
@@ -428,22 +504,37 @@ export class ProjectsRunner {
 		if (row?.opened === true) return;
 		this.#step(spec.folder, "opening");
 		const deploy = (this.#d.newId ?? (() => `sbd-${Math.random().toString(16).slice(2, 12)}${Date.now().toString(16)}`))();
-		const outcome = await this.#d.openBase(
-			{ dir: target, label: spec.label, deploy },
-			{
-				signal: this.#abort.signal,
-				onTrust: (asking) => {
-					// The question is answered in the GUI; the row says so, and the step may go on meanwhile.
-					if (asking) this.#patch(spec.folder, { phase: "trust", step: null });
-					else this.#patch(spec.folder, { phase: "working", step: "opening" });
+		const openOnce = (): Promise<OpenOutcome> =>
+			this.#d.openBase(
+				{ dir: target, label: spec.label, deploy },
+				{
+					signal: this.#abort.signal,
+					onTrust: (asking) => {
+						// The question is answered in the GUI; the row says so, and the step may go on meanwhile.
+						if (asking) this.#patch(spec.folder, { phase: "trust", step: null });
+						else this.#patch(spec.folder, { phase: "working", step: "opening" });
+					},
 				},
-			},
-		);
+			);
+		let outcome = await openOnce();
+		// The open is made once more, never twice (a second failure is the row's), after the queue has drained, under the same id. Two failures are worth it:
+		// - A job that was queued behind this row's Git (Apply, Repair, a stack update, the Linear restart) stops the stack as soon as the Git job ends, which can be just as the open starts. The
+		//   window then has nothing to answer; the stack runs again once the queue has drained (R12B-F002).
+		// - The server made the workspace and its pi did not start or join the net in time (the Windows runner's cold tools right after an Apply). The server closes the workspace it made when an
+		//   opening fails, so the repeat does not hold two; the pi is warm by then (CIN-F002).
+		const windowGone = !outcome.ok && outcome.cause === "gui-unavailable" && this.#d.gitJob !== undefined;
+		const piLate = !outcome.ok && outcome.cause === "refused" && (outcome.step === "start" || outcome.step === "join");
+		if (!outcome.ok && (windowGone || piLate) && !this.#abort.signal.aborted) {
+			this.#d.log({ event: "project-open-repeat", folder: spec.folder, cause: outcome.cause, ...(outcome.step !== undefined ? { step: outcome.step } : {}), detail: this.#d.redact(outcome.reason).slice(0, 300) });
+			await this.#job(async () => undefined);
+			this.#step(spec.folder, "opening");
+			outcome = await openOnce();
+		}
 		if (outcome.ok) {
 			this.#patch(spec.folder, { opened: true });
 			return;
 		}
-		throw new RowFailed({ kind: "open", cause: outcome.cause }, outcome.reason);
+		throw new RowFailed({ kind: "open", cause: outcome.cause }, outcome.reason, outcome.step);
 	}
 }
 

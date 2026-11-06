@@ -44,7 +44,7 @@ function confirmPanel(ctx: SettingsCtx, state: Extract<RemoveState, { phase: "co
 	return h(
 		"div",
 		{ class: "finding", id: "remove-confirm-panel", "data-state": "confirm" },
-		h("h3", {}, tr("settings.computer.remove.confirmTitle")),
+		h("h3", { class: "remove-title" }, tr("settings.computer.remove.confirmTitle")),
 		h("p", {}, plan.bytes === null ? tr("settings.computer.remove.sizeUnknown", { root: plan.root }) : tr("settings.computer.remove.size", { root: plan.root, size: formatSize(plan.bytes, ctx.locale) })),
 		h("p", {}, tr("settings.computer.remove.signOuts")),
 		plan.pathEntry === null ? null : h("p", { "data-role": "path" }, tr("settings.computer.remove.path", { path: plan.pathEntry })),
@@ -62,20 +62,34 @@ function confirmPanel(ctx: SettingsCtx, state: Extract<RemoveState, { phase: "co
 
 const problemLine = (tr: Tr, p: RemovalProblem): HTMLElement => h("li", { "data-step": p.step }, h("span", {}, tr(`settings.computer.remove.problem.${p.step}`)), p.detail === "" ? null : h("span", { class: "remove-detail" }, ` ${p.detail}`));
 
+/** What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. */
+function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[]): HTMLElement {
+	const { tr } = ctx;
+	const files = problems.some((p) => p.step === "files");
+	const others = problems.some((p) => p.step !== "files");
+	return h(
+		"div",
+		{ class: "refusal", id: "remove-problems" },
+		h("p", {}, tr("settings.computer.remove.problemsTitle")),
+		h("ul", { class: "remove-entries" }, ...problems.map((p) => problemLine(tr, p))),
+		files ? h("p", { class: "note", "data-role": "retry-files" }, tr("settings.computer.remove.problemsLater")) : null,
+		others ? h("p", { class: "note", "data-role": "see-guide" }, tr("settings.computer.remove.problemsGuide")) : null,
+		others ? h("p", {}, h("button", { type: "button", id: "remove-guide-problems", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide"))) : null,
+	);
+}
+
 function donePanel(ctx: SettingsCtx, result: RemovalResult): HTMLElement {
 	const { tr } = ctx;
 	return h(
 		"div",
 		{ class: "panel", id: "remove-done-panel", "data-state": "done" },
-		h("h3", {}, tr("settings.computer.remove.doneTitle")),
+		h("h3", { class: "remove-title" }, tr("settings.computer.remove.doneTitle")),
 		h("p", {}, tr("settings.computer.remove.doneBody")),
 		h("p", { "data-role": "kept" }, keptSentence(tr, result.workFolder, "settings.computer.remove.doneKept", "settings.computer.remove.doneKeptNone")),
 		result.left.length === 0
 			? h("p", { class: "note", "data-role": "leaves" }, tr("settings.computer.remove.leavesNone"))
 			: h("div", { class: "finding", id: "remove-left" }, leftList(tr, result.left, tr("settings.computer.remove.leftTitle"), "leaves"), h("p", {}, h("button", { type: "button", id: "remove-guide", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide")))),
-		result.problems.length === 0
-			? null
-			: h("div", { class: "refusal", id: "remove-problems" }, h("p", {}, tr("settings.computer.remove.problemsTitle")), h("ul", { class: "remove-entries" }, ...result.problems.map((p) => problemLine(tr, p))), h("p", { class: "note" }, tr("settings.computer.remove.problemsLater"))),
+		result.problems.length === 0 ? null : problemsBox(ctx, result.problems),
 		h("p", { class: "note" }, tr("settings.computer.remove.uninstall")),
 		h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-quit", class: "primary", onclick: () => ctx.act({ type: "computer-quit" }) }, tr("settings.computer.remove.quit"))),
 	);
@@ -93,7 +107,8 @@ function removePanel(ctx: SettingsCtx, state: RemoveState): Child[] {
 		case "refused":
 			return [
 				h("div", { class: "refusal", id: "remove-refusal", "data-reason": state.reason }, h("p", {}, tr(`settings.computer.remove.refused.${state.reason}`)), state.detail === "" ? null : h("details", {}, h("summary", {}, tr("settings.diagnostics.details")), h("pre", {}, state.detail))),
-				h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-retry", onclick: () => ctx.act({ type: "computer-remove-plan" }) }, tr("settings.computer.remove.button")), h("button", { type: "button", id: "remove-cancel", onclick: () => ctx.act({ type: "computer-remove-cancel" }) }, tr("settings.computer.remove.cancel"))),
+				// Nothing to cancel after a refusal: the one action is to look again.
+				h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-retry", onclick: () => ctx.act({ type: "computer-remove-plan" }) }, tr("settings.computer.remove.retry"))),
 			];
 		case "working":
 			return [h("p", { class: "status", id: "remove-status", "data-step": state.step }, h("span", { class: "spinner", "aria-hidden": "true" }), tr(`settings.computer.remove.working.${state.step}`))];
@@ -107,6 +122,11 @@ function removePanel(ctx: SettingsCtx, state: RemoveState): Child[] {
 					state.leftovers.length === 0 ? null : h("ul", { class: "remove-entries" }, ...state.leftovers.map((l) => h("li", { "data-pid": l.pid }, tr("settings.computer.remove.leftover", { file: l.file, pid: l.pid })))),
 				),
 				h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-retry", onclick: () => ctx.act({ type: "computer-remove-plan" }) }, tr("settings.computer.remove.button")), h("button", { type: "button", id: "remove-cancel", onclick: () => ctx.act({ type: "computer-remove-cancel" }) }, tr("settings.computer.remove.cancel"))),
+			];
+		case "busy":
+			return [
+				h("div", { class: "refusal", id: "remove-refusal", "data-reason": "busy" }, h("p", {}, tr("settings.computer.remove.busy"))),
+				h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-retry", onclick: () => ctx.act({ type: "computer-remove-plan" }) }, tr("settings.computer.remove.retry"))),
 			];
 		case "failed":
 			return [

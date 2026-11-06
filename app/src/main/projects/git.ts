@@ -70,6 +70,12 @@ export class ProjectGit {
 		throw new Error(`git rev-parse failed (exit ${result.code}): ${result.stderr.trim().split(/\r?\n/)[0] ?? ""}`);
 	}
 
+	/** True when `origin` itself has no ref at all (an empty repository). A failed `ls-remote` is not an answer, so it reads as false. */
+	async remoteIsEmpty(dir: string): Promise<boolean> {
+		const result = await this.#run(["ls-remote", "origin"], QUICK_MS, dir);
+		return result.code === 0 && result.stdout.trim() === "";
+	}
+
 	/** The staged entries under the folders pi reads, for the symlink check (Windows only). */
 	linkEntries(dir: string): Promise<RunResult> {
 		return this.#run(linkListing(), QUICK_MS, dir);

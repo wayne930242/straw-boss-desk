@@ -8,7 +8,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { OpenBaseClient, readGuiRecord } from "../src/main/projects/open-base.ts";
 
-// The open-base call, against a stand-in of the endpoints pi-straw-boss 0.59.0 serves (`src/spawn.ts`): the same path under the page token, the same headers the kit's `gui-client.mjs` sends
+// The open-base call, against a stand-in of the endpoints pi-straw-boss 0.59.4 serves (`src/spawn.ts`): the same path under the page token, the same headers the kit's `gui-client.mjs` sends
 // (Host, Origin, the CSRF value), the progress question while the opening is on its way, and the server's answers (409 settings_unsafe, 400 not_allowed, 429 busy). Nothing of the package runs.
 
 let server: Server;
@@ -88,6 +88,15 @@ describe("the call", () => {
 		assert.equal((await client().open(input, hooks()) as { cause: string }).cause, "not-allowed");
 		onOpen = (respond) => respond(502, { error: "open_failed", reason: "pi did not join" });
 		assert.equal((await client().open(input, hooks()) as { cause: string }).cause, "refused");
+	});
+
+	it("carries the step the server says the opening failed at, and nothing when it names none (CIN-F002)", async () => {
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "The pi in pane 3 did not join the net within 60 s\nsecond line", step: "join" });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "The pi in pane 3 did not join the net within 60 s", step: "join" });
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "pi did not join" });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "pi did not join" });
+		onOpen = (respond) => respond(502, { error: "open_failed", reason: "x", step: 7 });
+		assert.deepEqual(await client().open(input, hooks()), { ok: false, cause: "refused", reason: "x" });
 	});
 
 	it("waits out busy and tries again, and gives up as busy after its limit", async () => {

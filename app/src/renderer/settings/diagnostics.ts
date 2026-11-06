@@ -4,17 +4,27 @@ import { sectionBox, type SettingsCtx } from "./common.ts";
 import { badge, button, card, details, row } from "./updates.ts";
 
 // Diagnostics (spec: Settings): the stack's status, the logs, **Collect diagnostics** and **Repair**, one card each, built from the parts the Updates cards use. Reading the status costs a few seconds
-// (on Windows one PowerShell start), so it runs on a button and never by itself. Main sends phases and values; the words are the catalog's.
+// (on Windows one PowerShell start), so it runs on a button and never by itself. Main sends phases and values; the words are the catalog's. **Collect diagnostics** is the page's one primary action;
+// the others are secondary.
 
 type Tr = SettingsCtx["tr"];
 
 const yesNo = (tr: Tr, value: boolean | null): string => (value === null ? tr("settings.diagnostics.status.unknown") : tr(value ? "settings.diagnostics.status.yes" : "settings.diagnostics.status.no"));
 
+/** The state word in the catalog's words. A state the page does not know is not shown raw in the sentence: it says so, and the word itself is under Details. */
+const KNOWN_STATES: readonly string[] = ["live"];
+
+function stateLine(tr: Tr, state: string | null): HTMLElement {
+	if (state === null) return h("li", { "data-field": "state" }, tr("settings.diagnostics.status.state", { state: tr("settings.diagnostics.status.unknown") }));
+	if (KNOWN_STATES.includes(state)) return h("li", { "data-field": "state", "data-state": state }, tr("settings.diagnostics.status.state", { state: tr(`settings.diagnostics.status.states.${state}`) }));
+	return h("li", { "data-field": "state", "data-state": "other" }, tr("settings.diagnostics.status.state", { state: tr("settings.diagnostics.status.stateOther") }), h("details", {}, h("summary", {}, tr("settings.diagnostics.details")), h("pre", {}, state)));
+}
+
 function statusLines(tr: Tr, f: StatusFields): HTMLElement {
 	return h(
 		"ul",
 		{ class: "diag-facts", id: "diag-status-fields" },
-		h("li", { "data-field": "state" }, tr("settings.diagnostics.status.state", { state: f.state ?? tr("settings.diagnostics.status.unknown") })),
+		stateLine(tr, f.state),
 		h("li", { "data-field": "primary" }, tr("settings.diagnostics.status.primary", { value: yesNo(tr, f.primary) })),
 		h("li", { "data-field": "desk" }, tr("settings.diagnostics.status.desk", { value: yesNo(tr, f.desk) })),
 		h("li", { "data-field": "version" }, tr("settings.diagnostics.status.version", { version: f.version ?? tr("settings.diagnostics.status.unknown") })),
@@ -31,7 +41,7 @@ function statusCard(ctx: SettingsCtx, view: DiagnosticsView): HTMLElement {
 		[
 			h("span", { class: "update-name" }, tr("settings.diagnostics.status.heading")),
 			reading ? badge("working", "reading", tr("settings.diagnostics.status.reading")) : null,
-			row(button("diag-status", tr(reading ? "settings.diagnostics.status.reading" : "settings.diagnostics.status.button"), () => ctx.act({ type: "diagnostics-status" }), { primary: true, disabled: reading })),
+			row(button("diag-status", tr(reading ? "settings.diagnostics.status.reading" : "settings.diagnostics.status.button"), () => ctx.act({ type: "diagnostics-status" }), { disabled: reading })),
 		],
 		h("p", { class: "note update-note" }, tr("settings.diagnostics.status.lead")),
 		s.phase === "ok" ? statusLines(tr, s.fields) : null,
@@ -45,7 +55,7 @@ function logsCard(ctx: SettingsCtx, view: DiagnosticsView): HTMLElement {
 	return card(
 		"logs",
 		"idle",
-		[h("span", { class: "update-name" }, tr("settings.diagnostics.logs.heading")), row(button("diag-logs", tr("settings.diagnostics.logs.button"), () => ctx.act({ type: "diagnostics-open-logs" }), { primary: true }))],
+		[h("span", { class: "update-name" }, tr("settings.diagnostics.logs.heading")), row(button("diag-logs", tr("settings.diagnostics.logs.button"), () => ctx.act({ type: "diagnostics-open-logs" })))],
 		h("p", { class: "note update-note" }, tr("settings.diagnostics.logs.lead")),
 		h("p", { class: "note update-note", id: "diag-logs-where" }, tr("settings.diagnostics.logs.where", { folder: view.logsDir })),
 	);
@@ -81,7 +91,7 @@ function repairCard(ctx: SettingsCtx, view: DiagnosticsView): HTMLElement {
 		[
 			h("span", { class: "update-name" }, tr("settings.diagnostics.repair.heading")),
 			r.phase === "done" ? badge("done", "done", tr("settings.diagnostics.repair.done")) : working ? badge("working", "working", tr("settings.diagnostics.repair.working")) : null,
-			row(button("diag-repair", tr(working ? "settings.diagnostics.repair.working" : "settings.diagnostics.repair.button"), () => ctx.act({ type: "diagnostics-repair" }), { primary: r.phase === "failed", disabled: working })),
+			row(button("diag-repair", tr(working ? "settings.diagnostics.repair.working" : "settings.diagnostics.repair.button"), () => ctx.act({ type: "diagnostics-repair" }), { disabled: working })),
 		],
 		h("p", { class: "note update-note" }, tr("settings.diagnostics.repair.lead")),
 		r.phase === "failed" ? h("p", { class: "note update-note", id: "diag-repair-failed" }, tr("settings.diagnostics.repair.failed")) : null,

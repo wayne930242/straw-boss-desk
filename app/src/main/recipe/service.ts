@@ -63,6 +63,8 @@ export class RecipeService {
 	#state: RecipeCardState;
 	#offer: { intake: Accepted; origin: "url" | "file" } | null = null;
 	#busy = false;
+	/** A check, an apply or a Replace has run in this process, so the launch's first timer check has nothing left to do. */
+	#touched = false;
 	#timers: unknown[] = [];
 
 	constructor(deps: RecipeServiceDeps) {
@@ -129,8 +131,11 @@ export class RecipeService {
 	}
 
 	/** Asks the recipe's `updateUrl`. A recipe without one has nothing to ask. */
-	async check(): Promise<void> {
+	async check(options: { background?: boolean } = {}): Promise<void> {
 		if (this.#busy || !this.#d.enabled()) return;
+		// An outcome the PM has not acted on stays until the PM's next action: a timer never replaces it.
+		if (options.background === true && (this.#state.phase === "applied" || this.#state.phase === "failed")) return;
+		this.#touched = true;
 		const active = this.#d.active();
 		const url = active?.updateUrl;
 		if (url === undefined) {
@@ -171,6 +176,8 @@ export class RecipeService {
 	async replace(): Promise<void> {
 		if (this.#busy || !this.#d.enabled()) return;
 		this.#busy = true;
+		// The PM is at the card: the launch's first timer check must not clear the offer that the chosen file is about to make (CIN-F010).
+		this.#touched = true;
 		try {
 			let picked: { name: string; text: string } | null;
 			try {
@@ -210,6 +217,7 @@ export class RecipeService {
 		const offer = this.#offer;
 		if (this.#busy || offer === null || this.#state.phase !== "offered" || !this.#d.enabled()) return;
 		this.#busy = true;
+		this.#touched = true;
 		const before = this.#d.active();
 		const next = offer.intake;
 		const source: RecipeSource = offer.origin === "url" ? { kind: "url", host: hostOf(before?.updateUrl ?? "") } : { kind: "file", fileName: next.fileName };
@@ -277,8 +285,11 @@ export class RecipeService {
 	start(): void {
 		const later = this.#d.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
 		const every = this.#d.setInterval ?? ((fn, ms) => setInterval(fn, ms));
-		const run = (): void => void this.check();
-		for (const timer of [later(run, FIRST_CHECK_AFTER_MS), every(run, CHECK_EVERY_MS)]) {
+		const run = (): void => void this.check({ background: true });
+		const first = (): void => {
+			if (!this.#touched) run();
+		};
+		for (const timer of [later(first, FIRST_CHECK_AFTER_MS), every(run, CHECK_EVERY_MS)]) {
 			timer.unref?.();
 			this.#timers.push(timer);
 		}

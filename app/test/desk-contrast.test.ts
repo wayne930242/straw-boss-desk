@@ -88,6 +88,7 @@ interface Placement {
 const PLACEMENTS: Placement[] = [
 	{ fg: "html, body", on: EVERYWHERE },
 	{ fg: "h3", on: [...CONTAINERS, ...inside([".wizard"], [".trust-item"])] },
+	{ fg: "h3.remove-title", on: [...CONTAINERS, ...inside([".body"], [".panel", ".finding"])] },
 	{ fg: ".note", on: [...PAGE, ...CONTAINERS, ...inside([".wizard", ".body"], [".panel", ".trust-item"])] },
 	{ fg: ".refusal .note", on: [[".wizard", ".refusal"], [".body", ".refusal"]] },
 	{ fg: ".finding .note", on: [[".wizard", ".finding"], [".body", ".finding"]] },

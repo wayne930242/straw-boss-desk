@@ -28,6 +28,8 @@ body {
 h1 { margin: 0 0 12px; font-size: 22px; font-weight: 600; line-height: 1.3; }
 h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
 h3 { margin: 0 0 4px; color: var(--dim); font-size: 11px; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase; }
+/* The title of a state panel (the removal's confirmation and result): text, not a caption. */
+h3.remove-title { margin: 0 0 8px; color: var(--text); font-size: 16px; font-weight: 600; letter-spacing: 0; text-transform: none; line-height: 1.4; }
 p { margin: 0 0 12px; }
 .lead { margin: 0 0 12px; font-size: 15px; line-height: 1.6; }
 .note { margin: 0 0 12px; color: var(--dim); line-height: 1.6; }
@@ -153,6 +155,11 @@ details > pre { color: var(--text); }
 .update-version { flex: 1; min-width: 120px; }
 .update-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
 .update-note, .project-card .finding, .project-card .problem { margin: 8px 0 0; min-width: 0; overflow-wrap: anywhere; }
+/* Links Windows could not make: a path wraps at its 「/」 and between paths, and breaks inside a name only when that one name is wider than the card (SA-T12-6). Each name between slashes is an
+   unbreakable box: a hyphen inside a name that fits on a line is no place to break, and a name wider than the card is capped at the card's width and breaks inside (CIN-F006). */
+.project-card .finding[data-role="links"] { overflow-wrap: break-word; }
+.path-item { font-family: var(--mono); font-size: 12.5px; overflow-wrap: break-word; }
+.path-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .update-details { margin: 8px 0 0; }
 .update-detail { margin: 4px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 

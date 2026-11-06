@@ -29,8 +29,8 @@ test("the real stack.json holds what task 2 lists", () => {
   const stack = fresh();
   assert.equal(stack.schema, 1);
   assert.ok(Number.isInteger(stack.generation) && stack.generation >= 1);
-  assert.equal(stack.generation, 7, "generation 7: pi-straw-boss 0.59.0 and the profile 0.1.1");
-  assert.equal(stack.piPackages.find((p) => p.name === "pi-straw-boss")?.version, "0.59.0");
+  assert.equal(stack.generation, 9, "generation 9: pi-straw-boss 0.59.4 and the profile 0.1.2");
+  assert.equal(stack.piPackages.find((p) => p.name === "pi-straw-boss")?.version, "0.59.4");
   assert.deepEqual(Object.keys(stack.tools).sort(), ["fd", "gh", "git", "glab", "herdr", "node", "rg"]);
   for (const [tool, entry] of Object.entries(stack.tools)) {
     assert.deepEqual(Object.keys(entry.assets).sort(), ["darwin-arm64", "darwin-x64", "win32-x64"], tool);
@@ -39,8 +39,8 @@ test("the real stack.json holds what task 2 lists", () => {
   assert.match(stack.tools.git.assets["win32-x64"].url, /PortableGit/);
   assert.deepEqual(stack.profile, {
     name: "straw-boss-desk-profile",
-    version: "0.1.1",
-    integrity: "sha512-qiDHhoWJhhaxVBERMCS25lSGIxtM4Rutu7DZckilcCxQhL+q0QaZYJp3mdWd7/4B/l84NmR/jRDTo9f8npgEzQ==",
+    version: "0.1.2",
+    integrity: "sha512-Jni/GVFxrspv9FJBRoTYOBfEYst8HvK+PV0NyUta9dKXvMHqT4b/jGZknYtiZrbw2+IH+EkD4ShfBh5Tuvm/xA==",
   });
   const names = packagesOf(stack).map((p) => p.name);
   assert.ok(!names.includes("playwriter"), "playwriter is dropped");

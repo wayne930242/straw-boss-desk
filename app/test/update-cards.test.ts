@@ -216,6 +216,27 @@ describe("an error is worded from the catalog and keeps the raw text under Detai
 		assert.equal(failed.querySelector(".update-detail")?.textContent, "No update filepath provided");
 		assert.deepEqual(buttons(failed).map((b) => b.id), ["update-restart"], "the offer is armed again");
 	});
+
+	it("does not say the agents run again when they could not be started (R13B-F005), in both languages", () => {
+		const stopped = view({ shell: { phase: "ready", version: "0.0.2", installFailed: "EACCES", agentsStopped: true } });
+		const en = card(draw(stopped), "app").querySelector("#update-app-note")?.textContent ?? "";
+		assert.match(en, /could not be started again/);
+		assert.doesNotMatch(en, /running again/);
+		const zh = card(draw(stopped, "zh-TW"), "app").querySelector("#update-app-note")?.textContent ?? "";
+		assert.match(zh, /沒能重新啟動/);
+		assert.doesNotMatch(zh, /已經重新執行/);
+		assert.doesNotMatch(zh, /[A-Za-z]{4,}/);
+	});
+
+	it("sends the PM Back to the window that says why, by the name of the button on this page (CIN-F009)", () => {
+		const stopped = view({ shell: { phase: "ready", version: "0.0.2", installFailed: "EACCES", agentsStopped: true } });
+		const en = card(draw(stopped), "app").querySelector("#update-app-note")?.textContent ?? "";
+		assert.ok(en.includes(`go ${catalogs.en.settings.back} to see why`), en);
+		assert.doesNotMatch(en, /main window/);
+		const zh = card(draw(stopped, "zh-TW"), "app").querySelector("#update-app-note")?.textContent ?? "";
+		assert.ok(zh.includes(`按「${catalogs["zh-TW"].settings.back}」看原因`), zh);
+		assert.doesNotMatch(zh, /主視窗/);
+	});
 });
 
 describe("the Updates copy uses the words the rest of the app uses (SA-T13-3)", () => {

@@ -72,7 +72,8 @@ export const post: Post = (record, path, json, signal) =>
 
 export type OpenOutcome =
 	| { ok: true }
-	| { ok: false; cause: "settings-unsafe" | "not-allowed" | "gui-unavailable" | "busy" | "refused" | "timeout"; reason: string };
+	/** `step`: the step the server says the opening failed at (`create`, `start`, `join`, `deliver`, `trust`), when it names one. */
+	| { ok: false; cause: "settings-unsafe" | "not-allowed" | "gui-unavailable" | "busy" | "refused" | "timeout"; reason: string; step?: string };
 
 export interface OpenBaseDeps {
 	/** `<agent>/straw-boss`: where `gui.json` lives. */
@@ -180,7 +181,7 @@ export class OpenBaseClient {
 			if (error === "not_allowed") return { ok: false, cause: "not-allowed", reason: firstLine(body.reason) };
 			// A page token the server no longer knows answers 404 (the opening itself never does): the GUI has moved on.
 			if (answer.status === 401 || answer.status === 403 || answer.status === 404) return { ok: false, cause: "gui-unavailable", reason: `the GUI answered ${answer.status}` };
-			return { ok: false, cause: "refused", reason: firstLine(body.reason) || `the GUI answered ${answer.status}` };
+			return { ok: false, cause: "refused", reason: firstLine(body.reason) || `the GUI answered ${answer.status}`, ...(typeof body.step === "string" && body.step !== "" ? { step: body.step.slice(0, 20) } : {}) };
 		}
 	}
 }

@@ -59,6 +59,26 @@ describe("settings: one card per host, ids that are the host's own", () => {
 		assert.equal(section.querySelectorAll(".forge-holder").length, 0);
 	});
 
+	it("shows one Sign in on a not-signed-in host: the header's until the checks pass, then the flow's own, never both (task 10)", () => {
+		for (const locale of ["en", "zh-TW"] as const) {
+			const labelsOf = (el: MiniElement): string[] => el.querySelectorAll("button").map((b) => b.textContent);
+			for (const [kind, host] of [["github", "github.com"], ["gitlab", "gitlab.com"]] as const) {
+				const idle = drawSettings([forgeView(kind, host, { phase: "idle" }, "not-signed-in")], locale);
+				assert.equal(idle.querySelectorAll(".forge-sign-in-again").length, 1, `${kind} ${locale}: the header offers Sign in while nothing runs`);
+				assert.equal(idle.querySelectorAll('[data-role="sign-in"]').length, 0);
+				const ready = drawSettings([forgeView(kind, host, READY, "not-signed-in")], locale);
+				assert.equal(ready.querySelectorAll(".forge-sign-in-again").length, 0, `${kind} ${locale}: the header's button is gone once the flow offers its own`);
+				assert.equal(ready.querySelectorAll('[data-role="sign-in"]').length, 1);
+				const signIn = catalogs[locale].forge[kind].signIn;
+				const signIns = labelsOf(ready.querySelector("li.forge-card") as MiniElement).filter((l) => l === signIn || l === catalogs[locale].settings.accounts.signIn);
+				assert.equal(signIns.length, 1, `${kind} ${locale}: one sign-in button in the card, got ${signIns.join(", ")}`);
+			}
+			// The outcome of a sign-out has no sign-in of its own, so the header keeps Sign in again beside it.
+			const out = drawSettings([forgeView("github", "github.com", { phase: "signed-out" }, "not-signed-in")], locale);
+			assert.equal(out.querySelectorAll(".forge-sign-in-again").length, 1);
+		}
+	});
+
 	it("says the state's sentence once: the note is left out while the flow speaks the same refusal", () => {
 		const foreign = forgeView("github", "github.com", { phase: "foreign", entries: [{ name: "gh:github.com", account: "someone" }], changed: [] }, "foreign");
 		const speaking = drawSettings([foreign]);

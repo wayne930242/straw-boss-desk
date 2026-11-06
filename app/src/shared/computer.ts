@@ -34,7 +34,7 @@ export type RemoveStep = "stopping" | "logins" | "claude" | "linear" | "path" | 
 
 /** Something that did not finish; the removal went on, and the result names it. */
 export interface RemovalProblem {
-	step: RemoveStep | "keep-awake";
+	step: RemoveStep;
 	/** The first line of what failed. */
 	detail: string;
 }
@@ -61,6 +61,8 @@ export type RemoveState =
 	| { phase: "working"; step: RemoveStep }
 	/** The stack could not be stopped: programs of this app still run, listed by file. Nothing was removed; the stack was started again when it ran before. */
 	| { phase: "stop-failed"; leftovers: Leftover[]; detail: string }
+	/** Another stop (Restart to update, or a quit) was already under way, so nothing was started and nothing was removed. */
+	| { phase: "busy" }
 	| { phase: "done"; result: RemovalResult }
 	/** An error the removal did not expect, before it deleted anything. */
 	| { phase: "failed"; detail: string };

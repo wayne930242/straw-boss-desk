@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { ComputerAction, ComputerView, DiagnosticsAction, DiagnosticsView, LeftEntry, RemoveState, RemoveStep } from "../src/shared/computer.ts";
@@ -99,12 +100,54 @@ describe("Remove all data: one panel per state", () => {
 		assert.doesNotMatch(text(c, '[data-role="kept"]'), /[{}]/);
 	});
 
-	it("the refusal says the store cannot be read, offers a retry and a cancel, and has no confirm", () => {
+	it("the refusal says the store cannot be read, offers a retry only (SA-T14-3: nothing to cancel), and has no confirm", () => {
 		const c = drawComputer({ phase: "refused", reason: "store", detail: "keychain locked" });
 		assert.equal(c.querySelector("#remove-refusal")?.getAttribute("data-reason"), "store");
 		assert.equal(c.querySelector("#remove-confirm"), null);
-		assert.ok(c.querySelector("#remove-retry") && c.querySelector("#remove-cancel"));
+		assert.ok(c.querySelector("#remove-retry"));
+		assert.equal(c.querySelector("#remove-cancel"), null);
+		assert.equal(text(c, "#remove-retry"), "Try again");
+		assert.equal(text(drawComputer({ phase: "refused", reason: "store", detail: "" }, "zh-TW"), "#remove-retry"), "再試一次");
 		assert.match(text(c, "#remove-refusal pre"), /keychain locked/);
+	});
+
+	it("another stop under way gets its own sentence, not the list of programs still running (T14-F004)", () => {
+		const c = drawComputer({ phase: "busy" });
+		assert.equal(c.querySelector("#remove-refusal")?.getAttribute("data-reason"), "busy");
+		assert.match(text(c, "#remove-refusal"), /busy with something else/);
+		assert.doesNotMatch(text(c, "#remove-refusal"), /still running/);
+		assert.equal(c.querySelector("#remove-refusal li"), null);
+	});
+
+	it("the confirmation and the result title are headings of their own, not the small grey captions (F010)", () => {
+		const confirm = drawComputer({ phase: "confirm", plan: PLAN });
+		assert.equal(confirm.querySelector("h3.remove-title")?.textContent, "Remove all data from this computer?");
+		const done = drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [] } });
+		assert.ok(done.querySelector("h3.remove-title"));
+		const css = readFileSync(new URL("../src/renderer/desk.css", import.meta.url), "utf8");
+		const rule = /h3\.remove-title\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		assert.match(rule, /text-transform:\s*none/);
+		assert.match(rule, /font-size:\s*1[4-9]px/);
+		assert.doesNotMatch(rule, /var\(--dim\)/);
+	});
+
+	it("says the files are tried again only when the files step failed, and points to the guide for the other steps (F010)", () => {
+		const result = (steps: RemoveStep[]): RemoveState => ({ phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: steps.map((step) => ({ step, detail: "d" })) } });
+		const files = drawComputer(result(["files"]));
+		assert.ok(files.querySelector('[data-role="retry-files"]'));
+		assert.equal(files.querySelector('[data-role="see-guide"]'), null);
+		const path = drawComputer(result(["path", "logins"]));
+		assert.equal(path.querySelector('[data-role="retry-files"]'), null, "a failed sign-out or PATH step is never retried");
+		assert.ok(path.querySelector('[data-role="see-guide"]') && path.querySelector("#remove-guide-problems"));
+		const both = drawComputer(result(["files", "linear"]));
+		assert.ok(both.querySelector('[data-role="retry-files"]') && both.querySelector('[data-role="see-guide"]'));
+	});
+
+	it("the result's condition for the next launch is about a folder that could not be deleted, not about not closing (F010)", () => {
+		const done = (locale: "en" | "zh-TW") => text(drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [] } }, locale), "#remove-done-panel");
+		assert.doesNotMatch(done("zh-TW"), /若你不關閉/);
+		assert.match(done("zh-TW"), /若關閉時沒刪成功/);
+		assert.match(done("en"), /if that does not work/);
 	});
 
 	it("each step of the work has its own sentence, hides the language, and the keep-awake box is disabled", () => {
@@ -167,6 +210,7 @@ describe("Remove all data: one panel per state", () => {
 			{ phase: "refused", reason: "store", detail: "x" },
 			...STEPS.map((step): RemoveState => ({ phase: "working", step })),
 			{ phase: "stop-failed", leftovers: [{ pid: 1, file: "f" }], detail: "" },
+			{ phase: "busy" },
 			{ phase: "failed", detail: "x" },
 			{ phase: "done", result: { root: PLAN.root, workFolder: PLAN.workFolder, left: LEFT, problems: STEPS.map((step) => ({ step, detail: "d" })) } },
 		];
@@ -225,6 +269,14 @@ describe("Diagnostics: four cards, one action row each", () => {
 		assert.equal(drawDiag(diagView({ collect: { phase: "done", file: "/r/d.zip", files: 3, skipped: 0 } })).querySelector("#diag-collect-skipped"), null);
 	});
 
+	it("has one primary button, Collect diagnostics; the others are secondary (SA-T14-1)", () => {
+		for (const v of [diagView(), diagView({ repair: { phase: "failed", detail: "d" } }), diagView({ collect: { phase: "done", file: "f.zip", files: 1, skipped: 0 } })]) {
+			const d = drawDiag(v);
+			const primary = d.querySelectorAll("button").filter((b) => (b.getAttribute("class") ?? "").split(" ").includes("primary"));
+			assert.deepEqual(primary.map((b) => b.getAttribute("id")), ["diag-collect"]);
+		}
+	});
+
 	it("disables a button while its run is under way", () => {
 		const d = drawDiag(diagView({ status: { phase: "reading" }, collect: { phase: "working" }, repair: { phase: "working" } }));
 		for (const id of ["diag-status", "diag-collect", "diag-repair"]) assert.equal((d.querySelector(`#${id}`) as MiniElement).disabled, true, id);
@@ -234,7 +286,17 @@ describe("Diagnostics: four cards, one action row each", () => {
 		const d = drawDiag(diagView({ status: { phase: "ok", at: "t", fields: { state: "live", primary: true, desk: null, version: "0.59.0", keys: ["zzkeyname", "yykeyname"] } } }));
 		const fields = d.querySelectorAll("#diag-status-fields li");
 		assert.deepEqual(fields.map((f) => f.getAttribute("data-field")), ["state", "primary", "desk", "version"]);
-		assert.match(fields[0]?.textContent ?? "", /live/);
+		assert.match(fields[0]?.textContent ?? "", /running/, "the state word is the catalog's");
+		assert.doesNotMatch(fields[0]?.textContent ?? "", /live/);
+		const zh = drawDiag(diagView({ status: { phase: "ok", at: "t", fields: { state: "live", primary: true, desk: null, version: "1", keys: [] } } }), "zh-TW");
+		assert.doesNotMatch(zh.querySelectorAll("#diag-status-fields li")[0]?.textContent ?? "", /live/, "no raw server word in zh-TW");
+		assert.match(zh.querySelectorAll("#diag-status-fields li")[0]?.textContent ?? "", /運作中/);
+		// A state the page does not know is not put into the sentence; the word is under Details.
+		const other = drawDiag(diagView({ status: { phase: "ok", at: "t", fields: { state: "wedged", primary: true, desk: null, version: "1", keys: [] } } }), "zh-TW");
+		const line = other.querySelectorAll("#diag-status-fields li")[0];
+		assert.equal(line?.getAttribute("data-state"), "other");
+		assert.equal(line?.querySelector("pre")?.textContent, "wedged");
+		assert.doesNotMatch((line?.textContent ?? "").replace(/wedged/, ""), /wedged/);
 		assert.match(fields[3]?.textContent ?? "", /0\.59\.0/);
 		assert.doesNotMatch(d.textContent, /keyname/);
 	});

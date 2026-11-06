@@ -55,6 +55,8 @@ interface Rig {
 	store: RecipeMemoStore;
 	state: { active: Recipe | null; enabled: boolean; served: string | (() => Promise<never>); picked: { name: string; text: string } | null | Error; install: Array<{ ok: true } | { ok: false; stage: string; category: string } | Error> };
 	retried: RepoSpec[];
+	/** The callbacks `start()` registered: the first check, then the daily one. */
+	timers: Array<() => void>;
 }
 
 function rig(over: Partial<Rig["state"]> = {}): Rig {
@@ -63,7 +65,7 @@ function rig(over: Partial<Rig["state"]> = {}): Rig {
 	mkdirSync(join(dir, "state"), { recursive: true });
 	const store = new RecipeMemoStore({ state: join(dir, "state") });
 	const state: Rig["state"] = { active: recipeOf(text()), enabled: true, served: text({ version: "1.1.0" }), picked: null, install: [], ...over };
-	const r = { fetched: [], accepted: [], undone: 0, installs: 0, updates: [], later: [], logs: [], retried: [], store, state } as unknown as Rig;
+	const r = { fetched: [], accepted: [], undone: 0, installs: 0, updates: [], later: [], logs: [], retried: [], timers: [], store, state } as unknown as Rig;
 	const deps: RecipeServiceDeps = {
 		active: () => state.active,
 		stack: () => stack,
@@ -103,6 +105,9 @@ function rig(over: Partial<Rig["state"]> = {}): Rig {
 		log: (f) => void r.logs.push(f as Record<string, unknown>),
 		enabled: () => state.enabled,
 		now: () => new Date("2026-11-05T10:00:00.000Z"),
+		setTimeout: (fn) => (r.timers.push(fn), {}),
+		setInterval: (fn) => (r.timers.push(fn), {}),
+		clear: () => undefined,
 	};
 	r.service = new RecipeService(deps);
 	return r;
@@ -263,6 +268,90 @@ describe("Apply", () => {
 		assert.equal(needsInstall(base, next), false);
 		assert.equal(needsInstall(base, recipeOf(text({ tools: ["bun"] }))), true);
 		assert.equal(needsInstall(base, recipeOf(text({ version: "2.0.0" }))), true, "the version is recorded by the installer");
+	});
+});
+
+describe("the timer checks (PIN0590-F002)", () => {
+	const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+	it("skips the launch's first check once a check or an apply has run, so it cannot replace 'applied' with 'idle'", async () => {
+		const r = rig();
+		r.service.start();
+		await r.service.check();
+		await r.service.apply();
+		assert.equal(r.service.view().state.phase, "applied");
+		r.fetched.length = 0;
+		r.timers[0]?.();
+		await settle();
+		assert.equal(r.service.view().state.phase, "applied");
+		assert.equal(r.fetched.length, 0, "no second fetch");
+	});
+
+	it("skips the first check after a manual check alone", async () => {
+		const r = rig();
+		r.service.start();
+		await r.service.check();
+		r.fetched.length = 0;
+		r.timers[0]?.();
+		await settle();
+		assert.equal(r.fetched.length, 0);
+		assert.equal(r.service.view().state.phase, "offered");
+	});
+
+	it("skips the first check once the PM has chosen a file with Replace, so it cannot clear the offer of that file (CIN-F010)", async () => {
+		const r = rig({ picked: { name: "other.json", text: text({ id: "other", name: "Other", version: "2.0.0", updateUrl: undefined }) } });
+		r.service.start();
+		await r.service.replace();
+		const chosen = offered(r);
+		assert.equal(chosen.origin, "file");
+		r.fetched.length = 0;
+		r.timers[0]?.();
+		await settle();
+		assert.deepEqual(r.service.view().state, chosen, "the card still shows the file the PM chose");
+		assert.equal(r.fetched.length, 0, "no fetch");
+		await r.service.apply();
+		assert.deepEqual(r.accepted.map((a) => a.id), ["other"], "and Apply applies that file");
+	});
+
+	it("still runs the first check when nothing else has", async () => {
+		const r = rig();
+		r.service.start();
+		r.timers[0]?.();
+		await settle();
+		assert.equal(r.fetched.length, 1);
+		assert.equal(r.service.view().state.phase, "offered");
+	});
+
+	it("never lets the daily check replace a failed update's card, with the stage and the rollback sentence", async () => {
+		const r = rig({ install: [{ ok: false, stage: "opt:glab", category: "download" }, { ok: true }] });
+		r.service.start();
+		await r.service.check();
+		await r.service.apply();
+		const failed = r.service.view().state;
+		assert.equal(failed.phase, "failed");
+		r.fetched.length = 0;
+		r.timers[1]?.();
+		await settle();
+		assert.deepEqual(r.service.view().state, failed);
+		assert.equal(r.fetched.length, 0);
+	});
+
+	it("never lets the daily check replace 'applied'", async () => {
+		const r = rig();
+		r.service.start();
+		await r.service.check();
+		await r.service.apply();
+		r.timers[1]?.();
+		await settle();
+		assert.equal(r.service.view().state.phase, "applied");
+	});
+
+	it("a PM's own Check now still replaces the card", async () => {
+		const r = rig();
+		await r.service.check();
+		await r.service.apply();
+		await r.service.check();
+		assert.equal(r.service.view().state.phase, "idle");
 	});
 });
 

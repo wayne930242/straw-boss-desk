@@ -32,7 +32,7 @@ interface Rig {
 	listed: string[][];
 }
 
-function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[] }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void } = {}): Rig {
+function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void } = {}): Rig {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-rm-")));
 	bases.push(base);
 	const home = join(base, "home");
@@ -166,6 +166,18 @@ describe("the removal", () => {
 		assert.ok(!existsSync(join(r.root, PENDING_FILE)));
 	});
 
+	it("does not resume the stack when another stop is under way: it says busy, removes nothing, and leaves that stop alone (T14-F004)", async () => {
+		const r = rig({ stop: async () => ({ ok: false, leftovers: [], busy: true }) });
+		await r.svc.plan();
+		await r.svc.confirm();
+		assert.deepEqual(r.svc.state, { phase: "busy" });
+		assert.ok(!r.calls.includes("resume"), "resume would start the stack in the middle of an update");
+		assert.ok(!r.calls.includes("logins"));
+		assert.ok(existsSync(join(r.root, "tools")) && existsSync(join(r.root, "secrets", "linear.bin")));
+		assert.equal(r.armed.length, 0);
+		assert.ok(!existsSync(join(r.root, PENDING_FILE)));
+	});
+
 	it("names an entry it leaves: another program's, one it made and lost to a write, and one it made and could not remove", async () => {
 		const gone: LeftEntry[] = [
 			{ name: "glab:gitlab.example.com:token", account: "", host: "gitlab.example.com", why: "changed" },
@@ -269,13 +281,10 @@ describe("the removal", () => {
 		assert.ok(r.calls.includes("quit"));
 	});
 
-	it("locks the app from the first step to the end", async () => {
+	it("a second plan does not reopen a removal that has started", async () => {
 		const r = rig();
-		assert.equal(r.svc.locked, false);
 		await r.svc.plan();
-		assert.equal(r.svc.locked, false);
 		await r.svc.confirm();
-		assert.equal(r.svc.locked, true);
 		await r.svc.plan();
 		assert.equal(r.svc.state.phase, "done", "a second plan does not reopen it");
 	});

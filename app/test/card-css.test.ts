@@ -19,6 +19,11 @@ describe("the card parts", () => {
 		});
 	}
 
+	it("keeps each name of a link path in one unbreakable box that is capped at the card's width, so a hyphen is never where it breaks (CIN-F006)", () => {
+		const desk = css["desk.css"] ?? "";
+		assert.match(desk, /\.path-name \{[^}]*display: inline-block;[^}]*max-width: 100%;[^}]*overflow-wrap: anywhere/);
+	});
+
 	it("lets a card and its warning box shrink and wrap, so a long list of paths stays inside the panel (SA-T12-1)", () => {
 		const desk = css["desk.css"] ?? "";
 		assert.match(desk, /\.accounts \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);

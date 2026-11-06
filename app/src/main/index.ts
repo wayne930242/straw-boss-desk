@@ -34,6 +34,7 @@ import { spawnLogin } from "./accounts/cli.ts";
 import { ClaudeAccounts, spawnClaude, testClaudeCommand, type ClaudeCommand } from "./accounts/claude.ts";
 import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
+import { QuitGate } from "./quit-gate.ts";
 import { stopForRemoval, stopSequence, type StopParts } from "./stop-sequence.ts";
 import { preLaunch } from "./pre-launch.ts";
 import { KeepAwake } from "./computer/keep-awake.ts";
@@ -46,7 +47,6 @@ import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
 import { loadActiveStack } from "./wizard/stack-source.ts";
 import type { SpawnFn } from "./runtime/herdr.ts";
-import type { EngineConfig } from "./bootstrap/engine.ts";
 import { ShellUpdater, electronUpdaterDriver, MAX_INSTALLER_BYTES } from "./update/shell.ts";
 import { FetchRefused, fetchPublicText } from "./net/safe-fetch.ts";
 import { callEnv, ProjectGit, type GitExec } from "./projects/git.ts";
@@ -57,6 +57,7 @@ import { ProjectRecordStore } from "./projects/record.ts";
 import { ProjectsRunner } from "./projects/runner.ts";
 import { RecipeService } from "./recipe/service.ts";
 import { RecipeMemoStore } from "./recipe/store.ts";
+import { runUpdateEngine } from "./update/engine-run.ts";
 import { StackUpdater, type EngineRunResult, type FetchedBytes } from "./update/stack.ts";
 import { UpdatesService } from "./update/service.ts";
 import { feedUrlProblem, updateConfig } from "./update/verify.ts";
@@ -354,33 +355,19 @@ function engineRecipe(): unknown {
 }
 
 /** One engine run for an update (the candidate's, or the old stack's after a failure), in the same utilityProcess the wizard's runs use. */
-async function runEngineForUpdate(stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult> {
-	const recipe = engineRecipe();
-	const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
-	const config: EngineConfig = { root: layout.root, home, platform: layout.platform, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}), ...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}) };
-	let current: string | null = null;
-	const failures: Array<{ stage: string; category: string }> = [];
-	const end = await engineHost.run(config, (event) => {
-		if (event.type === "stage-start") {
-			current = event.stage;
-			onStage({ type: "start", stage: event.stage });
-		} else if (event.type === "stage") {
-			onStage({ type: "end", stage: event.outcome.stage });
-			if (event.outcome.status === "failed") failures.push({ stage: event.outcome.stage, category: event.outcome.failure?.category ?? "other" });
-		}
-	});
-	switch (end.kind) {
-		case "done":
-			return end.ok ? { ok: true } : { ok: false, failed: failures[0] ?? { stage: "engine", category: "other" } };
-		case "error":
-			runtimeLog.event({ event: "update-engine-error", name: end.name, detail: end.message.slice(0, 300) });
-			return { ok: false, failed: { stage: "engine", category: "other" } };
-		case "crashed":
-			return { ok: false, failed: { stage: current ?? "engine", category: "other" } };
-		case "disposed":
-			return { ok: false, interrupted: true };
-	}
-}
+const runEngineForUpdate = (stack: unknown, onStage: (event: { type: "start" | "end"; stage: string }) => void): Promise<EngineRunResult> =>
+	runUpdateEngine(
+		{
+			host: engineHost,
+			config: async () => {
+				const recipe = engineRecipe();
+				const proxyEnv = await supervisor.engineProxyEnv(wizard.forges.map((f) => f.host));
+				return { root: layout.root, home, platform: layout.platform, stack, secretPatterns, ...(recipe !== undefined ? { recipe } : {}), ...(Object.keys(proxyEnv).length > 0 ? { proxyEnv } : {}) };
+			},
+			log: (fields) => runtimeLog.event(fields),
+		},
+		onStage,
+	);
 
 const stackUpdater = new StackUpdater({
 	layout,
@@ -487,14 +474,17 @@ const removal = new RemovalService({
 	linear,
 	workFolder: () => loadStartConfig(layout, home).workFolder,
 	// The stop of a quit, waiting out the helper a pane's pi leaves for 30 s (seam U13) as Repair's stop does. The quit's own stop does not run again after it.
-	stop: async () => {
-		if (stopping) return { ok: false, leftovers: [] };
-		stopping = true;
-		const outcome = await stopForRemoval(stopParts());
-		stopped = outcome.ok;
-		return outcome;
+	// A stop already under way (an update's, a quit's) is not undone or joined: the gate answers `busy` and the removal says so.
+	// Keep awake is let go when the stop starts: the result screen can wait for hours, and the computer need not stay awake for it. A refused removal applies the saved setting again.
+	stop: () =>
+		quitGate.stopForRemoval(() => {
+			keepAwake.release();
+			return stopForRemoval(stopParts());
+		}),
+	resume: async () => {
+		await quitGate.resumeAfterRefusedRemoval();
+		keepAwake.apply();
 	},
-	resume: () => resumeAfterStop("remove-resume"),
 	arm: (spec) => {
 		pendingCleanup = spec;
 	},
@@ -636,9 +626,6 @@ function buildMenu(): void {
 }
 
 // The quit holds until the stop sequence is done, then leaves with `app.exit`, so a quit never abandons the stack half stopped.
-let stopping = false;
-let stopped = false;
-
 /** The parts the stop sequence works on (`stop-sequence.ts`). */
 function stopParts(): StopParts {
 	// The checks of the Team recipe card and the repositories in flight end with the app's other background work.
@@ -657,37 +644,32 @@ function stopAll(): Promise<boolean> {
 	return stopSequence(stopParts());
 }
 
-function stopThenExit(code: (ok: boolean) => number): void {
-	if (stopping) return;
-	stopping = true;
-	void stopAll().then((ok) => {
-		stopped = true;
+const quitGate = new QuitGate({
+	stopAll: () => stopAll(),
+	// The cleanup that **Remove all data** armed starts here, right before the app is gone.
+	exit: (code) => {
 		runCleanup();
-		app.exit(code(ok));
-	});
-}
+		app.exit(code);
+	},
+	resume: (event) => resumeStack(event),
+	log: (fields) => runtimeLog.event(fields),
+});
+const stopThenExit = (code: (ok: boolean) => number): void => quitGate.quit(code);
 
 /**
  * Restart to update (spec: Updater): the stop sequence runs, then electron-updater starts the installer and quits the app. The quit it makes is not held again, since the stack is stopped
  * already; the installer replaces the program files only, never the data root.
  */
-async function stopForUpdate(): Promise<void> {
-	if (stopping) return;
-	stopping = true;
-	const ok = await stopAll();
-	stopped = true;
-	runtimeLog.event({ event: "update-stop", ok });
-}
+const stopForUpdate = (): Promise<void> => quitGate.stopForUpdate();
 
-/** The installer could not start (spec: Updater): the app goes on as it was before the click. The stack starts again, the engine and the supervisor take work, and the checks run again. */
-async function resumeAfterFailedUpdate(): Promise<void> {
-	await resumeAfterStop("update-resume");
-}
+/** The installer could not start (spec: Updater): the app goes on as it was before the click, or leaves if the PM asked to quit meanwhile. */
+const resumeAfterFailedUpdate = (): Promise<boolean> => quitGate.resumeAfterFailedUpdate();
 
-/** The stop did not end the app (the installer could not start, or **Remove all data** found programs still running): everything the stop put down is taken up again. */
-async function resumeAfterStop(event: string): Promise<void> {
-	stopping = false;
-	stopped = false;
+/**
+ * The app goes on as it was (after an update's installer or a refused **Remove all data**; `event` names which): the stack starts again, the engine and the supervisor take work, and the checks run again. An apply that the stop cut short is finished first, so the stack does not
+ * start on half-updated tools and the card does not stay on "applying" (R13B-F002). Resolves with whether the agents started.
+ */
+async function resumeStack(event: string): Promise<boolean> {
 	supervisor.cancelQuit();
 	engineHost.resume();
 	accounts.resume();
@@ -697,8 +679,12 @@ async function resumeAfterStop(event: string): Promise<void> {
 	projects.resume();
 	recipeCard.start();
 	runtimeLog.event({ event });
+	await stackUpdater.healInterrupted().catch((error: Error) => runtimeLog.event({ event: "update-resume-heal-failed", detail: error.message.slice(0, 200) }));
 	// A start that fails shows on the runtime page through the supervisor's `failure` event.
-	await supervisor.start().catch(() => undefined);
+	return supervisor
+		.start()
+		.then(() => true)
+		.catch(() => false);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -721,9 +707,7 @@ if (!app.requestSingleInstanceLock()) {
 		window.focus();
 	});
 	app.on("before-quit", (event) => {
-		if (stopped) return;
-		event.preventDefault();
-		stopThenExit(() => 0);
+		if (!quitGate.beforeQuit()) event.preventDefault();
 	});
 	// macOS keeps the app and the stack running when the window closes; Windows quits and stops (design: Window close).
 	app.on("window-all-closed", () => {
