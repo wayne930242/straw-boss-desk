@@ -60,6 +60,8 @@ describe("the cleanup command", () => {
 		assert.ok(POWERSHELL_SCRIPT.indexOf("$isLink) {") < POWERSHELL_SCRIPT.indexOf("GetFileSystemEntries"));
 		// The root's marker is passed as the name that goes last, and is deleted only after the children (`$rest` counts what stayed).
 		assert.match(POWERSHELL_SCRIPT, /SBD_RM_ROOT\) \{ 'remove-pending' \}/);
+		const skipsMarker = POWERSHELL_SCRIPT.indexOf("-ieq $keepLast) }) { continue }") >= 0 || POWERSHELL_SCRIPT.indexOf("-ieq $keepLast)) { continue }") >= 0;
+		assert.ok(skipsMarker, "the walk skips the marker while it empties the root");
 		assert.ok(POWERSHELL_SCRIPT.indexOf("-ieq $keepLast") < POWERSHELL_SCRIPT.indexOf("if ($rest -gt 0) { return }"));
 		assert.ok(POWERSHELL_SCRIPT.indexOf("if ($rest -gt 0) { return }") < POWERSHELL_SCRIPT.indexOf("Remove-Tree (Join-Path $path $keepLast)"));
 		// The command the app starts carries that script, whatever the root holds.

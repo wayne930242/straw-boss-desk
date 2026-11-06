@@ -56,6 +56,14 @@ export interface RemovalDeps {
 
 const firstLine = (text: string): string => text.split(/\r?\n/)[0]?.slice(0, 300) ?? "";
 
+/**
+ * What a Claude sign-out that failed means for the result (T14-F008). On macOS the app's Keychain item is deleted by name afterwards, so the failure is only logged. On Windows the login is the file in
+ * the Claude folder, which goes with the folder, unless it lives in Credential Manager (R11-F004, not yet verified on a machine): then a failed logout can leave it, so it is named.
+ */
+export function claudeLogoutProblem(platform: NodeJS.Platform, detail: string): RemovalProblem | null {
+	return platform === "win32" ? { step: "claude", detail: firstLine(detail) } : null;
+}
+
 export class RemovalService {
 	readonly #d: RemovalDeps;
 	readonly #listeners = new Set<() => void>();
@@ -194,8 +202,7 @@ export class RemovalService {
 	async #claude(problems: RemovalProblem[]): Promise<void> {
 		const { layout } = this.#d;
 		this.#d.claude.resume();
-		// The CLI's own logout first (it also tells Claude's service). On macOS a failure is not a problem by itself: the item is deleted by name below. On Windows the login is the file in the Claude
-		// folder, which goes with the folder, unless it lives in Credential Manager (R11-F004, not yet verified on a machine): then a failed logout can leave it, so it is named (T14-F008).
+		// The CLI's own logout first (it also tells Claude's service); what a failure of it means is `claudeLogoutProblem`'s.
 		let failure: string | null = null;
 		await this.#d.claude.signOut().catch((error: Error) => {
 			failure = firstLine(error.message);
@@ -204,7 +211,8 @@ export class RemovalService {
 		if (failure === null && flow?.phase === "failed") failure = firstLine(flow.detail ?? "");
 		if (failure !== null) {
 			this.#log({ event: "remove-claude-logout-failed", detail: failure });
-			if (layout.platform === "win32") problems.push({ step: "claude", detail: failure });
+			const problem = claudeLogoutProblem(layout.platform, failure);
+			if (problem !== null) problems.push(problem);
 		}
 		if (layout.platform !== "darwin") return;
 		await this.#deleteItems([claudeItem(layout.claude)], "claude", problems);

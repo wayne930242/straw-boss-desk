@@ -8,7 +8,7 @@ import { layoutFromRecord } from "../src/main/paths.ts";
 import type { CredentialStore, StoreEntry, UserPath } from "../src/main/platform/types.ts";
 import { claudeItem, safeStorageItem } from "../src/main/removal/names.ts";
 import { FALLBACK_PARENT, PENDING_FILE, readPending, rootId } from "../src/main/removal/pending.ts";
-import { RemovalService, type RemovalAccounts, type RemovalDeps } from "../src/main/removal/service.ts";
+import { claudeLogoutProblem, RemovalService, type RemovalAccounts, type RemovalDeps } from "../src/main/removal/service.ts";
 import { testLayout } from "./harness/engine-fixture.ts";
 
 // **Remove all data** with fakes for the code hosts, the stop and the credential store, and a real folder for the files (task 14 anchor). The real stores are `removal-hosted.test.ts`'s.
@@ -181,6 +181,11 @@ describe("the removal", () => {
 		await broken.svc.confirm();
 		assert.equal(broken.svc.state.phase, "done", "the removal goes on without it");
 		assert.equal((readPending(broken.root) as { owner: unknown }).owner, null);
+	});
+
+	it("T14-F008: a failed Claude sign-out is a problem of the claude step on Windows and none on macOS (both platforms, whatever the host)", () => {
+		assert.deepEqual(claudeLogoutProblem("win32", "not logged in\nsecond line"), { step: "claude", detail: "not logged in" });
+		assert.equal(claudeLogoutProblem("darwin", "not logged in"), null);
 	});
 
 	it(`T14-F008: a Claude sign-out that failed is ${IS_MAC ? "only logged on macOS, where the Keychain item is deleted by name" : "named in the result on Windows, since the login may sit in Credential Manager"}`, async () => {
