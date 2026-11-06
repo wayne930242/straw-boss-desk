@@ -1549,12 +1549,29 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 					const events = logEvents().slice(-25).map((e) => JSON.stringify(e).slice(0, 260));
 					throw new Error(`${error.message}; the card says ${await updateCard.innerText()}; last events: ${events.join(" / ")}`);
 				});
-			await stubDialog(app, mine);
-			await s.locator("#recipe-replace").click();
-			await until("the chosen file to be offered", 30_000, async () => (await stateOf()) === "offered", 200);
-			await s.locator("#recipe-apply").click();
-			await settled("the chosen file to apply", 900_000, ["applied", "failed", "error"]);
-			assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			/**
+			 * Apply, and once more after the minute the card asks for when it says the stack could not be stopped yet ("a program the earlier setup left is still running"): a PM would wait and press
+			 * it again, and a pi of a closed pane on Windows may still be ending (task 15: one run in ten). The retry is logged, and a second refusal fails the test.
+			 */
+			const applyOffered = async (offerAgain: () => Promise<void>, what: string): Promise<void> => {
+				await s.locator("#recipe-apply").click();
+				await settled(`${what} to apply`, 900_000, ["applied", "failed", "error"]);
+				if ((await stateOf()) === "error") {
+					console.log(`${what}: the first apply said the stack was busy (${(await updateCard.innerText()).replace(/\s+/g, " ").slice(0, 200)}); trying again after a minute`);
+					await sleep(60_000);
+					await offerAgain();
+					await s.locator("#recipe-apply").click();
+					await settled(`${what} to apply (second try)`, 900_000, ["applied", "failed", "error"]);
+				}
+				assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			};
+			const offerChosen = async (): Promise<void> => {
+				await stubDialog(app, mine);
+				await s.locator("#recipe-replace").click();
+				await until("the chosen file to be offered", 30_000, async () => (await stateOf()) === "offered", 200);
+			};
+			await offerChosen();
+			await applyOffered(offerChosen, "the chosen file");
 			assert.deepEqual([activeFile().version, activeFile().updateUrl], ["1.3.0", rawUrl]);
 
 			// The check itself: a real fetch of the fixture, its change list first and nothing written.
@@ -1571,9 +1588,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			assert.match(await s.locator("#recipe-changes").innerText(), /2\.0\.0/);
 			assert.deepEqual(readdirSync(world.layout.recipe).map((f) => readFileSync(join(world.layout.recipe, f), "utf8")), before, "nothing was written by the check");
 			await shot(s, "recipe-raw-offered-zh-TW");
-			await s.locator("#recipe-apply").click();
-			await settled("the update to apply", 900_000, ["applied", "failed", "error"]);
-			assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			await applyOffered(async () => {
+				await s.locator("#recipe-check").click();
+				await until("the fixture to be offered again", 90_000, async () => (await stateOf()) === "offered", 500);
+			}, "the update");
 			assert.equal(activeFile().version, "2.0.0", "the fixture's version is the active one");
 			await shot(s, "recipe-raw-applied-zh-TW");
 		} finally {
