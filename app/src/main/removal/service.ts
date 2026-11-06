@@ -30,7 +30,8 @@ export interface RemovalDeps {
 	productName: string;
 	accounts: RemovalAccounts;
 	forges(): Forge[];
-	claude: { resume(): void; signOut(): Promise<void> };
+	/** `flow` is the sign-in service's state after `signOut`: `failed` (with its `detail`) when `claude auth logout` did not work, which it reports by state and not by throwing. */
+	claude: { resume(): void; signOut(): Promise<void>; readonly flow?: { phase: string; detail?: string } };
 	linear: { resume(): void; signOut(): Promise<void> };
 	/** The work folder, which the removal leaves with its clones; null when none was chosen. */
 	workFolder(): string | null;
@@ -193,8 +194,18 @@ export class RemovalService {
 	async #claude(problems: RemovalProblem[]): Promise<void> {
 		const { layout } = this.#d;
 		this.#d.claude.resume();
-		// The CLI's own logout first (it also tells Claude's service); a failure is not a problem by itself: the item is deleted by name below, and the Windows file goes with the folder.
-		await this.#d.claude.signOut().catch((error: Error) => this.#log({ event: "remove-claude-logout-failed", detail: firstLine(error.message) }));
+		// The CLI's own logout first (it also tells Claude's service). On macOS a failure is not a problem by itself: the item is deleted by name below. On Windows the login is the file in the Claude
+		// folder, which goes with the folder, unless it lives in Credential Manager (R11-F004, not yet verified on a machine): then a failed logout can leave it, so it is named (T14-F008).
+		let failure: string | null = null;
+		await this.#d.claude.signOut().catch((error: Error) => {
+			failure = firstLine(error.message);
+		});
+		const flow = this.#d.claude.flow;
+		if (failure === null && flow?.phase === "failed") failure = firstLine(flow.detail ?? "");
+		if (failure !== null) {
+			this.#log({ event: "remove-claude-logout-failed", detail: failure });
+			if (layout.platform === "win32") problems.push({ step: "claude", detail: failure });
+		}
 		if (layout.platform !== "darwin") return;
 		await this.#deleteItems([claudeItem(layout.claude)], "claude", problems);
 	}

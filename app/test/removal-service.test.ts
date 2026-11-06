@@ -32,7 +32,7 @@ interface Rig {
 	listed: string[][];
 }
 
-function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void; self?: RemovalDeps["self"] } = {}): Rig {
+function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void; self?: RemovalDeps["self"]; claude?: RemovalDeps["claude"] } = {}): Rig {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-rm-")));
 	bases.push(base);
 	const home = join(base, "home");
@@ -80,7 +80,7 @@ function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; 
 		productName: over.productName ?? "Straw Boss Desk Dev",
 		accounts,
 		forges: () => [],
-		claude: { resume: () => calls.push("claude.resume"), signOut: async () => void calls.push("claude.signOut") },
+		claude: over.claude ?? { resume: () => calls.push("claude.resume"), signOut: async () => void calls.push("claude.signOut") },
 		linear: { resume: () => calls.push("linear.resume"), signOut: async () => void calls.push("linear.signOut") },
 		workFolder: () => work,
 		stop: over.stop ?? (async () => (calls.push("stop"), { ok: true, leftovers: [] })),
@@ -181,6 +181,23 @@ describe("the removal", () => {
 		await broken.svc.confirm();
 		assert.equal(broken.svc.state.phase, "done", "the removal goes on without it");
 		assert.equal((readPending(broken.root) as { owner: unknown }).owner, null);
+	});
+
+	it(`T14-F008: a Claude sign-out that failed is ${IS_MAC ? "only logged on macOS, where the Keychain item is deleted by name" : "named in the result on Windows, since the login may sit in Credential Manager"}`, async () => {
+		const logged: string[] = [];
+		const r = rig({ log: (f) => void logged.push(String(f.event)), claude: { resume() {}, signOut: async () => {}, flow: { phase: "failed", detail: "not logged in\nsecond line" } } });
+		await r.svc.plan();
+		await r.svc.confirm();
+		const state = r.svc.state;
+		assert.equal(state.phase, "done");
+		const problems = state.phase === "done" ? state.result.problems.filter((p) => p.step === "claude") : [];
+		assert.deepEqual(problems, IS_MAC ? [] : [{ step: "claude", detail: "not logged in" }]);
+		assert.ok(logged.includes("remove-claude-logout-failed"));
+		// a sign-out that worked, or a service with no flow, names nothing
+		const ok = rig({ claude: { resume() {}, signOut: async () => {}, flow: { phase: "signed-out" } } });
+		await ok.svc.plan();
+		await ok.svc.confirm();
+		assert.deepEqual(ok.svc.state.phase === "done" ? ok.svc.state.result.problems : null, []);
 	});
 
 	it("does not resume the stack when another stop is under way: it says busy, removes nothing, and leaves that stop alone (T14-F004)", async () => {
