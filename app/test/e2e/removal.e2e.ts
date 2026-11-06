@@ -320,23 +320,9 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		await page.locator("#remove-quit").click();
 		await closed;
 		const started = Date.now();
-		// Timeline of the cleanup, for the failure message: when the root's folders vanish and which shells run from the Windows PowerShell folder (the detached cleanup is one), by executable path.
-		const where = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell");
-		const timeline: string[] = [];
-		const seconds = () => Math.round((Date.now() - started) / 1000);
-		let lastShells = 0;
-		while (existsSync(world.root) && Date.now() - started < 60_000) {
-			if (isWin && Date.now() - lastShells >= 4_000) {
-				const shells = (await platform.processes.listUnder(where)).filter((p) => p.pid !== process.pid).map((p) => p.pid);
-				timeline.push(`${seconds()}s root=[${existsSync(world.root) ? readdirSync(world.root).join(",") : "gone"}] shells=[${shells.join(",")}]`);
-				lastShells = Date.now();
-			}
-			await sleep(500);
-		}
-		timeline.push(`${seconds()}s root ${existsSync(world.root) ? "still there" : "gone"}`);
-		if (existsSync(world.root)) assert.fail(`the root stayed 60 s after the exit; app pid ${appPid}; timeline: ${timeline.join(" | ")}`);
-		console.log(`cleanup timeline: ${timeline.join(" | ")}`);
-		assert.ok(Date.now() - started <= 60_000, `${timeline.join(" | ")}: the root went ${Math.round((Date.now() - started) / 1000)} s after the exit: within 30 s of the exit, with a margin for the poll and for PowerShell to start`);
+		// The anchor: the root is gone within 30 s of the exit (the cleanup deletes as soon as the app's pid ends; PowerShell's start is the only slack it needs).
+		while (existsSync(world.root) && Date.now() - started < 30_000) await sleep(500);
+		assert.equal(existsSync(world.root), false, `the root was still there 30 s after the exit; app pid ${appPid}`);
 		assert.equal(existsSync(join(world.home, ".straw-boss-desk")), false, "no fallback folder");
 		assert.deepEqual(await stopProcessesUnder(world.root, { log: () => undefined }), [], "nothing of the app runs from under the root");
 		app = undefined;
