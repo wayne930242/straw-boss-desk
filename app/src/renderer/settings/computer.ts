@@ -60,7 +60,9 @@ function confirmPanel(ctx: SettingsCtx, state: Extract<RemoveState, { phase: "co
 	);
 }
 
-const problemLine = (tr: Tr, p: RemovalProblem): HTMLElement => h("li", { "data-step": p.step }, h("span", {}, tr(`settings.computer.remove.problem.${p.step}`)), p.detail === "" ? null : h("span", { class: "remove-detail" }, ` ${p.detail}`));
+/** The step's name in the list; the raw error (`electron: EBUSY…`) is under Details, not inline (SA-T14-4). */
+const problemLine = (tr: Tr, p: RemovalProblem): HTMLElement =>
+	h("li", { "data-step": p.step }, h("span", {}, tr(`settings.computer.remove.problem.${p.step}`)), p.detail === "" ? null : h("details", {}, h("summary", {}, tr("settings.diagnostics.details")), h("pre", { class: "remove-detail" }, p.detail)));
 
 /** What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. `guideShown`: the list of entries that stay above already has the guide's button, so there is one button on the screen. */
 function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[], guideShown: boolean): HTMLElement {
@@ -80,11 +82,13 @@ function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[], guid
 
 function donePanel(ctx: SettingsCtx, result: RemovalResult): HTMLElement {
 	const { tr } = ctx;
+	// A files step that failed changes the head: the files are not all deleted, and the page must not say they are (SA-T14-4).
+	const filesFailed = result.problems.some((p) => p.step === "files");
 	return h(
 		"div",
-		{ class: "panel", id: "remove-done-panel", "data-state": "done" },
-		h("h3", { class: "remove-title" }, tr("settings.computer.remove.doneTitle")),
-		h("p", {}, tr("settings.computer.remove.doneBody")),
+		{ class: "panel", id: "remove-done-panel", "data-state": "done", "data-files": filesFailed ? "failed" : "deleted" },
+		h("h3", { class: "remove-title" }, tr(filesFailed ? "settings.computer.remove.doneTitleFiles" : "settings.computer.remove.doneTitle")),
+		h("p", { "data-role": "done-body" }, tr(filesFailed ? "settings.computer.remove.doneBodyFiles" : "settings.computer.remove.doneBody")),
 		h("p", { "data-role": "kept" }, keptSentence(tr, result.workFolder, "settings.computer.remove.doneKept", "settings.computer.remove.doneKeptNone")),
 		result.left.length === 0
 			? h("p", { class: "note", "data-role": "leaves" }, tr("settings.computer.remove.leavesNone"))

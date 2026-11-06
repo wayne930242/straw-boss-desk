@@ -627,6 +627,8 @@ export const zhTW: Messages = {
 				failed: "沒有移除任何東西，因為過程中出了問題。詳細資料裡有發生的情況。",
 				doneTitle: "Straw Boss 的資料已移除",
 				doneBody: "檔案已刪除。Straw Boss 只是為了讓你看到這段話才維持開啟。你關閉它時會刪除最後一個資料夾；若關閉時沒刪成功，下次開啟 Straw Boss 時會先把它做完。",
+				doneTitleFiles: "Straw Boss 的資料沒有完全移除",
+				doneBodyFiles: "有些檔案沒能刪除。Straw Boss 只是為了讓你看到這段話才維持開啟。你關閉它時會再刪一次剩下的部分；若關閉時還是沒刪成功，下次開啟 Straw Boss 時會先把它做完。",
 				doneKept: "你的工作資料夾 {folder} 和裡面的專案維持原樣。",
 				doneKeptNone: "你的工作資料夾和裡面的專案維持原樣。",
 				leftTitle: "留在這台電腦憑證儲存區的項目：",

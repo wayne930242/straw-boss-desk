@@ -28,7 +28,8 @@ html, body { height: 100%; }
 /* Computer and Diagnostics (task 14): layout only, the colours are the shared panels', findings' and refusals'. */
 .remove-entries { margin: 6px 0; padding-left: 20px; display: grid; gap: 6px; overflow-wrap: anywhere; }
 .remove-entry { font-family: var(--mono); font-size: 12.5px; }
-.remove-detail { font-family: var(--mono); font-size: 12.5px; }
+.remove-detail { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.remove-entries details { margin: 4px 0 0; }
 .diag-facts { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
 #remove-panel > h2, #keep-awake-panel .check { margin-top: 0; }
 #remove-panel .update-buttons, #remove-confirm-panel .update-buttons, #remove-done-panel .update-buttons { margin: 8px 0 0; }

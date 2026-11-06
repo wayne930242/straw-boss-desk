@@ -155,6 +155,29 @@ describe("Remove all data: one panel per state", () => {
 		assert.match(done("en"), /if that does not work/);
 	});
 
+	it("SA-T14-4: when the files step failed the head does not say the files are deleted, and the raw error sits under Details, not in the list line", () => {
+		const failed: RemoveState = { phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [{ step: "files", detail: "electron: EBUSY: resource busy or locked" }] } };
+		const ok: RemoveState = { phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [] } };
+		for (const locale of ["en", "zh-TW"] as const) {
+			const bad = drawComputer(failed, locale);
+			const good = drawComputer(ok, locale);
+			assert.equal(bad.querySelector("#remove-done-panel")?.getAttribute("data-files"), "failed");
+			assert.notEqual(text(bad, '[data-role="done-body"]'), text(good, '[data-role="done-body"]'));
+			assert.notEqual(text(bad, "h3.remove-title"), text(good, "h3.remove-title"));
+			assert.doesNotMatch(text(bad, '[data-role="done-body"]'), /檔案已刪除|files are deleted/);
+			assert.doesNotMatch(text(bad, "h3.remove-title"), /資料已移除|data was removed/);
+			// The list line names the step; the error is in a `details` of its own.
+			assert.doesNotMatch(text(bad, '#remove-problems li > span'), /EBUSY/);
+			assert.match(text(bad, "#remove-problems li details pre"), /electron: EBUSY/);
+			assert.ok(text(bad, "#remove-problems li details summary").length > 0);
+		}
+		assert.match(text(drawComputer(failed, "zh-TW"), '[data-role="done-body"]'), /有些檔案沒能刪除/);
+		assert.match(text(drawComputer(failed, "en"), '[data-role="done-body"]'), /Some files could not be deleted/);
+		// A result with no files problem keeps its sentence, even when another step failed.
+		const other = drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [{ step: "path", detail: "d" }] } }, "zh-TW");
+		assert.match(text(other, '[data-role="done-body"]'), /檔案已刪除/);
+	});
+
 	it("each step of the work has its own sentence, hides the language, and the keep-awake box is disabled", () => {
 		const sentences = new Set<string>();
 		for (const step of STEPS) {

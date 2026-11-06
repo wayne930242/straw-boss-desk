@@ -625,6 +625,8 @@ export const en = {
 				failed: "Nothing was removed, because something went wrong. The details say what.",
 				doneTitle: "Straw Boss's data was removed",
 				doneBody: "The files are deleted. Straw Boss stays open only so that you can read this. The last folder is deleted when you close it; if that does not work, the next time Straw Boss opens it finishes first.",
+				doneTitleFiles: "Straw Boss's data was not removed completely",
+				doneBodyFiles: "Some files could not be deleted. Straw Boss stays open only so that you can read this. What is left is deleted again when you close it; if that does not work, the next time Straw Boss opens it finishes first.",
 				doneKept: "Your work folder {folder} and the projects in it are as they were.",
 				doneKeptNone: "Your work folder and the projects in it are as they were.",
 				leftTitle: "Left in this computer's credential store:",
