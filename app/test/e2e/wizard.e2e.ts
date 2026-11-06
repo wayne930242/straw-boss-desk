@@ -207,7 +207,17 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		return `${text} | details: ${JSON.stringify(details)} | last project events: ${events.join(" / ")}`;
 	};
 	const panelOf = (p: Page, host: string, phase?: string) => p.locator(`.forge-panel[data-forge="${host}"]${phase === undefined ? "" : `[data-phase="${phase}"]`}`);
-	const waitPhase = (p: Page, host: string, phase: string, ms = 60_000) => panelOf(p, host, phase).waitFor({ timeout: ms });
+	/** A panel that does not reach its phase says where it is and what the logs say last: a runner is all there is of a run that did not pass (task 15, the windows-11-arm findings). */
+	const waitPhase = (p: Page, host: string, phase: string, ms = 60_000) =>
+		panelOf(p, host, phase)
+			.waitFor({ timeout: ms })
+			.catch(async (error: Error) => {
+				const panel = p.locator(`.forge-panel[data-forge="${host}"]`).first();
+				const at = await panel.getAttribute("data-phase", { timeout: 2000 }).catch(() => "(no panel)");
+				const text = (await panel.innerText({ timeout: 2000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+				const events = logEvents().slice(-15).map((e) => JSON.stringify(e).slice(0, 220));
+				throw new Error(`${error.message.split("\n")[0]}: the ${host} panel is at ${at} (${text}); the last events: ${events.join(" / ")}`);
+			});
 	const rowOf = (p: Page, host: string, state?: string) => p.locator(`li.forge-card[data-forge="${host}"]${state === undefined ? "" : `[data-state="${state}"]`}`);
 	const recordOf = () => readAccountsRecord(world.layout);
 	const ownFolders = (): string[] => [world.layout.state, world.layout.logs, join(world.root, "config")];
@@ -1218,9 +1228,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			await until("the gui-stopped screen", 90_000, async () => (await shellView())?.screen === "gui-stopped");
 			assert.equal(await shellVisible(), true);
 			await inScreen(first, `document.getElementById('retry').click()`);
+			// The banner's strip keeps the shell view up over the GUI here (the WSL stub and the put-off sign-ins have notices), so "the screen is gone" is the card hidden, not the view.
 			await until("the GUI to come back and the screen to go", 120_000, async () => {
 				const url = await guiUrl(first);
-				return url && (await httpStatus(url)) === 200 && (await shellVisible()) === false ? url : undefined;
+				return url && (await httpStatus(url)) === 200 && (await shellView())?.screen === null ? url : undefined;
 			});
 			assert.ok(startEventsSince("follow-up", since).some((l) => l.detail === "start button"), "the Start button ran `up`");
 			assert.equal(serverRecord()?.gui?.stopped ?? false, false);

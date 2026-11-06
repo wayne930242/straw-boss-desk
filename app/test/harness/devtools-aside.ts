@@ -83,8 +83,16 @@ export function developerToolsAsideScope(ctx: GateContext = currentContext()): A
 		async enter(io) {
 			moved = await putDeveloperToolsAside(io);
 			if (!(await gitStubFails(io))) {
+				// What still lets the stub run (macos-15-intel, task 15): where the developer directory points, what lies in /Applications and under /Library/Developer, and the stub's own answer.
+				const first = (text: string): string => text.trim().split("\n")[0]?.slice(0, 200) ?? "";
+				const select = await io.run("/usr/bin/xcode-select", ["-p"], { timeoutMs: 20_000 });
+				const git = await io.run("/usr/bin/git", ["--version"], { timeoutMs: 60_000 });
+				const where = await io.run("/usr/bin/xcrun", ["--find", "git"], { timeoutMs: 60_000 });
+				const apps = await io.run("/bin/ls", ["-1", APPLICATIONS], { timeoutMs: 10_000 });
+				const dev = await io.run("/bin/ls", ["-la", "/Library/Developer"], { timeoutMs: 10_000 });
+				const seen = `moved ${JSON.stringify(moved)}; xcode-select -p: ${first(select.stdout || select.stderr)}; git --version: ${first(git.stdout || git.stderr)}; xcrun --find git: ${first(where.stdout || where.stderr)}; /Applications: ${apps.stdout.split("\n").filter((n) => /xcode|developer/i.test(n)).join(", ")}; /Library/Developer: ${dev.stdout.split("\n").slice(0, 8).join(" | ")}`;
 				await putDeveloperToolsBack(io, moved);
-				throw new Error("developer tools aside: /usr/bin/git still runs");
+				throw new Error(`developer tools aside: /usr/bin/git still runs (${seen})`);
 			}
 		},
 		async leave(io) {
