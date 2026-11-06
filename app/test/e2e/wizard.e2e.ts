@@ -1208,6 +1208,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	}, "kill"));
 
 	it("step 6: `/boss gui stop` shows the shell screen, and Start brings the GUI back", { timeout: 900_000 }, withStartTail(async () => {
+		// The settings tests left the shell view on the settings page; the PM goes back to the GUI first, as the banner's own button does, so the runtime page is the one a stop shows.
+		const left = first.windows().find((w) => w.url().endsWith("settings.html"));
+		if (left) await left.locator("#settings-back").click();
+		await pageOf(first, "screen.html");
 		const since = Date.now();
 		try {
 			await boss("gui stop");
