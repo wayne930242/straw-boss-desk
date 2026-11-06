@@ -32,16 +32,29 @@ function strings(value: unknown, out: string[] = []): string[] {
 	return out;
 }
 
-/** A Node program that copies what is appended to its first argument's file to its stdout and ends when the reader goes away: the stdin of a pi started in a Windows pane. */
-const FEEDER = [
+/** What the test appends to a pi's input file to say "no more input": the feeder below ends there, so the pipe closes and pi sees the end of its input and exits by itself. */
+export const FEEDER_END = "##END-OF-INPUT##";
+
+/**
+ * A Node program that copies what is appended to its first argument's file to its stdout, and ends when the reader goes away or when `FEEDER_END` is appended: the stdin of a pi started in a
+ * Windows pane. Without the second rule a pi whose pane was closed kept reading from a feeder that was never going to end (task 15: in some runs it was still under `<root>/tools` 90 s later, and
+ * at the quit the stop sequence reported it and its console host as left).
+ */
+export const FEEDER = [
 	'import { closeSync, openSync, readSync } from "node:fs";',
 	"const fd = openSync(process.argv[2], 'r');",
 	"const buf = Buffer.alloc(65536);",
 	"let pos = 0;",
+	`const END = Buffer.from(${JSON.stringify(FEEDER_END)});`,
 	"process.stdout.on('error', () => process.exit(0));",
 	"setInterval(() => {",
 	"  const n = readSync(fd, buf, 0, buf.length, pos);",
-	"  if (n > 0) { pos += n; process.stdout.write(Buffer.from(buf.subarray(0, n))); }",
+	"  if (n <= 0) return;",
+	"  pos += n;",
+	"  const text = Buffer.from(buf.subarray(0, n));",
+	"  const at = text.indexOf(END);",
+	"  if (at >= 0) { process.stdout.write(text.subarray(0, at), () => process.exit(0)); return; }",
+	"  process.stdout.write(text);",
 	"}, 100);",
 	"process.on('exit', () => closeSync(fd));",
 	"",
@@ -170,7 +183,15 @@ export function rpcPanes(world: World, platform: ReturnType<typeof createPlatfor
 					console.log(`--- pane ${id}${id === pane ? ` (${label})` : ""} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-2400)}`);
 				}
 			},
-			close: async () => void (await h.cli(["pane", "close", pane]).catch(() => undefined)),
+			close: async () => {
+				// Windows: the pane's shell is cmd with a pipe from the feeder. Closing the pane alone leaves pi reading from a feeder that never ends, so pi is told its input is over first and given
+				// time to end (the shell writes its exit code to a file when it does), and then the pane is closed.
+				if (isWindows) {
+					appendFileSync(input, FEEDER_END);
+					await until(`pi to end by itself in the pane (${label})`, 30_000, () => existsSync(code) || undefined).catch(() => undefined);
+				}
+				await h.cli(["pane", "close", pane]).catch(() => undefined);
+			},
 		};
 	}
 	/**
