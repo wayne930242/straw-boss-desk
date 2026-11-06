@@ -4,7 +4,9 @@ import type { Page } from "playwright-core";
 // (`.body { overflow: auto }`), so `fullPage: true` alone shoots the window and cuts off a confirmation, a result or a list of problems that runs longer (T14-F010). For the shot the layout takes the height
 // of its content and the panels stop scrolling; the page is put back afterwards. The rule goes in as a constructed style sheet: the page's Content Security Policy (`style-src 'self'`) refuses an inline
 // `<style>` (what `page.addStyleTag` makes), and a sheet built from script is allowed.
-const WHOLE = "html, body, .layout { height: auto !important; min-height: 100% !important; } .body, .nav { overflow: visible !important; }";
+// The page's own background is on `body` (a fixed gradient) and `html` has a flat one under it; with the page taller than the window the flat colour showed below the gradient as a darker band (SA-T14-5), so for
+// the shot `html` has none and the body's background covers the whole canvas.
+const WHOLE = "html, body, .layout { height: auto !important; min-height: 100% !important; } html { background: transparent !important; } .body, .nav { overflow: visible !important; }";
 
 export async function shotWhole(page: Page, path: string): Promise<void> {
 	const sheet = await page.evaluateHandle((css) => {
