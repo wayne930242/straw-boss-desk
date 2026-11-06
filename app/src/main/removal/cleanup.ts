@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { Locate } from "../platform/types.ts";
+import { PENDING_FILE } from "./pending.ts";
 
 // The detached cleanup of **Remove all data** (spec: Uninstall and data). Chromium holds files in `<root>/electron` open while the app runs (on Windows `Local State`, cookies, caches), so the app
 // deletes everything else, writes `<root>/remove-pending`, and starts this program, which waits up to 30 s for the app's pid to end and then deletes `<root>` and the fallback folder.
@@ -10,14 +11,18 @@ import type { Locate } from "../platform/types.ts";
 // positional parameters, and a root written into its command text meets the quoting rules of `&`, `^` and `%` (the T6-F001 class of fault). The root, the fallback folder and the pid reach
 // the program in its environment, as UTF-16 on Windows, never in a file and never in a command text. On macOS they are the positional parameters of `/bin/sh -c`, as the spec says.
 //
+// Links are never followed. POSIX `rm -rf` removes a symlink itself. Windows PowerShell 5.1's `Remove-Item -Recurse` is reported to enter directory junctions and symlinks and delete the target's files, so the
+// PowerShell script walks the tree itself with .NET calls: a reparse point (junction, symlink) is deleted as the link it is, a plain folder is emptied and then deleted. In the root the marker
+// `remove-pending` goes last, and only when nothing else is left: a half-deleted root keeps its marker, so the next launch finishes it.
+//
 // The program kills nothing: it only waits for the app's pid to end (by looking, not by signalling), and deletes only the two folders it is given. A pid that is still alive after 30 s makes it
 // leave: the marker stays, and the next launch finishes the deletion (`finishPending`).
 
 export const WAIT_SECONDS = 30;
 const RETRIES = 20;
 
-/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid. `waitSeconds` is the app's 30 s; a test passes less. */
-export const posixScript = (waitSeconds: number = WAIT_SECONDS): string => [
+/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid. `waitSeconds` is the app's 30 s and `retries` the 20 rounds of the delete; a test passes less. */
+export const posixScript = (waitSeconds: number = WAIT_SECONDS, retries: number = RETRIES): string => [
 	'root=$1; fallback=$2; pid=$3',
 	'case $root in /?*) ;; *) exit 1;; esac',
 	'case $pid in ""|*[!0-9]*) exit 1;; esac',
@@ -27,7 +32,17 @@ export const posixScript = (waitSeconds: number = WAIT_SECONDS): string => [
 	'  [ -n "$target" ] || continue',
 	'  case $target in /?*) ;; *) continue;; esac',
 	'  n=0',
-	`  while [ -e "$target" ] && [ "$n" -lt ${RETRIES} ]; do rm -rf -- "$target" 2>/dev/null; [ -e "$target" ] && sleep 1; n=$((n+1)); done`,
+	`  while [ -e "$target" ] && [ "$n" -lt ${retries} ]; do`,
+	'    if [ "$target" = "$root" ]; then',
+	// The root: everything but the marker first, then the marker, and the folder, only when nothing else is left (a symlink inside is removed as the link it is).
+	`      find "$target" -mindepth 1 -maxdepth 1 ! -name '${PENDING_FILE}' -exec rm -rf -- {} + 2>/dev/null`,
+	`      if [ -z "$(find "$target" -mindepth 1 -maxdepth 1 ! -name '${PENDING_FILE}' 2>/dev/null)" ]; then rm -f -- "$target/${PENDING_FILE}"; rmdir -- "$target" 2>/dev/null; fi`,
+	'    else',
+	'      rm -rf -- "$target" 2>/dev/null',
+	'    fi',
+	'    [ -e "$target" ] && sleep 1',
+	'    n=$((n+1))',
+	'  done',
 	'done',
 	// `~/.straw-boss-desk` goes when the fallback folder was the last thing in it; rmdir refuses a folder that holds anything.
 	'[ -n "$fallback" ] && rmdir -- "$(dirname -- "$fallback")" 2>/dev/null',
@@ -45,11 +60,32 @@ export const POWERSHELL_SCRIPT = [
 	"function Alive { $p = Get-Process -Id $waitPid; return ($null -ne $p -and -not $p.HasExited) }",
 	`for ($i = 0; $i -lt ${WAIT_SECONDS}; $i++) { if (-not (Alive)) { break }; Start-Sleep -Seconds 1 }`,
 	"if (Alive) { exit 2 }",
+	// Deletes `$path` without entering a reparse point: a junction or symlink goes as the link it is (`Directory.Delete` without `recursive` removes the link and leaves its target), a folder is emptied
+	// child by child and then deleted. `$keepLast` is a name in `$path` that goes only when nothing else is left in it. Every call that fails is caught, so one locked file leaves the rest to go.
+	"function Remove-Tree([string]$path, [string]$keepLast) {",
+	"  try { $attr = [IO.File]::GetAttributes($path) } catch { return }",
+	"  $isDir = ($attr -band [IO.FileAttributes]::Directory) -ne 0",
+	"  $isLink = ($attr -band [IO.FileAttributes]::ReparsePoint) -ne 0",
+	"  try {",
+	"    if (-not $isDir) { [IO.File]::SetAttributes($path, [IO.FileAttributes]::Normal); [IO.File]::Delete($path); return }",
+	"    if ($isLink) { [IO.Directory]::Delete($path); return }",
+	"  } catch { return }",
+	"  $rest = 0",
+	"  foreach ($child in @([IO.Directory]::GetFileSystemEntries($path))) {",
+	"    if ($keepLast -and ([IO.Path]::GetFileName($child) -ieq $keepLast)) { continue }",
+	"    Remove-Tree $child ''",
+	"    if ([IO.File]::Exists($child) -or [IO.Directory]::Exists($child)) { $rest++ }",
+	"  }",
+	"  if ($rest -gt 0) { return }",
+	"  if ($keepLast) { Remove-Tree (Join-Path $path $keepLast) '' }",
+	"  try { [IO.File]::SetAttributes($path, [IO.FileAttributes]::Directory); [IO.Directory]::Delete($path) } catch { }",
+	"}",
 	"foreach ($target in @($env:SBD_RM_ROOT, $env:SBD_RM_FALLBACK)) {",
 	"  if ([string]::IsNullOrEmpty($target) -or -not [IO.Path]::IsPathRooted($target)) { continue }",
+	`  $keep = if ($target -eq $env:SBD_RM_ROOT) { '${PENDING_FILE}' } else { '' }`,
 	`  for ($n = 0; $n -lt ${RETRIES}; $n++) {`,
 	"    if (-not (Test-Path -LiteralPath $target)) { break }",
-	"    Remove-Item -LiteralPath $target -Recurse -Force",
+	"    Remove-Tree $target $keep",
 	"    if (Test-Path -LiteralPath $target) { Start-Sleep -Seconds 1 }",
 	"  }",
 	"}",
