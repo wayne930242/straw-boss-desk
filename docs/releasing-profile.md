@@ -14,5 +14,5 @@
 
 1. Bump `version` in `profile/package.json` (and `profile/package-lock.json`), merge to main through the usual change.
 2. From the merged main commit: `git tag profile-v<version>` then `git push origin profile-v<version>`.
-3. Watch the `profile-release` run. It fails if the tag differs from `profile-v` + the package version, if the version already exists on npm, or if the profile tests fail. After publishing it prints the version's integrity from `npm view`.
+3. Watch the `profile-release` run. It fails if the tag differs from `profile-v` + the package version, if the version already exists on npm, or if the profile tests fail. After publishing it prints the version's integrity from `npm view`. The wait step reads the registry with `--prefer-online`, because an earlier step caches the package page for five minutes.
 4. In a separate change, bump the profile pin and generation in `stack.json` to the new version.

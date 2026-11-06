@@ -76,16 +76,18 @@ jobs:
       - name: Publish
         run: npm publish --provenance --access public
 
+      # --prefer-online: the "must not exist" step above cached the packument (max-age 300), so a plain `npm view` kept answering "not found" for five minutes.
       - name: Wait for the version to appear on npm
         run: |
-          set -euo pipefail
+          set -uo pipefail
           name="$(node -p "require('./package.json').name")"
-          for _ in $(seq 1 30); do
-            if integrity="$(npm view "${name}@${VERSION}" dist.integrity 2>/dev/null)" && [ -n "$integrity" ]; then
+          for i in $(seq 1 30); do
+            if integrity="$(npm view --prefer-online "${name}@${VERSION}" dist.integrity 2>/tmp/npm-view.err)" && [ -n "$integrity" ]; then
               echo "${name}@${VERSION} integrity: ${integrity}"
               exit 0
             fi
             sleep 10
           done
+          cat /tmp/npm-view.err >&2
           echo "::error::${name}@${VERSION} did not appear on npm within 5 minutes"
           exit 1
