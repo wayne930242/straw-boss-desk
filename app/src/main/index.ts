@@ -71,7 +71,8 @@ const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform:
 
 // Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
 // and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock.
-const early = await preLaunch({ argv: process.argv, root, home: homedir(), platform: process.platform, userPath: createPlatform().userPath });
+const earlyPlatform = createPlatform();
+const early = await preLaunch({ argv: process.argv, root, home: homedir(), platform: process.platform, userPath: earlyPlatform.userPath, processes: earlyPlatform.processes });
 if (early.action === "stop") {
 	dialog.showErrorBox(format(catalogs.en.pending.failedTitle, {}), `${format(catalogs.en.pending.failedBody, { folder: early.folder })}\n\n${format(catalogs["zh-TW"].pending.failedBody, { folder: early.folder })}\n\n${early.detail}`);
 }
@@ -485,6 +486,8 @@ const removal = new RemovalService({
 		await quitGate.resumeAfterRefusedRemoval();
 		keepAwake.apply();
 	},
+	// This app's pid and start token go into the marker, so a second launch can tell that the root is still held (T14-F005).
+	self: async () => ({ pid: process.pid, startTime: (await platform.processes.inspect([process.pid]))[0]?.startTime ?? null }),
 	arm: (spec) => {
 		pendingCleanup = spec;
 	},

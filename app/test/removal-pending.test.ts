@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { assertDeletableRoot, fallbackIsOurs, FALLBACK_PARENT, finishPending, PENDING_FILE, readPending, rootId, writePending } from "../src/main/removal/pending.ts";
+import { assertDeletableRoot, fallbackIsOurs, FALLBACK_PARENT, finishPending, PENDING_FILE, pendingOwnerLives, readPending, rootId, writePending } from "../src/main/removal/pending.ts";
 
 // `remove-pending` and the checks around deleting a root (task 14 anchor: a root left with `remove-pending` is removed at the next launch; T3-F006: the fallback folder is checked).
 const bases: string[] = [];
@@ -110,5 +110,73 @@ describe("assertDeletableRoot", () => {
 	it("accepts a data root beside or below the home", () => {
 		assertDeletableRoot("/home/pm/Library/Application Support/straw-boss-desk", "/home/pm", "darwin");
 		assertDeletableRoot("D:\\data\\straw-boss-desk", "C:\\Users\\pm", "win32");
+	});
+});
+
+describe("finishing a pending removal checks the root as the removal does (T14-F005)", () => {
+	it("refuses a root that is not a data root, deletes nothing, and says which: a relative one, the home folder, a filesystem root", () => {
+		const w = world();
+		const marked = (root: string) => {
+			mkdirSync(root, { recursive: true });
+			writeFileSync(join(root, PENDING_FILE), `${JSON.stringify({ schema: 1, id: null, fallbackDir: null })}\n`);
+			writeFileSync(join(root, "mine.txt"), "mine");
+		};
+		const calls: string[] = [];
+		const remove = (p: string) => void calls.push(p);
+		marked(w.home);
+		const home = finishPending({ root: w.home, home: w.home, platform: w.platform, remove });
+		assert.equal(home.found && !home.removed, true);
+		assert.match(home.found && !home.removed ? (home.error ?? "") : "", /home folder/);
+		const relative = finishPending({ root: "relative/root", home: w.home, platform: w.platform, remove });
+		assert.deepEqual(relative, { found: false }, "no marker there, nothing to do");
+		const parent = finishPending({ root: w.base, home: w.home, platform: w.platform, remove });
+		assert.deepEqual(parent, { found: false });
+		marked(w.base);
+		const above = finishPending({ root: w.base, home: w.home, platform: w.platform, remove });
+		assert.equal(above.found && !above.removed, true, "a folder that holds the home folder is refused");
+		assert.deepEqual(calls, [], "nothing was deleted");
+		assert.ok(existsSync(join(w.home, "mine.txt")) && existsSync(join(w.base, "mine.txt")));
+	});
+
+	it("an ordinary root still goes", () => {
+		const w = world();
+		writePending(w.root, { schema: 1, id: w.id, fallbackDir: null });
+		assert.equal(finishPending({ root: w.root, home: w.home, platform: w.platform }).found, true);
+		assert.ok(!existsSync(w.root));
+	});
+});
+
+describe("a second launch while the first instance holds the root (T14-F005)", () => {
+	const owned = (w: ReturnType<typeof world>, startTime: string) => writePending(w.root, { schema: 1, id: w.id, fallbackDir: null, owner: { pid: 4242, startTime } });
+	const reads = (info: { pid: number; startTime: string | null }[]) => async (pids: readonly number[]) => info.filter((i) => pids.includes(i.pid));
+
+	it("holds while the recorded process runs with the recorded start token", async () => {
+		const w = world();
+		owned(w, "T1");
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: "T1" }])), true);
+	});
+
+	it("holds nothing when the pid is gone, belongs to another program now (another start token), or cannot be read", async () => {
+		const w = world();
+		owned(w, "T1");
+		assert.equal(await pendingOwnerLives(w.root, reads([])), false);
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: null }])), false);
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: "T2" }])), false, "a reused pid");
+		assert.equal(await pendingOwnerLives(w.root, async () => { throw new Error("powershell failed"); }), false);
+	});
+
+	it("holds nothing for a marker with no owner (an older marker, or a start token that could not be read), and for no marker", async () => {
+		const w = world();
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: "T1" }])), false);
+		writePending(w.root, { schema: 1, id: w.id, fallbackDir: null });
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: "T1" }])), false);
+		writeFileSync(join(w.root, PENDING_FILE), JSON.stringify({ schema: 1, id: null, fallbackDir: null, owner: { pid: 4242, startTime: "" } }));
+		assert.equal(await pendingOwnerLives(w.root, reads([{ pid: 4242, startTime: "" }])), false);
+	});
+
+	it("the owner survives a round trip through the marker", () => {
+		const w = world();
+		owned(w, "T1");
+		assert.deepEqual(readPending(w.root), { schema: 1, id: w.id, fallbackDir: null, owner: { pid: 4242, startTime: "T1" } });
 	});
 });

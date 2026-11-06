@@ -9,6 +9,7 @@ import { statusFields } from "../src/main/diagnostics/status.ts";
 import { anchorOf, guideUrl, GUIDE_REMOVE_HEADING, GUIDE_REPO } from "../src/main/guide.ts";
 import { preLaunch } from "../src/main/pre-launch.ts";
 import { claudeItem, safeStorageItem } from "../src/main/removal/names.ts";
+import { writePending } from "../src/main/removal/pending.ts";
 import { hasRemoveUserPath, hasStopStack } from "../src/main/runtime/args.ts";
 import { stopForRemoval, stopSequenceReport, type StopParts } from "../src/main/stop-sequence.ts";
 import type { UserPath } from "../src/main/platform/types.ts";
@@ -80,7 +81,7 @@ describe("the NSIS uninstall script", () => {
 
 describe("pre-launch (before userData, the lock and any window)", () => {
 	const userPath = (log: string[], over: Partial<UserPath> = {}): UserPath => ({ supported: true, read: async () => null, ensureFirst: async () => ({ changed: false }), remove: async (e) => (log.push(`remove ${e}`), { changed: true }), ...over });
-	const base = { root: "C:\\Users\\PM\\AppData\\Local\\sbd 測試", home: "C:\\Users\\PM", platform: "win32" as const };
+	const base = { root: "C:\\Users\\PM\\AppData\\Local\\sbd 測試", home: "C:\\Users\\PM", platform: "win32" as const, processes: { inspect: async () => [] } };
 
 	it("continues on an ordinary launch", async () => {
 		assert.deepEqual(await preLaunch({ ...base, argv: ["app"], userPath: userPath([]), exists: () => true, finish: () => ({ found: false }) }), { action: "continue" });
@@ -98,6 +99,20 @@ describe("pre-launch (before userData, the lock and any window)", () => {
 		assert.deepEqual(await preLaunch({ ...base, argv: ["--stop-stack"], userPath: userPath([]), exists: () => false, finish: () => ({ found: false }) }), { action: "exit", code: 0 });
 		assert.deepEqual(await preLaunch({ ...base, argv: ["--stop-stack"], userPath: userPath([]), exists: () => true, finish: () => ({ found: false }) }), { action: "continue" });
 	});
+	it("T14-F005: a launch beside the app that is removing its data leaves the root alone, does not finish it, and exits", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sbd-held-"));
+		bases.push(root);
+		writePending(root, { schema: 1, id: null, fallbackDir: null, owner: { pid: 777, startTime: "S1" } });
+		let finished = 0;
+		const finish = () => (finished++, { found: true as const, removed: true, fallbackRemoved: false });
+		const live = { inspect: async () => [{ pid: 777, startTime: "S1", executable: null }] };
+		assert.deepEqual(await preLaunch({ ...base, root, argv: ["app"], userPath: userPath([]), processes: live, finish }), { action: "exit", code: 0 });
+		assert.equal(finished, 0, "the removal is not finished under the instance that holds the root");
+		const dead = { inspect: async () => [{ pid: 777, startTime: null, executable: null }] };
+		assert.deepEqual(await preLaunch({ ...base, root, argv: ["app"], userPath: userPath([]), processes: dead, finish }), { action: "continue" });
+		assert.equal(finished, 1);
+	});
+
 	it("finishes a pending removal first and then starts as on a new machine; a failed deletion stops the launch with the folder named", async () => {
 		assert.deepEqual(await preLaunch({ ...base, argv: ["app"], userPath: userPath([]), finish: () => ({ found: true, removed: true, fallbackRemoved: false }) }), { action: "continue" });
 		// With --stop-stack the root is gone afterwards, so there is nothing to stop.

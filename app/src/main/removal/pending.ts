@@ -15,6 +15,11 @@ export interface PendingMarker {
 	id: string | null;
 	/** The fallback folder to delete with the root; null when there is none. Checked again when the marker is used. */
 	fallbackDir: string | null;
+	/**
+	 * The app that wrote the marker, by pid and start token (`Processes.inspect`). While that process lives the root is its own: a second launch must not finish the removal under it. Absent or
+	 * null when the start could not be read; a pid alone is no proof (it is given to another program after a reboot), so then nothing is held.
+	 */
+	owner?: { pid: number; startTime: string } | null;
 }
 
 type Pathish = typeof posix;
@@ -66,10 +71,29 @@ export function readPending(root: string): PendingMarker | "unreadable" | null {
 		if (typeof parsed !== "object" || parsed === null) return "unreadable";
 		const m = parsed as Partial<PendingMarker>;
 		if (m.schema !== 1) return "unreadable";
-		return { schema: 1, id: typeof m.id === "string" ? m.id : null, fallbackDir: typeof m.fallbackDir === "string" ? m.fallbackDir : null };
+		const owner = m.owner;
+		const held = typeof owner === "object" && owner !== null && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.startTime === "string" && owner.startTime !== "";
+		return { schema: 1, id: typeof m.id === "string" ? m.id : null, fallbackDir: typeof m.fallbackDir === "string" ? m.fallbackDir : null, owner: held ? { pid: owner.pid, startTime: owner.startTime } : null };
 	} catch {
 		// A marker that cannot be read still says "delete this root"; it just names no fallback folder.
 		return "unreadable";
+	}
+}
+
+/**
+ * True while the app that wrote `<root>/remove-pending` still runs: the pid is alive and its start token is the recorded one. The first instance shows the result and holds Chromium's files
+ * under the root, so a second launch (a double-click on the shortcut, `open -n` on macOS) must leave the root alone (T14-F005). A marker with no owner, or one whose process is gone or is
+ * another program now, holds nothing. Reading a start costs one PowerShell start on Windows, so this runs only when a marker names an owner.
+ */
+export async function pendingOwnerLives(root: string, inspect: (pids: readonly number[]) => Promise<ReadonlyArray<{ pid: number; startTime: string | null }>>): Promise<boolean> {
+	const marker = readPending(root);
+	if (marker === null || marker === "unreadable" || marker.owner === undefined || marker.owner === null) return false;
+	try {
+		const [info] = await inspect([marker.owner.pid]);
+		return info !== undefined && info.startTime !== null && info.startTime === marker.owner.startTime;
+	} catch {
+		// A read that fails proves nothing; the root is then finished as before (the fail-safe direction for a PM who must not be locked out).
+		return false;
 	}
 }
 
@@ -94,6 +118,12 @@ const defaultRemove = (path: string): void => rmSync(path, { recursive: true, fo
 export function finishPending(deps: FinishPendingDeps): FinishPending {
 	const marker = readPending(deps.root);
 	if (marker === null) return { found: false };
+	// The same check as the removal's own: a marker in a folder that is not a data root (a relative path resolved against the cwd, the home folder, a filesystem root) deletes nothing.
+	try {
+		assertDeletableRoot(deps.root, deps.home, deps.platform);
+	} catch (error) {
+		return { found: true, removed: false, fallbackRemoved: false, error: (error as Error).message.split(/\r?\n/)[0] ?? "" };
+	}
 	const remove = deps.remove ?? defaultRemove;
 	const realpath = deps.realpath ?? ((p: string) => realpathSync.native(p));
 	let fallbackRemoved = false;

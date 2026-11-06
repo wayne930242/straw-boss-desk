@@ -32,7 +32,7 @@ interface Rig {
 	listed: string[][];
 }
 
-function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void } = {}): Rig {
+function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>; survey?: RemovalAccounts["survey"]; removeLogins?: RemovalAccounts["removeLogins"]; userPath?: Partial<UserPath>; store?: StoreEntry[]; fallback?: boolean; fallbackElsewhere?: boolean; productName?: string; deleteChildren?: RemovalDeps["deleteChildren"]; listFails?: boolean; log?: RemovalDeps["log"]; beforeFiles?: () => void; self?: RemovalDeps["self"] } = {}): Rig {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-rm-")));
 	bases.push(base);
 	const home = join(base, "home");
@@ -89,6 +89,7 @@ function rig(over: { stop?: () => Promise<{ ok: boolean; leftovers: Leftover[]; 
 		quit: () => void calls.push("quit"),
 		log: over.log ?? (() => {}),
 		...(over.beforeFiles !== undefined ? { beforeFiles: over.beforeFiles } : {}),
+		...(over.self !== undefined ? { self: over.self } : {}),
 		measure: async () => 123_456_789,
 		...(over.deleteChildren !== undefined ? { deleteChildren: over.deleteChildren } : {}),
 	});
@@ -150,7 +151,7 @@ describe("the removal", () => {
 		assert.equal(readFileSync(join(r.work, "web", "README.md"), "utf8"), "mine", "the work folder is untouched");
 		assert.deepEqual(r.armed, [{ root: r.root, fallbackDir: null }]);
 		assert.ok(r.calls.indexOf("stop") < r.calls.indexOf("logins") && r.calls.indexOf("logins") < r.calls.indexOf("claude.signOut") && r.calls.indexOf("claude.signOut") < r.calls.indexOf("linear.signOut") && r.calls.indexOf("linear.signOut") < r.calls.findIndex((c) => c.startsWith("path ")));
-		assert.deepEqual(readPending(r.root), { schema: 1, id: rootId(r.root), fallbackDir: null });
+		assert.deepEqual(readPending(r.root), { schema: 1, id: rootId(r.root), fallbackDir: null, owner: null });
 		if (s.phase === "done") assert.deepEqual(s.result, { root: r.root, workFolder: r.work, left: [], problems: [] });
 	});
 
@@ -164,6 +165,22 @@ describe("the removal", () => {
 		assert.ok(existsSync(join(r.root, "tools")) && existsSync(join(r.root, "secrets", "linear.bin")));
 		assert.equal(r.armed.length, 0);
 		assert.ok(!existsSync(join(r.root, PENDING_FILE)));
+	});
+
+	it("writes this app's pid and start token into the marker, so a second launch can tell the root is held (T14-F005); a start token that cannot be read writes none", async () => {
+		const r = rig({ self: async () => ({ pid: 4242, startTime: "T1" }) });
+		await r.svc.plan();
+		await r.svc.confirm();
+		assert.deepEqual(readPending(r.root), { schema: 1, id: rootId(r.root), fallbackDir: null, owner: { pid: 4242, startTime: "T1" } });
+		const unread = rig({ self: async () => ({ pid: 4242, startTime: null }) });
+		await unread.svc.plan();
+		await unread.svc.confirm();
+		assert.equal((readPending(unread.root) as { owner: unknown }).owner, null);
+		const broken = rig({ self: async () => { throw new Error("powershell failed"); } });
+		await broken.svc.plan();
+		await broken.svc.confirm();
+		assert.equal(broken.svc.state.phase, "done", "the removal goes on without it");
+		assert.equal((readPending(broken.root) as { owner: unknown }).owner, null);
 	});
 
 	it("does not resume the stack when another stop is under way: it says busy, removes nothing, and leaves that stop alone (T14-F004)", async () => {

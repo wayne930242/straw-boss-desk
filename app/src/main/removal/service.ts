@@ -38,6 +38,8 @@ export interface RemovalDeps {
 	stop(): Promise<{ ok: boolean; leftovers: Leftover[]; busy?: boolean }>;
 	/** Takes the app up again after a stop that could not finish: the stack starts if it ran before, and the sign-in services work again. Not called after a `busy` stop, which put nothing down. */
 	resume(): Promise<void>;
+	/** This app's pid and start token, for the marker (a second launch must not finish the removal under it). A start token that cannot be read is null. */
+	self?: () => Promise<{ pid: number; startTime: string | null }>;
 	/** Records that the cleanup must run when the app exits. */
 	arm(spec: { root: string; fallbackDir: string | null }): void;
 	/** Leaves the app (the PM read the result). */
@@ -245,8 +247,15 @@ export class RemovalService {
 			if (fallbackIsOurs({ fallbackDir: recorded, home, realRoot: layout.record.realRoot, platform: layout.platform })) fallbackDir = recorded;
 			else problems.push({ step: "files", detail: `the fallback folder ${recorded} is not this app's, so it was not deleted` });
 		}
+		let owner: { pid: number; startTime: string } | null = null;
 		try {
-			writePending(layout.root, { schema: 1, id: layout.id, fallbackDir });
+			const me = await this.#d.self?.();
+			if (me !== undefined && me.startTime !== null) owner = { pid: me.pid, startTime: me.startTime };
+		} catch {
+			// no start token: the marker holds nothing against a second launch, as before
+		}
+		try {
+			writePending(layout.root, { schema: 1, id: layout.id, fallbackDir, owner });
 		} catch (error) {
 			problems.push({ step: "files", detail: `remove-pending could not be written: ${firstLine((error as Error).message)}` });
 		}
