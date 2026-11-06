@@ -118,10 +118,10 @@ describe("stop sequence", () => {
 
 	it("Remove all data stops through the gate, with the same parts, so it ends the same sign-ins and the same engine, and never beside another stop (comments ignored)", () => {
 		const source = code("../src/main/index.ts");
-		assert.match(source, /quitGate\.stopForRemoval\(\(\) => \{\s*keepAwake\.release\(\);\s*return stopForRemoval\(stopParts\(\)\);/, "keep awake is released when the removal's stop starts");
-		assert.match(source, /await quitGate\.resumeAfterRefusedRemoval\(\);\s*keepAwake\.apply\(\)/);
+		// Inside the gate, around keep awake, and with the same parts: the route itself (the gate, keep awake, `resume`) is `removal/wiring.ts`, which removal-wiring.test.ts runs against a real gate.
+		assert.match(source, /removalStop\(\{ gate: quitGate, keepAwake, stopSequence: \(\) => stopForRemoval\(stopParts\(\)\) \}\)/, "the removal's stop is the removal's stop sequence on the same parts, run by removalStop");
 		// The cleanup armed by the removal starts before the gate's exit.
-		assert.match(source, /exit: \(code\) => \{\s*runCleanup\(\);\s*app\.exit\(code\);/);
+		assert.match(source, /exit: \(code\) => \{\s*exitCleanup\.run\(\);\s*app\.exit\(code\);/);
 		const gate = code("../src/main/quit-gate.ts");
 		assert.match(gate, /async stopForRemoval[^]*if \(this\.#stopping\) return \{ ok: false, busy: true/, "another stop under way answers busy and starts nothing");
 	});

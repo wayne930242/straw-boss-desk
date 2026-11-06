@@ -36,12 +36,13 @@ import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
 import { QuitGate } from "./quit-gate.ts";
 import { stopForRemoval, stopSequence, type StopParts } from "./stop-sequence.ts";
-import { handOver, preLaunch } from "./pre-launch.ts";
+import { earlyLaunch } from "./pre-launch.ts";
 import { KeepAwake } from "./computer/keep-awake.ts";
 import { ComputerService } from "./computer/service.ts";
 import { DiagnosticsService } from "./diagnostics/service.ts";
 import { RemovalService } from "./removal/service.ts";
-import { cleanupCommand, spawnCleanup } from "./removal/cleanup.ts";
+import { spawnCleanup } from "./removal/cleanup.ts";
+import { afterRemovalChange, ExitCleanup, holdQuit, quitsWhenWindowsClose, removalStop } from "./removal/wiring.ts";
 import { guideUrl } from "./guide.ts";
 import { platformKey } from "./bootstrap/stack.ts";
 import { StateStore } from "./bootstrap/state.ts";
@@ -70,16 +71,20 @@ const identity = identityFromProductName(app.getName());
 const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform: process.platform, home: homedir() });
 
 // Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
-// and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock (a launch that finds the removal's owner alive only asks for that lock, on the owner's folder).
+// and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock. A launch that finds the removal's owner
+// alive hands over to it through that lock on the owner's folder and ends; one that finds the lock free goes on with the launch (`earlyLaunch`).
 const earlyPlatform = createPlatform();
-const early = await preLaunch({ argv: process.argv, root, home: homedir(), platform: process.platform, userPath: earlyPlatform.userPath, processes: earlyPlatform.processes });
+const early = await earlyLaunch({
+	argv: process.argv,
+	root,
+	home: homedir(),
+	platform: process.platform,
+	userPath: earlyPlatform.userPath,
+	processes: earlyPlatform.processes,
+	instanceLock: { setUserData: (path) => app.setPath("userData", path), lock: () => app.requestSingleInstanceLock(), release: () => app.releaseSingleInstanceLock() },
+});
 if (early.action === "stop") {
 	dialog.showErrorBox(format(catalogs.en.pending.failedTitle, {}), `${format(catalogs.en.pending.failedBody, { folder: early.folder })}\n\n${format(catalogs["zh-TW"].pending.failedBody, { folder: early.folder })}\n\n${early.detail}`);
-}
-if (early.action === "handover") {
-	// The app that is removing its data still runs: the lock on its user data folder tells it to show its window. This launch creates nothing in the root and ends.
-	handOver({ userData: electronDir(root), exists: existsSync, setUserData: (path) => app.setPath("userData", path), lock: () => app.requestSingleInstanceLock(), release: () => app.releaseSingleInstanceLock() });
-	process.exit(0);
 }
 if (early.action === "stop" || early.action === "exit") process.exit(early.code);
 
@@ -454,18 +459,19 @@ const recipeCard = new RecipeService({
 // ---- Diagnostics, Computer and Remove all data (task 14) ----------------------------------------------------------------------------------------------------------------------------
 
 /** The cleanup that deletes `<root>` after the app has gone (`removal/cleanup.ts`): armed by **Remove all data**, started once, at the app's exit. */
-let pendingCleanup: { root: string; fallbackDir: string | null; marked: boolean } | null = null;
+const exitCleanup = new ExitCleanup({ platform: process.platform, pid: process.pid, locate: platform.locate, spawn: (command) => spawnCleanup(command) });
 
-function runCleanup(): void {
-	if (pendingCleanup === null) return;
-	const spec = pendingCleanup;
-	pendingCleanup = null;
-	try {
-		spawnCleanup(cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir, marked: spec.marked }, platform.locate));
-	} catch {
-		// The marker `remove-pending` is in the root: the next launch deletes it.
-	}
-}
+/** The quit gate (`quit-gate.ts`): the quit holds until the stop sequence is done and leaves with `app.exit`. Built before the removal, whose stop runs inside it. */
+const quitGate = new QuitGate({
+	stopAll: () => stopAll(),
+	// The cleanup that **Remove all data** armed starts here, right before the app is gone.
+	exit: (code) => {
+		exitCleanup.run();
+		app.exit(code);
+	},
+	resume: (event) => resumeStack(event),
+	log: (fields) => runtimeLog.event(fields),
+});
 
 const keepAwake = new KeepAwake(layout, powerSaveBlocker);
 
@@ -479,23 +485,13 @@ const removal = new RemovalService({
 	claude,
 	linear,
 	workFolder: () => loadStartConfig(layout, home).workFolder,
-	// The stop of a quit, waiting out the helper a pane's pi leaves for 30 s (seam U13) as Repair's stop does. The quit's own stop does not run again after it.
+	// The stop of a quit, waiting out the helper a pane's pi leaves for 30 s (seam U13) as Repair's stop does, run inside the quit gate (`removal/wiring.ts`). The quit's own stop does not run again after it.
 	// A stop already under way (an update's, a quit's) is not undone or joined: the gate answers `busy` and the removal says so.
 	// Keep awake is let go when the stop starts: the result screen can wait for hours, and the computer need not stay awake for it. A refused removal applies the saved setting again.
-	stop: () =>
-		quitGate.stopForRemoval(() => {
-			keepAwake.release();
-			return stopForRemoval(stopParts());
-		}),
-	resume: async () => {
-		await quitGate.resumeAfterRefusedRemoval();
-		keepAwake.apply();
-	},
+	...removalStop({ gate: quitGate, keepAwake, stopSequence: () => stopForRemoval(stopParts()) }),
 	// This app's pid and start token go into the marker, so a second launch can tell that the root is still held (T14-F005).
 	self: async () => ({ pid: process.pid, startTime: (await platform.processes.inspect([process.pid]))[0]?.startTime ?? null }),
-	arm: (spec) => {
-		pendingCleanup = spec;
-	},
+	arm: (spec) => exitCleanup.arm(spec),
 	// The logs are in the folder that is about to be deleted; a write after that would throw into whatever logged it.
 	beforeFiles: () => {
 		runtimeLog.mute();
@@ -652,16 +648,6 @@ function stopAll(): Promise<boolean> {
 	return stopSequence(stopParts());
 }
 
-const quitGate = new QuitGate({
-	stopAll: () => stopAll(),
-	// The cleanup that **Remove all data** armed starts here, right before the app is gone.
-	exit: (code) => {
-		runCleanup();
-		app.exit(code);
-	},
-	resume: (event) => resumeStack(event),
-	log: (fields) => runtimeLog.event(fields),
-});
 const stopThenExit = (code: (ok: boolean) => number): void => quitGate.quit(code);
 
 /**
@@ -714,15 +700,13 @@ if (!app.requestSingleInstanceLock()) {
 		if (window.isMinimized()) window.restore();
 		window.focus();
 	});
-	app.on("before-quit", (event) => {
-		if (!quitGate.beforeQuit()) event.preventDefault();
-	});
+	app.on("before-quit", (event) => holdQuit(quitGate, event));
 	// macOS keeps the app and the stack running when the window closes; Windows quits and stops (design: Window close).
 	app.on("window-all-closed", () => {
-		// After **Remove all data** the app has nothing left to run, so closing its window ends it on macOS too; the rest of the root goes with it (`runCleanup`).
-		if (process.platform !== "darwin" || removal.state.phase === "done") app.quit();
+		// After **Remove all data** the app has nothing left to run, so closing its window ends it on macOS too; the rest of the root goes with it (`exitCleanup`).
+		if (quitsWhenWindowsClose(process.platform, removal.state.phase)) app.quit();
 	});
-	app.on("will-quit", () => runCleanup());
+	app.on("will-quit", () => exitCleanup.run());
 	app.on("activate", () => openWindow());
 	void app.whenReady().then(() => {
 		const mode = wizard.launchMode();
@@ -780,11 +764,13 @@ if (!app.requestSingleInstanceLock()) {
 		removal.onChange(() => {
 			desk?.pushSettings();
 			// A quit asked while the removal worked was held (T14R-F001): the result is shown now, in a window opened for it if the PM had closed theirs, and closing it quits.
-			if (removal.state.phase === "done" && quitGate.removalDone()) {
-				openWindow();
-				desk?.openSettings("computer");
-				desk?.window?.focus();
-			}
+			afterRemovalChange({
+				phase: removal.state.phase,
+				gate: quitGate,
+				openWindow,
+				showComputer: () => desk?.openSettings("computer"),
+				focus: () => desk?.window?.focus(),
+			});
 		});
 		diagnostics.onChange(() => desk?.pushSettings());
 		keepAwake.apply();
