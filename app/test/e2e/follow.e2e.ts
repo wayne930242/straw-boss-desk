@@ -5,7 +5,7 @@
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -13,12 +13,13 @@ import { _electron as electron, type ElectronApplication } from "playwright-core
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
-import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, WorldHerdr, type World } from "../harness/e2e-light.ts";
+import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
 import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
+import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
 const enabled = process.env.SBD_E2E === "1";
@@ -60,29 +61,6 @@ const statusOf = (url: string): Promise<number> =>
 		req.on("error", () => resolve(0));
 		req.end();
 	});
-
-/** The text of every string anywhere in a JSON value. */
-function strings(value: unknown, out: string[] = []): string[] {
-	if (typeof value === "string") out.push(value);
-	else if (Array.isArray(value)) for (const v of value) strings(v, out);
-	else if (typeof value === "object" && value !== null) for (const v of Object.values(value)) strings(v, out);
-	return out;
-}
-
-/** A Node program that copies what is appended to its first argument's file to its stdout and ends when the reader goes away: the stdin of a pi started in a Windows pane. */
-const FEEDER = [
-	'import { closeSync, openSync, readSync } from "node:fs";',
-	"const fd = openSync(process.argv[2], 'r');",
-	"const buf = Buffer.alloc(65536);",
-	"let pos = 0;",
-	"process.stdout.on('error', () => process.exit(0));",
-	"setInterval(() => {",
-	"  const n = readSync(fd, buf, 0, buf.length, pos);",
-	"  if (n > 0) { pos += n; process.stdout.write(Buffer.from(buf.subarray(0, n))); }",
-	"}, 100);",
-	"process.on('exit', () => closeSync(fd));",
-	"",
-].join("\n");
 
 const GUI_URL = /^http:\/\/127\.0\.0\.1:\d+\//;
 
@@ -128,173 +106,16 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			}
 		});
 	};
-	const underTools = () => platform.processes.listUnder(world.layout.tools.root);
-	const herdrBinary = () => childEnvOf(world).HERDR_BIN_PATH as string;
-	const herdr = (args: string[], timeoutMs = 30_000) => run(herdrBinary(), args, { env: childEnvOf(world), timeoutMs });
-	const herdrAnswers = async () => (await herdr(["workspace", "list"], 15_000)).code === 0;
-	const paneIds = async (): Promise<string[]> => [...(await herdr(["pane", "list"], 20_000)).stdout.matchAll(/"pane_id":"([^"]+)"/g)].map((m) => m[1] as string);
-	const toolPids = async (): Promise<Set<number>> => new Set((await underTools()).map((p) => p.pid));
-
-	interface RpcAnswer {
-		id?: string;
-		type?: string;
-		success?: boolean;
-		error?: string;
-		data?: { output?: string; exitCode?: number };
-	}
-	/**
-	 * A pi started in a pane of a base as the pane starts it (`pi`, by name, in RPC mode): its stdout goes to a file the test reads, and the test types the RPC commands into the pane.
-	 * It is a member of the base like any pi a PM opens, so its `/boss` commands are the PM's (the base's own pane is the tower's prompt, which takes no `/boss`).
-	 */
-	interface RpcPi {
-		pane: string;
-		lines(): unknown[];
-		/** Types one line into the pane's shell (or into pi, while pi runs). */
-		type(line: string): Promise<void>;
-		/** Types one RPC command into the pane. */
-		send(command: Record<string, unknown>): Promise<void>;
-		/** Types one RPC command and waits for its response. */
-		call(command: Record<string, unknown> & { id: string }, waitMs: number): Promise<RpcAnswer>;
-		/** What the runner can show of a run that went nowhere: the last events, and the other panes of the workspace with the end of what they print. */
-		dump(): Promise<void>;
-		close(): Promise<void>;
-	}
-	/** Whether the pane's shell has printed its prompt (PowerShell: `PS C:\...>`), read from the pane's screen. */
-	async function promptShown(h: WorldHerdr, pane: string): Promise<boolean> {
-		const read = await h.cli(["pane", "read", pane, "--lines", "5"], 20_000);
-		// The pane is narrow and PowerShell's prompt (`PS <folder>> `) wraps over several lines.
-		return read.code === 0 && /PS [^>]*>$/.test(read.stdout.replace(/\r?\n/g, "").replace(/\s+$/, ""));
-	}
-	/**
-	 * Opens a pane next to `splitFrom`, starts pi in it and returns before pi has answered anything. The pane's shell starts pi by name, as Herdr's `agent start` does, and its stdout
-	 * goes to a file the test reads. On macOS the test types the RPC commands into the pane. On Windows a line typed into a pane whose pi the shell has just started was lost
-	 * (the pi ended at once and PowerShell parsed the line instead), so pi reads its commands from a file that a small Node program streams into a pipe cmd makes (`FEEDER`), and its
-	 * error output and exit code go to files that a failure prints.
-	 */
-	async function startRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
-		const h = new WorldHerdr(world);
-		const split = await h.cli(["pane", "split", splitFrom, "--direction", "right", "--cwd", cwd, "--no-focus"]);
-		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
-		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
-		const stem = join(world.base, `${label}-${pane.replace(/\W/g, "_")}`);
-		const out = `${stem}.jsonl`;
-		const input = `${stem}.in`;
-		const err = `${stem}.err`;
-		const code = `${stem}.code`;
-		const feeder = join(world.base, "feed-input.mjs");
-		if (isWindows) {
-			// The first prompt means PowerShell has loaded; a line typed before it is read by a shell that is not ready for it.
-			await until(`the shell's prompt in the pane (${label})`, 40_000, () => promptShown(h, pane)).catch(async (error: Error) => {
-				const screen = await h.cli(["pane", "read", pane, "--lines", "8"], 20_000);
-				console.log(`${label}: ${error.message}; the pane shows ${JSON.stringify(screen.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-300))}; typing anyway`);
-			});
-			await sleep(1000);
-			writeFileSync(input, "");
-			writeFileSync(feeder, FEEDER);
-			for (const path of [process.execPath, feeder, input, out, err, code]) assert.ok(!/\s/.test(path), `a path without a space is typed here unquoted: ${path}`);
-			// cmd makes the pipe itself, so the shell's console is not pi's stdin; `%errorlevel%` is read when the line runs, which `!errorlevel!` does with delayed expansion.
-			await h.type(pane, `cmd /d /v:on /c "${process.execPath} ${feeder} ${input} | pi --mode rpc --offline > ${out} 2> ${err} & echo !errorlevel! > ${code}"`);
-		} else {
-			// A shell needs a moment before it reads a typed line.
-			await sleep(1500);
-			await h.type(pane, `pi --mode rpc --offline > '${out}'`);
-		}
-		await until(`the shell to start pi in the pane (${label})`, 120_000, () => existsSync(out) || undefined);
-		const lines = (): unknown[] =>
-			(existsSync(out) ? readFileSync(out, "utf8").split(/\r?\n/) : []).flatMap((l) => {
-				try {
-					return l.startsWith("{") ? [JSON.parse(l) as unknown] : [];
-				} catch {
-					return [];
-				}
-			});
-		const answerTo = (id: string) => lines().find((l) => (l as RpcAnswer).id === id && (l as RpcAnswer).type === "response") as RpcAnswer | undefined;
-		const send = async (command: Record<string, unknown>): Promise<void> => {
-			if (isWindows) appendFileSync(input, `${JSON.stringify(command)}\n`);
-			else await h.type(pane, JSON.stringify(command));
-		};
-		const text = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").replace(/[^\x20-\x7e\n]/g, "?").trim().slice(-1500) : "(none)");
-		return {
-			pane,
-			lines,
-			type: (line) => h.type(pane, line),
-			send,
-			async call(command, waitMs) {
-				await send(command);
-				return until(`pi's answer to ${command.id} (${label})`, waitMs, () => answerTo(command.id));
-			},
-			async dump() {
-				const events = lines().slice(-14).map((l) => JSON.stringify(l).replace(/[^\x20-\x7e]/g, "?").slice(0, 260));
-				console.log(`--- ${label}: the last events (${lines().length} in all, ${existsSync(out) ? readFileSync(out).length : -1} bytes in ${out}) ---\n${events.join("\n")}`);
-				if (isWindows) console.log(`--- ${label}: pi's error output ---\n${text(err)}\n--- ${label}: pi's exit code (empty while it runs) ---\n${text(code)}`);
-				const panes = await h.cli(["pane", "list"], 20_000);
-				console.log(`--- panes ---\n${panes.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(0, 3000)}`);
-				// Every pane of the workspace with the end of what it prints, this one included: a shell that could not start pi says so there.
-				for (const id of await paneIds()) {
-					const read = await h.cli(["pane", "read", id, "--lines", "30"], 20_000);
-					console.log(`--- pane ${id}${id === pane ? ` (${label})` : ""} ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-2400)}`);
-				}
-			},
-			close: async () => void (await h.cli(["pane", "close", pane]).catch(() => undefined)),
-		};
-	}
-	/**
-	 * What a pane whose pi went away says about it: where `pi` resolves, whether `pi --version` runs, and what `pi --mode rpc` does with an empty stdin, each printed to the pane
-	 * and read back. Test code that explains a failure; it changes nothing.
-	 */
-	let explained = false;
-	async function explainShell(rpc: RpcPi, label: string): Promise<void> {
-		if (explained) return;
-		explained = true;
-		const h = new WorldHerdr(world);
-		const steps: Array<[string, number]> = isWindows
-			? [
-					["where.exe pi", 4000],
-					['cmd /d /c "pi --version & echo EXITCODE=%errorlevel%"', 10_000],
-					['cmd /d /c "pi --mode rpc --offline < NUL & echo EXITCODE=%errorlevel%"', 14_000],
-					['"DESK=$env:STRAW_BOSS_DESK ROOT=$env:STRAW_BOSS_DESK_ROOT AGENT=$env:PI_CODING_AGENT_DIR"', 3000],
-				]
-			: [["command -v pi", 2000], ["pi --version; echo EXITCODE=$?", 6000]];
-		for (const [line, wait] of steps) {
-			await rpc.type(line);
-			await sleep(wait);
-		}
-		const read = await h.cli(["pane", "read", rpc.pane, "--lines", "60"], 20_000);
-		console.log(`--- ${label}: what the shell says (where pi resolves, pi --version, pi with an empty stdin) ---\n${read.stdout.replace(/[^\x20-\x7e\n]/g, "?").slice(-4000)}`);
-	}
-	/**
-	 * A pi in a pane of a base, answering `get_state`. A pi that goes away at once is explained in the log and started once more in a fresh pane a little later (the first
-	 * failure is evidence, the second is the check).
-	 */
-	async function openRpcPi(label: string, splitFrom: string, cwd: string): Promise<RpcPi> {
-		for (let attempt = 1; ; attempt++) {
-			const rpc = await startRpcPi(label, splitFrom, cwd);
-			try {
-				// The shell creates the output file before pi runs, so the file proves nothing: pi is up when it answers a read-only command.
-				await rpc.call({ id: `ready-${label}-${attempt}`, type: "get_state" }, 60_000);
-				return rpc;
-			} catch (error) {
-				await rpc.dump();
-				await explainShell(rpc, label);
-				await rpc.close();
-				if (attempt >= 2) throw error;
-				console.log(`${label}: pi did not answer in its first pane (${(error as Error).message}); trying once more in a fresh pane`);
-				await sleep(20_000);
-			}
-		}
-	}
-	/**
-	 * Closes every pane that was not there at `known` and waits until the programs those panes ran have left `<root>/tools`: the quit check below has to find nothing the checks started,
-	 * and a pi whose pane was closed a moment ago is still ending.
-	 */
-	async function settlePanes(known: readonly string[], programsBefore: ReadonlySet<number>): Promise<void> {
-		for (const id of await paneIds()) if (!known.includes(id)) await herdr(["pane", "close", id], 20_000).catch(() => undefined);
-		await until("the closed panes' programs to leave the tools folder", 90_000, async () => {
-			const now = [...(await toolPids())].filter((pid) => !programsBefore.has(pid));
-			return now.length === 0 ? true : undefined;
-		}).catch((error: Error) => console.log(`panes settle: ${error.message}`));
-	}
-
+	let panes: RpcPanes;
+	const underTools = () => panes.underTools();
+	const herdr = (args: string[], timeoutMs?: number) => panes.herdr(args, timeoutMs);
+	const herdrAnswers = () => panes.herdrAnswers();
+	const paneIds = () => panes.paneIds();
+	const toolPids = () => panes.toolPids();
+	const openRpcPi = (label: string, splitFrom: string, cwd: string) => panes.openRpcPi(label, splitFrom, cwd);
+	const settlePanes = (known: readonly string[], programsBefore: ReadonlySet<number>) => panes.settlePanes(known, programsBefore);
+	const resolutions = (text: string) => panes.resolutions(text);
+	const assertAppFolders = (found: Record<string, string>, names: string[]) => panes.assertAppFolders(found, names);
 	/**
 	 * The pi the `/boss` commands run in: a pi in a split pane of the base the folder hook opened (a pi outside Herdr answers a `/boss gui` command with success and does nothing,
 	 * since its session has no way to the sb server; one in a pane of the home base was silent or ended at once on the Windows runners, in the pane and not in pi, while the panes
@@ -372,6 +193,7 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		// S53-F004: the claim that pi-straw-boss starts under a full administrator token holds only while this runner's token is one.
 		assertElevatedRunner();
 		world = createWorld("fol");
+		panes = rpcPanes(world, platform);
 		await noteUserPath(world);
 		const installed = await runWorld(world, { profile: true, recipe: { forges: [{ kind: "github", host: "github.com" }], tools: [], id: "ci-follow", name: "CI follow", version: "1.0.0", instructions: "- the CI rule" } });
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
@@ -771,24 +593,4 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			if (seen.size > 0) console.log(`--- programs under the tools folder seen while the app quit (ms after the quit began) ---\n${[...seen].map(([pid, v]) => `${pid} ${v.file}, ppid ${v.ppid}, cwd ${v.cwd}, born +${v.bornAt - began} ms, seen from +${v.first - began} to +${v.last - began} ms`).join("\n")}\n${facts()}`);
 		}
 	});
-
-	/** `name=path` lines from the lookup command's output (or a message that holds them, with JSON's escaped newlines already decoded). */
-	function resolutions(text: string): Record<string, string> {
-		const found: Record<string, string> = {};
-		for (const m of text.matchAll(/(?:^|\s)(gh|git|pi|bash)=([^\r\n]*)/g)) found[m[1] as string] = (m[2] ?? "").trim();
-		return found;
-	}
-
-	/** Each name resolves to a file under the app's tools folder, not to the fake gh and git of the planted startup file or to the runner's own. */
-	function assertAppFolders(found: Record<string, string>, names: string[]): void {
-		for (const name of names) {
-			const path = found[name];
-			assert.ok(path, `${name} resolves to something: ${JSON.stringify(found)}`);
-			const normal = path.replaceAll("\\", "/").toLowerCase();
-			assert.ok(normal.includes("/tools/"), `${name} resolves under the app's tools folder: ${path}`);
-			assert.ok(!normal.includes("decoy-bin"), `${name} is not the planted fake: ${path}`);
-			// An ASCII root is compared whole; the Windows root has CJK characters, which a bash may print in its own way.
-			if (/^[\x20-\x7e]*$/.test(world.root)) assert.ok(normal.startsWith(world.root.replaceAll("\\", "/").toLowerCase().replace(/^([a-z]):/, "$1:")) || normal.startsWith(`/${world.root[0]?.toLowerCase()}/`), `${name} lies under the root: ${path}`);
-		}
-	}
 });
