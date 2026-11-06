@@ -149,11 +149,26 @@ describe("dropping, marking left, and the state of a row", () => {
 		const out = dropHost({ ...rec(), entries: [...rec().entries, other], left: [{ name: glabName, account: "x", host: "gitlab.com", kind: "gitlab" }] }, "gitlab", "gitlab.com");
 		assert.deepEqual(out, { schema: 1, entries: [other], left: [] });
 	});
-	it("markHostLeft moves every owned entry of the host to `left` (name, account, host, kind; no time)", () => {
+	it("markHostLeft moves every owned entry of the host to `left` with the time it has (T14-F001: that is how a later look tells beside from changed)", () => {
 		const out = markHostLeft(rec(), "gitlab", "gitlab.com");
 		assert.deepEqual(out.record.entries, []);
-		assert.deepEqual(out.left, [{ name: glabName, account: "", host: "gitlab.com", kind: "gitlab" }]);
+		assert.deepEqual(out.left, [{ name: glabName, account: "", host: "gitlab.com", kind: "gitlab", modified: T1 }]);
 		assert.deepEqual(out.record.left, out.left);
+		const listed = (modified: string) => [{ name: glabName, account: "", modified }];
+		assert.deepEqual(classify(listed(T1), out.record).beside.map((e) => e.name), [glabName], "the same time: still intact, left beside");
+		assert.deepEqual(classify(listed(T1), out.record).changed, []);
+		assert.deepEqual(classify(listed(T2), out.record).beside, [], "another time: something wrote over it");
+		assert.deepEqual(classify(listed(T2), out.record).changed.map((e) => e.name), [glabName]);
+		// a `left` entry written without a time (the old record, or one that turned foreign) is never "beside"
+		const old = { schema: 1 as const, entries: [], left: [{ name: glabName, account: "", host: "gitlab.com", kind: "gitlab" as const }] };
+		assert.deepEqual(classify(listed(T1), old).beside, []);
+		assert.equal(classify(listed(T1), old).changed.length, 1);
+	});
+	it("parses a `left` entry's time when it has one", () => {
+		const raw = JSON.stringify({ schema: 1, entries: [], left: [{ name: glabName, account: "", host: "gitlab.com", kind: "gitlab", modified: T1 }, { name: "gh:github.com", account: "me", host: "github.com", kind: "github" }] });
+		const parsed = parseAccountsRecord(raw);
+		assert.equal(parsed.left[0]?.modified, T1);
+		assert.equal("modified" in (parsed.left[1] ?? {}), false);
 	});
 	it("stateOf: left first, then the app's own sign-in, then a foreign one, else none", () => {
 		const left = { name: glabName, account: "", host: "gitlab.com", kind: "gitlab" as const };

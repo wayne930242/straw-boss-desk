@@ -590,7 +590,8 @@ export class ForgeAccounts {
 
 	/**
 	 * What **Remove all data** would leave in the store (spec: Uninstall and data): the entries of these hosts that the app does not own, each marked `changed` when the app made it and something
-	 * else wrote over it, `foreign` when another program made it. With `owned`, an entry the app still owns is listed as well (`failed`): after a removal it means the removal did not work.
+	 * else wrote over it, `foreign` when another program made it, `beside` when the app made it and it is intact but a foreign entry sits beside it on the host (the sign-out would delete both, so it
+	 * runs none; the app's entry is listed before the removal and after it). With `owned`, an entry the app still owns on a host without a foreign entry is listed as well (`failed`): after a removal it means the removal did not work.
 	 * Lists the store afresh and settles the record against it, as every other check does; a listing that fails is a failure, never an empty answer.
 	 */
 	async survey(hosts: ReadonlyArray<{ kind: ForgeKind; host: string }>, options: { owned?: boolean } = {}): Promise<{ ok: true; entries: LeftEntry[] } | { ok: false; detail: string }> {
@@ -601,9 +602,16 @@ export class ForgeAccounts {
 				const settled = await this.#settle(kind, host, slot);
 				if ("failed" in settled) return settled;
 				const split = classify(settled.entries, settled.record);
-				const changed = new Set(split.changed.map((e) => JSON.stringify([e.name, e.account])));
-				const found: LeftEntry[] = split.foreign.map((e) => ({ name: e.name, account: e.account, host, why: changed.has(JSON.stringify([e.name, e.account])) ? "changed" : "foreign" }));
-				if (options.owned === true) found.push(...split.owned.map((e): LeftEntry => ({ name: e.name, account: e.account, host, why: "failed" })));
+				const keyed = (list: readonly StoreEntry[]): Set<string> => new Set(list.map((e) => JSON.stringify([e.name, e.account])));
+				const changed = keyed(split.changed);
+				const beside = keyed(split.beside);
+				const found: LeftEntry[] = split.foreign.map((e) => {
+					const k = JSON.stringify([e.name, e.account]);
+					return { name: e.name, account: e.account, host, why: beside.has(k) ? "beside" : changed.has(k) ? "changed" : "foreign" };
+				});
+				// With a foreign entry on the host the sign-out runs none, so the app's own intact entries stay too (T14-F001): they are named before the removal and again after it.
+				if (split.foreign.length > 0) found.push(...split.owned.map((e): LeftEntry => ({ name: e.name, account: e.account, host, why: "beside" })));
+				else if (options.owned === true) found.push(...split.owned.map((e): LeftEntry => ({ name: e.name, account: e.account, host, why: "failed" })));
 				return { found };
 			});
 			if ("failed" in outcome) return { ok: false, detail: outcome.failed };

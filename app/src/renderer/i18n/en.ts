@@ -598,6 +598,7 @@ export const en = {
 				entryAccount: "{name} (account {account})",
 				why: {
 					changed: "Straw Boss created it but did not remove it, because it was changed afterwards.",
+					beside: "Straw Boss made it and it is unchanged, but another sign-in to the same site is beside it and signing out would delete that one too, so it stays.",
 					foreign: "Another program made it, probably your own command-line tool, so it is not Straw Boss's to remove.",
 					failed: "Straw Boss created it and could not remove it.",
 				},

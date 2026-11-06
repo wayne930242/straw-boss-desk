@@ -25,12 +25,16 @@ export interface RecordedEntry {
 	modified: string;
 }
 
-/** An entry the app made and then lost to a write by something else: kept by name only, never owned again. */
+/**
+ * An entry the app made and did not remove, never owned again: either something else wrote over it (kept by name only), or it was left intact because a foreign entry sits beside it on the same host
+ * (its sign-out would delete both). The second kind carries the time the entry had then, `modified`, so a later look can tell it from the first: the same time is still "beside", another is "changed".
+ */
 export interface LeftEntry {
 	name: string;
 	account: string;
 	host: string;
 	kind: ForgeKind;
+	modified?: string;
 }
 
 export interface AccountsRecord {
@@ -52,7 +56,7 @@ function recordedOf(v: unknown): RecordedEntry | null {
 
 function leftOf(v: unknown): LeftEntry | null {
 	if (!isObject(v) || !text(v.name) || typeof v.account !== "string" || !text(v.host) || (v.kind !== "github" && v.kind !== "gitlab")) return null;
-	return { name: v.name, account: v.account, host: v.host, kind: v.kind };
+	return { name: v.name, account: v.account, host: v.host, kind: v.kind, ...(text(v.modified) ? { modified: v.modified } : {}) };
 }
 
 /** The record in `raw`. A record that does not parse, or whose entries are malformed, owns nothing: an entry the app cannot prove is its own is foreign, which is the safe direction. */
@@ -92,8 +96,10 @@ export interface Classified {
 	owned: StoreEntry[];
 	/** Everything else that was listed. */
 	foreign: StoreEntry[];
-	/** The foreign entries the app made itself: recorded under this name with another time, or already marked `left`. */
+	/** The foreign entries the app made itself and something else wrote over: recorded under this name with another time, or marked `left` and since written to. */
 	changed: StoreEntry[];
+	/** The foreign entries the app made, left intact beside a foreign entry of the same host: marked `left` with the time they still have. */
+	beside: StoreEntry[];
 }
 
 /**
@@ -103,7 +109,8 @@ export interface Classified {
 export function classify(listed: readonly StoreEntry[], record: AccountsRecord): Classified {
 	const recorded = new Map(record.entries.map((e) => [keyOf(e), e]));
 	const left = new Set(record.left.map(keyOf));
-	const out: Classified = { owned: [], foreign: [], changed: [] };
+	const leftBy = new Map(record.left.map((e) => [keyOf(e), e]));
+	const out: Classified = { owned: [], foreign: [], changed: [], beside: [] };
 	for (const entry of listed) {
 		const key = keyOf(entry);
 		const mine = recorded.get(key);
@@ -112,7 +119,9 @@ export function classify(listed: readonly StoreEntry[], record: AccountsRecord):
 			continue;
 		}
 		out.foreign.push(entry);
-		if (mine !== undefined || left.has(key)) out.changed.push(entry);
+		const kept = leftBy.get(key);
+		if (mine === undefined && kept?.modified !== undefined && entry.modified !== "" && entry.modified === kept.modified) out.beside.push(entry);
+		else if (mine !== undefined || left.has(key)) out.changed.push(entry);
 	}
 	return out;
 }
@@ -163,12 +172,16 @@ export function dropHost(record: AccountsRecord, kind: ForgeKind, host: string):
 	return { schema: 1, entries: record.entries.filter((e) => !mine(e)), left: record.left.filter((e) => !mine(e)) };
 }
 
-/** Marks every owned entry of the host `left` (its sign-out found a foreign entry beside them, so no logout ran). */
+/** Marks every owned entry of the host `left`, with the time it has now (its sign-out found a foreign entry beside them, so no logout ran): the entries are intact, and a later look says so. */
 export function markHostLeft(record: AccountsRecord, kind: ForgeKind, host: string): { record: AccountsRecord; left: LeftEntry[] } {
 	const mine = (e: { kind: ForgeKind; host: string }): boolean => e.kind === kind && e.host === host;
-	const moved: LeftEntry[] = record.entries.filter(mine).map((e) => ({ name: e.name, account: e.account, host: e.host, kind: e.kind }));
+	const moved: LeftEntry[] = record.entries.filter(mine).map((e) => ({ name: e.name, account: e.account, host: e.host, kind: e.kind, modified: e.modified }));
 	const left = [...record.left];
-	for (const m of moved) if (!left.some((l) => keyOf(l) === keyOf(m))) left.push(m);
+	for (const m of moved) {
+		const at = left.findIndex((l) => keyOf(l) === keyOf(m));
+		if (at < 0) left.push(m);
+		else left[at] = m;
+	}
 	return { record: { schema: 1, entries: record.entries.filter((e) => !mine(e)), left }, left: moved };
 }
 

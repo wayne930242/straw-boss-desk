@@ -600,6 +600,7 @@ export const zhTW: Messages = {
 				entryAccount: "{name}（帳號 {account}）",
 				why: {
 					changed: "這是 Straw Boss 建立的，但之後被改過，所以沒有移除。",
+					beside: "這是 Straw Boss 建立的，內容沒有被動過；但同一個網站還有別的登入，登出會連它一起刪掉，所以留下。",
 					foreign: "這是別的程式建立的，可能是你自己的命令列工具，不歸 Straw Boss 移除。",
 					failed: "這是 Straw Boss 建立的，但移除失敗。",
 				},

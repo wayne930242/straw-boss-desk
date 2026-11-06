@@ -5,6 +5,7 @@
 /**
  * An entry that **Remove all data** leaves in the OS credential store, named for the PM (spec: Uninstall and data):
  *  - `changed`: Straw Boss made it and did not remove it, because something else wrote over it afterwards (**Ownership**);
+ *  - `beside`: Straw Boss made it and it is intact, but another program's entry for the same host is beside it, and signing out would delete both, so it stays;
  *  - `foreign`: another program made it (the PM's own `gh` or `glab`), so it was never Straw Boss's;
  *  - `failed`: Straw Boss made it and still owns it, but the removal did not work (result only).
  */
@@ -12,7 +13,7 @@ export interface LeftEntry {
 	name: string;
 	account: string;
 	host: string;
-	why: "changed" | "foreign" | "failed";
+	why: "changed" | "beside" | "foreign" | "failed";
 }
 
 /** What the confirmation screen says before anything is touched. */

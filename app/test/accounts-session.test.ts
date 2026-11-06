@@ -882,16 +882,40 @@ describe("Remove all data: the survey and the sign-outs (task 14)", () => {
 		assert.deepEqual(r.accounts.removalHosts([]), [{ kind: "gitlab", host: "gitlab.com" }]);
 	});
 
-	it("names what would stay: another program's entry as foreign, the app's own that something wrote over as changed, and its own intact one not at all", async () => {
+	it("names what would stay: another program's entry as foreign, the app's own that something wrote over as changed, and its own intact one only when a foreign entry sits beside it (beside)", async () => {
 		const r = rig();
 		await signedInGitlab(r);
+		const alone = await r.accounts.survey(HOSTS);
+		assert.deepEqual(alone, { ok: true, entries: [] }, "an intact entry with nothing beside it is signed out, so nothing stays");
 		r.store.write("glab:gitlab.com", "someone");
 		const plain = await r.accounts.survey(HOSTS);
-		assert.deepEqual(plain, { ok: true, entries: [{ name: "glab:gitlab.com", account: "someone", host: "gitlab.com", why: "foreign" }] });
+		assert.ok(plain.ok);
+		assert.deepEqual(plain.ok ? plain.entries.map((e) => [e.name, e.why]).sort() : [], [["glab:gitlab.com", "foreign"], ["glab:gitlab.com:token", "beside"]]);
 		r.store.write("glab:gitlab.com:token", "");
 		const changed = await r.accounts.survey(HOSTS);
 		assert.ok(changed.ok);
 		assert.deepEqual(changed.ok ? changed.entries.map((e) => [e.name, e.why]).sort() : [], [["glab:gitlab.com", "foreign"], ["glab:gitlab.com:token", "changed"]]);
+	});
+
+	it("T14-F001: an intact entry of the app beside a foreign one is named the same before and after the removal, as beside and never as changed; the store is not touched", async () => {
+		const r = rig();
+		await signedInGitlab(r);
+		const ownedBefore = r.store.get("glab:gitlab.com:token")?.modified;
+		r.store.write("glab:gitlab.com", "someone");
+		const confirm = await r.accounts.survey(HOSTS);
+		assert.ok(confirm.ok);
+		const names = (x: Awaited<ReturnType<typeof r.accounts.survey>>): Array<[string, string]> => (x.ok ? x.entries.map((e): [string, string] => [e.name, e.why]).sort() : []);
+		assert.deepEqual(names(confirm), [["glab:gitlab.com", "foreign"], ["glab:gitlab.com:token", "beside"]]);
+		assert.deepEqual(await r.accounts.removeLogins(HOSTS), []);
+		assert.equal(logouts(r).length, 0, "no logout beside a foreign entry");
+		assert.equal(r.store.get("glab:gitlab.com:token")?.modified, ownedBefore, "the app's entry is untouched");
+		const result = await r.accounts.survey(HOSTS, { owned: true });
+		assert.deepEqual(names(result), names(confirm), "the result says what the confirmation said");
+		// The record keeps the time the entry had, so a later write over it turns "beside" into "changed".
+		assert.equal(readAccountsRecord(r.layout).left.find((e) => e.name === "glab:gitlab.com:token")?.modified, ownedBefore);
+		r.store.write("glab:gitlab.com:token", "");
+		const later = await r.accounts.survey(HOSTS, { owned: true });
+		assert.deepEqual(names(later), [["glab:gitlab.com", "foreign"], ["glab:gitlab.com:token", "changed"]]);
 	});
 
 	it("with `owned`, lists an entry the app still owns as failed; a listing that fails is a failure, not an empty answer", async () => {
