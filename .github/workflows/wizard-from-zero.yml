@@ -45,6 +45,9 @@ jobs:
     timeout-minutes: 55
     env:
       SBD_REQUIRE_HOSTED_FIXTURES: "1"
+      # macos-15-intel's image answers `/usr/bin/git --version` with git 2.55.0 while no developer tools exist, so the fixture's "a stub call fails loudly" check cannot hold there (finding, spec: Build notes,
+      # task 15); the tools are still moved aside and the run warns. No other runner sets it.
+      SBD_ASIDE_GIT_MAY_RUN: ${{ matrix.os == 'macos-15-intel' && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

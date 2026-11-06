@@ -93,4 +93,47 @@ describe("developer tools moved aside", () => {
 			assert.equal(io.disk.has("/Library/Developer/CommandLineTools"), true);
 		}
 	});
+	/** A hosted Mac whose /usr/bin/git answers once the tools are aside (macos-15-intel's image), and whose xcode-select and xcrun report no developer tools. */
+	function gitStillRuns(): ReturnType<typeof fakeMac> {
+		const io = fakeMac();
+		const run = io.run.bind(io);
+		io.run = async (command, args, options) => {
+			if (command === "/usr/bin/git") return { code: 0, stdout: "git version 2.55.0\n", stderr: "" };
+			if (command === "/usr/bin/xcode-select" || command === "/usr/bin/xcrun") return { code: 1, stdout: "", stderr: "no developer tools were found" };
+			return run(command, args, options);
+		};
+		return io;
+	}
+
+	it("the scope refuses when /usr/bin/git still runs, names what it saw, and puts the tools back", async () => {
+		const io = gitStillRuns();
+		const before = new Set(io.disk);
+		const scope = developerToolsAsideScope(hostedMac);
+		assert.ok(scope.state === "active");
+		await assert.rejects(scope.enter(io), /\/usr\/bin\/git still runs \(moved \["\/Library\/Developer\/CommandLineTools","\/Applications\/Xcode_16\.4\.app","\/Applications\/Xcode\.app"\]; xcode-select -p: no developer tools were found; git --version: git version 2\.55\.0; xcrun --find git: no developer tools were found/);
+		assert.deepEqual(io.disk, before, "the tools are back");
+	});
+
+	it("with SBD_ASIDE_GIT_MAY_RUN=1 the scope goes on with a warning, keeps the tools aside for the run, and puts them back at the end", async () => {
+		const io = gitStillRuns();
+		const before = new Set(io.disk);
+		const scope = developerToolsAsideScope({ ...hostedMac, env: { ...hostedMac.env, SBD_ASIDE_GIT_MAY_RUN: "1" } });
+		assert.ok(scope.state === "active");
+		const lines: string[] = [];
+		const log = console.log;
+		console.log = (...args: unknown[]) => void lines.push(args.join(" "));
+		try {
+			await scope.enter(io);
+		} finally {
+			console.log = log;
+		}
+		assert.match(lines.join("\n"), /^::warning title=developer tools aside::\/usr\/bin\/git runs with the developer tools aside/);
+		assert.equal(io.disk.has("/Library/Developer/CommandLineTools"), false, "the tools stay aside");
+		await scope.leave(io);
+		assert.deepEqual(io.disk, before);
+		const other = gitStillRuns();
+		const strict = developerToolsAsideScope({ ...hostedMac, env: { ...hostedMac.env, SBD_ASIDE_GIT_MAY_RUN: "yes" } });
+		assert.ok(strict.state === "active");
+		await assert.rejects(strict.enter(other), /still runs/, "only the value 1 counts");
+	});
 });

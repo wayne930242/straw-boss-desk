@@ -32,4 +32,8 @@ describe("wizard-from-zero.yml runners", () => {
 		assert.match(text, /PACK_ARCH: \$\{\{ \(matrix\.os == 'windows-11-arm' \|\| matrix\.os == 'macos-15-intel'\) && '--x64' \|\| '' \}\}/);
 		assert.match(text, /SBD_RECIPE_FIXTURE_REF: \$\{\{ github\.head_ref \|\| github\.ref_name \}\}/);
 	});
+
+	it("relaxes the developer-tools check on macos-15-intel and nowhere else", () => {
+		assert.deepEqual([...text.matchAll(/SBD_ASIDE_GIT_MAY_RUN: (.*)$/gm)].map((m) => m[1]), ["${{ matrix.os == 'macos-15-intel' && '1' || '' }}"]);
+	});
 });

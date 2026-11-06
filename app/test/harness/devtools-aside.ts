@@ -91,6 +91,13 @@ export function developerToolsAsideScope(ctx: GateContext = currentContext()): A
 				const apps = await io.run("/bin/ls", ["-1", APPLICATIONS], { timeoutMs: 10_000 });
 				const dev = await io.run("/bin/ls", ["-la", "/Library/Developer"], { timeoutMs: 10_000 });
 				const seen = `moved ${JSON.stringify(moved)}; xcode-select -p: ${first(select.stdout || select.stderr)}; git --version: ${first(git.stdout || git.stderr)}; xcrun --find git: ${first(where.stdout || where.stderr)}; /Applications: ${apps.stdout.split("\n").filter((n) => /xcode|developer/i.test(n)).join(", ")}; /Library/Developer: ${dev.stdout.split("\n").slice(0, 8).join(" | ")}`;
+				// macos-15-intel's image answers `git --version` from /usr/bin/git with git 2.55.0 while no developer tools exist (`xcrun --find git` says none were found), so that path is not the stub
+				// there. The nightly workflow sets SBD_ASIDE_GIT_MAY_RUN=1 for that runner alone: the tools are still aside, only the "a stub call fails loudly" half of the fixture cannot hold, and the
+				// run says so as a warning. Everywhere else the refusal stands.
+				if (ctx.env.SBD_ASIDE_GIT_MAY_RUN === "1") {
+					console.log(`::warning title=developer tools aside::/usr/bin/git runs with the developer tools aside, so a call into it would not fail loudly on this runner (${seen})`);
+					return;
+				}
 				await putDeveloperToolsBack(io, moved);
 				throw new Error(`developer tools aside: /usr/bin/git still runs (${seen})`);
 			}
