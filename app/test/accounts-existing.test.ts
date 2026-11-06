@@ -177,6 +177,11 @@ describe("dropping, marking left, and the state of a row", () => {
 		assert.equal(stateOf({ schema: 1, entries: [], left: [] }, [{ name: glabName, account: "", modified: T2 }], "gitlab", "gitlab.com"), "foreign");
 		assert.equal(stateOf({ schema: 1, entries: [], left: [] }, [], "gitlab", "gitlab.com"), "not-signed-in");
 	});
+	it("stateOf (D1): an entry left intact beside a foreign one shows the foreign state, not `left` (whose note says something wrote over it); once written over it is `left` again", () => {
+		const marked = markHostLeft(rec(), "gitlab", "gitlab.com").record;
+		assert.equal(stateOf(marked, [{ name: glabName, account: "", modified: T1 }], "gitlab", "gitlab.com"), "foreign", "the same time: as the app left it");
+		assert.equal(stateOf(marked, [{ name: glabName, account: "", modified: T2 }], "gitlab", "gitlab.com"), "left", "another time: changed");
+	});
 });
 
 describe("the probe and the listing", () => {

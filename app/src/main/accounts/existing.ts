@@ -192,7 +192,9 @@ export function markHostLeft(record: AccountsRecord, kind: ForgeKind, host: stri
 export function stateOf(record: AccountsRecord, listed: readonly StoreEntry[], kind: ForgeKind, host: string): "signed-in" | "not-signed-in" | "foreign" | "left" {
 	const mine = (e: { kind: ForgeKind; host: string }): boolean => e.kind === kind && e.host === host;
 	const split = classify(listed, record);
-	const leftKeys = new Set(record.left.filter(mine).map(keyOf));
+	// An entry the app left intact beside a foreign one is not "lost to a write": it is as the app left it, and the row says a foreign sign-in is there, as the sign-in refusal does (D1).
+	const besideKeys = new Set(split.beside.map(keyOf));
+	const leftKeys = new Set(record.left.filter(mine).map(keyOf).filter((k) => !besideKeys.has(k)));
 	if (listed.some((e) => leftKeys.has(keyOf(e)))) return "left";
 	if (split.owned.length > 0 && record.entries.some(mine)) return "signed-in";
 	if (split.foreign.length > 0) return "foreign";
