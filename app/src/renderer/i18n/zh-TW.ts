@@ -400,6 +400,7 @@ export const zhTW: Messages = {
 			signedIn: "已登入",
 			foreign: "並非由 Straw Boss 登入",
 			left: "被其他程式改過",
+			checking: "檢查中…",
 			unknown: "無法檢查",
 			signIn: "登入",
 			signInAgain: "重新登入",

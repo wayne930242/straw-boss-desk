@@ -125,10 +125,11 @@ export class ForgeAccounts {
 		const key = hostKey(host);
 		let slot = this.#hosts.get(key);
 		if (slot === undefined || slot.kind !== kind) {
-			// Before the store is listed, the row says what the record says; `refresh` corrects it.
+			// Before the store is listed, the row says what the record says; `refresh` corrects it. A `left` entry is the exception: whether it was changed afterwards or only left intact beside a foreign
+			// sign-in is a fact about the store, which the record cannot show, so the row is `checking` until the listing arrives (T14R2-F003).
 			const record = readAccountsRecord(this.#d.layout);
 			const mine = (e: { kind: ForgeKind; host: string }): boolean => e.kind === kind && e.host === host;
-			const state: ForgeState = record.left.some(mine) ? "left" : record.entries.some(mine) ? "signed-in" : "not-signed-in";
+			const state: ForgeState = record.left.some(mine) ? "checking" : record.entries.some(mine) ? "signed-in" : "not-signed-in";
 			slot = { kind, flow: { phase: "idle" }, state, entries: record.left.filter(mine).map((e) => ({ name: e.name, account: e.account })), child: null, timer: null, code: null, attempt: 0, lock: Promise.resolve() };
 			this.#hosts.set(key, slot);
 		}

@@ -13,6 +13,7 @@ const BADGE: Record<ForgeState, { cls: string; key: string }> = {
 	"not-signed-in": { cls: "badge-blocked", key: "settings.accounts.notSignedIn" },
 	foreign: { cls: "badge-blocked", key: "settings.accounts.foreign" },
 	left: { cls: "badge-failed", key: "settings.accounts.left" },
+	checking: { cls: "badge-waiting", key: "settings.accounts.checking" },
 	unknown: { cls: "badge-blocked", key: "settings.accounts.unknown" },
 };
 
@@ -94,7 +95,7 @@ function forgeCard(ctx: SettingsCtx, view: ForgeView): HTMLElement {
 	const badge = BADGE[view.state];
 	const busy = BUSY.includes(view.flow.phase);
 	const tool = ctx.tr(`forge.tool.${view.kind}`);
-	const signedIn = view.state === "signed-in" || view.state === "left";
+	const signedIn = view.state === "signed-in" || view.state === "left" || view.state === "checking";
 	// Sign out is offered whenever something may be there to remove: it removes what the app owns and, beside a sign-in it does not own, says that one was left alone (Removing a login).
 	const canSignOut = view.state !== "not-signed-in";
 	const speaking = view.flow.phase !== "idle";

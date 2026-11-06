@@ -398,6 +398,7 @@ export const en = {
 			signedIn: "Signed in",
 			foreign: "Not signed in by Straw Boss",
 			left: "Changed by another program",
+			checking: "Checking…",
 			unknown: "Could not check",
 			signIn: "Sign in",
 			signInAgain: "Sign in again",
