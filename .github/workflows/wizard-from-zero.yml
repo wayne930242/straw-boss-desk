@@ -1,23 +1,33 @@
 name: wizard-from-zero
 
-# The anchor of the wizard (spec: Workflows, task 9): the packaged
-# development build, from an empty data root to the GUI, every sign-in put
-# off (task 10: the code-host steps sign in, or stop at a foreign entry; task 11: Claude against a stand-in CLI, and a dummy Linear key). On macOS the root is the app's default one under the test's scratch home (not the
-# runner's) and
-# the Xcode tools are moved aside; on Windows it is under AppData\Local in a
-# folder named "sbd 測試" under that scratch home (spec: Build notes, task 9). The runners are ephemeral, so the guarded fixtures
-# are safe; SBD_REQUIRE_HOSTED_FIXTURES=1 makes a refused one fail the job.
+# The anchor of the wizard (spec: Workflows, tasks 9 and 15): the packaged development build, from an empty data root to the GUI and out again, in the ten steps of the spec's list (the table
+# in its Build notes says which test holds each). Every sign-in is put off or done against a stand-in (task 10: the code-host steps sign in, or stop at a foreign entry; task 11: Claude
+# against a stand-in CLI, and a dummy Linear key). On macOS the root is the app's default one under the test's scratch home (not the runner's) and the Xcode tools are moved aside; on Windows it is
+# under AppData\Local in a folder named "sbd 測試" under that scratch home (spec: Build notes, task 9). The runners are ephemeral, so the guarded fixtures are safe;
+# SBD_REQUIRE_HOSTED_FIXTURES=1 makes a refused one fail the job.
+#
+# Runners: windows-2025 and macos-15 on every push and pull request. The nightly (`schedule`, and a `workflow_dispatch` with `runners: all`) adds windows-11-arm, which runs the x64 stack
+# under emulation as a PM's ARM laptop does, and macos-15-intel, the x64 macOS build; those two are not required on a push.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      runners:
+        description: "required: windows-2025 and macos-15. all: those two and the nightly-only windows-11-arm and macos-15-intel."
+        type: choice
+        options: [required, all]
+        default: required
+  schedule:
+    - cron: "37 2 * * *"
 
 permissions:
   contents: read
 
+# A push cancels the run of the branch's earlier push; a dispatched run has a group of its own, so five of them can run side by side.
 concurrency:
-  group: wizard-from-zero-${{ github.ref }}
+  group: wizard-from-zero-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -30,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: ${{ fromJSON((github.event_name == 'schedule' || inputs.runners == 'all') && '["windows-2025","macos-15","windows-11-arm","macos-15-intel"]' || '["windows-2025","macos-15"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     env:
@@ -48,9 +58,12 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # The nightly-only runners build x64 on purpose: windows-11-arm runs the x64 stack under emulation (the stack's only Windows key is win32-x64), and macos-15-intel is x64 by itself.
       - name: Package the development build (electron-builder --dir)
         working-directory: app
-        run: npm run pack -- --dir
+        env:
+          PACK_ARCH: ${{ (matrix.os == 'windows-11-arm' || matrix.os == 'macos-15-intel') && '--x64' || '' }}
+        run: npm run pack -- --dir $PACK_ARCH
 
       - name: Cache the downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -67,6 +80,8 @@ jobs:
           SBD_E2E: "1"
           SBD_E2E_KIND: dev
           SBD_E2E_DOWNLOADS: ${{ runner.temp }}/sbd-e2e-downloads
+          # The Team recipe check reads the fixture over the internet, at the ref this run tests (on main, that is the repository's raw URL on main).
+          SBD_RECIPE_FIXTURE_REF: ${{ github.head_ref || github.ref_name }}
           SBD_GITLAB_TEST_TOKEN: ${{ github.event_name != 'pull_request' && secrets.SBD_GITLAB_TEST_TOKEN || '' }}
         run: |
           if [ -n "$SBD_GITLAB_TEST_TOKEN" ]; then echo "::add-mask::$SBD_GITLAB_TEST_TOKEN"; fi

@@ -1,0 +1,18 @@
+{
+  "recipe": 1,
+  "id": "ci-wizard",
+  "name": "CI 測試團隊",
+  "version": "2.0.0",
+  "updateUrl": "https://raw.githubusercontent.com/wayne930242/straw-boss-desk/main/app/test/fixtures/ci-update.strawboss.json",
+  "forges": [
+    { "kind": "github", "host": "github.com" },
+    { "kind": "gitlab", "host": "gitlab.com" }
+  ],
+  "repos": [
+    { "url": "https://github.com/octocat/Hello-World.git", "folder": "hello-world", "label": "Hello World" },
+    { "url": "https://github.com/octocat/Spoon-Knife.git", "folder": "spoon-knife", "label": "Spoon Knife" }
+  ],
+  "linear": { "enabled": true },
+  "tools": [],
+  "instructions": "- 這是 CI 測試用的團隊指引，第二版，由儲存庫裡的檔案經原始檔網址提供。"
+}
