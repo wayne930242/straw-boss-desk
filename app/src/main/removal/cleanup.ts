@@ -15,24 +15,30 @@ import { PENDING_FILE } from "./pending.ts";
 // PowerShell script walks the tree itself with .NET calls: a reparse point (junction, symlink) is deleted as the link it is, a plain folder is emptied and then deleted. In the root the marker
 // `remove-pending` goes last, and only when nothing else is left: a half-deleted root keeps its marker, so the next launch finishes it.
 //
+// A relaunch can start while the cleanup still retries (T14R-F002): it finishes the pending removal itself and creates a new root in the same place. The marker is what tells the two apart, so the
+// root is retried only while `remove-pending` is in it; a root without it belongs to the new launch and is left alone. When the marker could not be written at all (`marked` false) there is nothing to tell
+// them apart by, and the root is retried while it exists, as before.
+//
 // The program kills nothing: it only waits for the app's pid to end (by looking, not by signalling), and deletes only the two folders it is given. A pid that is still alive after 30 s makes it
 // leave: the marker stays, and the next launch finishes the deletion (`finishPending`).
 
 export const WAIT_SECONDS = 30;
 const RETRIES = 20;
 
-/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid. `waitSeconds` is the app's 30 s and `retries` the 20 rounds of the delete; a test passes less. */
+/** `/bin/sh -c` script. `$1` root, `$2` fallback folder (may be empty), `$3` the app's pid, `$4` "1" when the marker `remove-pending` was written (the root is then retried only while it is there). `waitSeconds` is the app's 30 s and `retries` the 20 rounds of the delete; a test passes less. */
 export const posixScript = (waitSeconds: number = WAIT_SECONDS, retries: number = RETRIES): string => [
-	'root=$1; fallback=$2; pid=$3',
+	'root=$1; fallback=$2; pid=$3; marked=$4',
 	'case $root in /?*) ;; *) exit 1;; esac',
 	'case $pid in ""|*[!0-9]*) exit 1;; esac',
+	// Whether `$1` still has work: the root while its marker is there (when one was written), the fallback folder while it exists.
+	`more() { if [ "$1" = "$root" ] && [ -n "$marked" ]; then [ -e "$1/${PENDING_FILE}" ]; else [ -e "$1" ]; fi; }`,
 	'i=0',
 	`while kill -0 "$pid" 2>/dev/null; do i=$((i+1)); [ "$i" -gt ${waitSeconds} ] && exit 2; sleep 1; done`,
 	'for target in "$root" "$fallback"; do',
 	'  [ -n "$target" ] || continue',
 	'  case $target in /?*) ;; *) continue;; esac',
 	'  n=0',
-	`  while [ -e "$target" ] && [ "$n" -lt ${retries} ]; do`,
+	`  while more "$target" && [ "$n" -lt ${retries} ]; do`,
 	'    if [ "$target" = "$root" ]; then',
 	// The root: everything but the marker first, then the marker, and the folder, only when nothing else is left (a symlink inside is removed as the link it is).
 	`      find "$target" -mindepth 1 -maxdepth 1 ! -name '${PENDING_FILE}' -exec rm -rf -- {} + 2>/dev/null`,
@@ -80,13 +86,18 @@ export const POWERSHELL_SCRIPT = [
 	"  if ($keepLast) { Remove-Tree (Join-Path $path $keepLast) '' }",
 	"  try { [IO.File]::SetAttributes($path, [IO.FileAttributes]::Directory); [IO.Directory]::Delete($path) } catch { }",
 	"}",
+	// The same rule as the POSIX script's `more`: the root is retried only while its marker is there, when one was written (`SBD_RM_MARKED`).
+	"function Test-Work([string]$target) {",
+	"  if (($target -eq $env:SBD_RM_ROOT) -and $env:SBD_RM_MARKED) { return (Test-Path -LiteralPath (Join-Path $target '" + PENDING_FILE + "')) }",
+	"  return (Test-Path -LiteralPath $target)",
+	"}",
 	"foreach ($target in @($env:SBD_RM_ROOT, $env:SBD_RM_FALLBACK)) {",
 	"  if ([string]::IsNullOrEmpty($target) -or -not [IO.Path]::IsPathRooted($target)) { continue }",
 	`  $keep = if ($target -eq $env:SBD_RM_ROOT) { '${PENDING_FILE}' } else { '' }`,
 	`  for ($n = 0; $n -lt ${RETRIES}; $n++) {`,
-	"    if (-not (Test-Path -LiteralPath $target)) { break }",
+	"    if (-not (Test-Work $target)) { break }",
 	"    Remove-Tree $target $keep",
-	"    if (Test-Path -LiteralPath $target) { Start-Sleep -Seconds 1 }",
+	"    if (Test-Work $target) { Start-Sleep -Seconds 1 }",
 	"  }",
 	"}",
 	"if ($env:SBD_RM_FALLBACK) {",
@@ -103,6 +114,8 @@ export interface CleanupSpec {
 	root: string;
 	/** The fallback folder to delete too, already checked by the caller (`fallbackIsOurs`); null when there is none. */
 	fallbackDir: string | null;
+	/** `remove-pending` was written in the root: the cleanup retries the root only while it is there (T14R-F002). */
+	marked: boolean;
 }
 
 export interface CleanupCommand {
@@ -123,6 +136,7 @@ export function cleanupCommand(spec: CleanupSpec, locate: Pick<Locate, "system">
 		env.SBD_RM_ROOT = spec.root;
 		env.SBD_RM_FALLBACK = spec.fallbackDir ?? "";
 		env.SBD_RM_PID = String(spec.pid);
+		env.SBD_RM_MARKED = spec.marked ? "1" : "";
 		const encoded = Buffer.from(POWERSHELL_SCRIPT, "utf16le").toString("base64");
 		// PowerShell is started by `cmd /c start /b`, which ends at once: the program's parent is then a process that has gone, and not the app. Started by the app directly it was gone with the app on the
 		// hosted runner, however it was started (detached, or not), and nothing deleted the root. Every part of the command line is made of characters `cmd` leaves alone (the base64 has no `&^%`).
@@ -132,7 +146,7 @@ export function cleanupCommand(spec: CleanupSpec, locate: Pick<Locate, "system">
 	const env: Record<string, string> = {};
 	for (const key of ["PATH", "LANG", "LC_ALL", "HOME"]) if (baseEnv[key] !== undefined) env[key] = baseEnv[key] as string;
 	env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
-	return { file: locate.system("sh"), args: ["-c", POSIX_SCRIPT, "sh", spec.root, spec.fallbackDir ?? "", String(spec.pid)], env };
+	return { file: locate.system("sh"), args: ["-c", POSIX_SCRIPT, "sh", spec.root, spec.fallbackDir ?? "", String(spec.pid), spec.marked ? "1" : ""], env };
 }
 
 export type SpawnDetached = (file: string, args: readonly string[], options: SpawnOptions) => { unref(): void; on(event: "error", listener: (error: Error) => void): unknown };

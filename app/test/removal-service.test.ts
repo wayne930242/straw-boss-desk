@@ -28,7 +28,7 @@ interface Rig {
 	fallback: string | null;
 	store: StoreEntry[];
 	deleted: string[];
-	armed: Array<{ root: string; fallbackDir: string | null }>;
+	armed: Array<{ root: string; fallbackDir: string | null; marked: boolean }>;
 	listed: string[][];
 }
 
@@ -149,7 +149,7 @@ describe("the removal", () => {
 		assert.deepEqual(steps(r), ["stopping", "logins", "claude", "linear", "path", "safe-storage", "files"]);
 		assert.deepEqual(rootNames(r), ["electron", PENDING_FILE]);
 		assert.equal(readFileSync(join(r.work, "web", "README.md"), "utf8"), "mine", "the work folder is untouched");
-		assert.deepEqual(r.armed, [{ root: r.root, fallbackDir: null }]);
+		assert.deepEqual(r.armed, [{ root: r.root, fallbackDir: null, marked: true }]);
 		assert.ok(r.calls.indexOf("stop") < r.calls.indexOf("logins") && r.calls.indexOf("logins") < r.calls.indexOf("claude.signOut") && r.calls.indexOf("claude.signOut") < r.calls.indexOf("linear.signOut") && r.calls.indexOf("linear.signOut") < r.calls.findIndex((c) => c.startsWith("path ")));
 		assert.deepEqual(readPending(r.root), { schema: 1, id: rootId(r.root), fallbackDir: null, owner: null });
 		if (s.phase === "done") assert.deepEqual(s.result, { root: r.root, workFolder: r.work, left: [], problems: [] });
@@ -251,6 +251,21 @@ describe("the removal", () => {
 		assert.equal(r.armed.length, 1, "the cleanup is armed, so the files it could not delete go when the app does");
 	});
 
+	it("T14R-F002: arms the cleanup as marked when the marker was written, and unmarked when it could not be (then there is no marker for the cleanup to wait on)", async () => {
+		const written = rig();
+		await written.svc.plan();
+		await written.svc.confirm();
+		assert.equal(written.armed[0]?.marked, true);
+		const blocked = rig();
+		mkdirSync(join(blocked.root, PENDING_FILE), { recursive: true });
+		await blocked.svc.plan();
+		await blocked.svc.confirm();
+		assert.equal(blocked.armed[0]?.marked, false);
+		const s = blocked.svc.state;
+		assert.equal(s.phase, "done");
+		if (s.phase === "done") assert.ok(s.result.problems.some((p) => p.step === "files" && /remove-pending could not be written/.test(p.detail)));
+	});
+
 	it("writes the marker before it deletes a file, so a crash is finished by the next launch", async () => {
 		let markerWhenDeleting = false;
 		const r = rig({ deleteChildren: async (root) => ((markerWhenDeleting = existsSync(join(root, PENDING_FILE))), { failed: [] }) });
@@ -264,13 +279,13 @@ describe("the removal", () => {
 		await own.svc.plan();
 		await own.svc.confirm();
 		assert.ok(own.fallback !== null && !existsSync(own.fallback));
-		assert.deepEqual(own.armed, [{ root: own.root, fallbackDir: own.fallback }]);
+		assert.deepEqual(own.armed, [{ root: own.root, fallbackDir: own.fallback, marked: true }]);
 
 		const other = rig({ fallback: true, fallbackElsewhere: true });
 		await other.svc.plan();
 		await other.svc.confirm();
 		assert.ok(other.fallback !== null && existsSync(other.fallback), "not this root's id: not deleted");
-		assert.deepEqual(other.armed, [{ root: other.root, fallbackDir: null }]);
+		assert.deepEqual(other.armed, [{ root: other.root, fallbackDir: null, marked: true }]);
 		const s = other.svc.state;
 		assert.ok(s.phase === "done" && s.result.problems.some((p) => p.step === "files" && /not this app's/.test(p.detail)));
 	});

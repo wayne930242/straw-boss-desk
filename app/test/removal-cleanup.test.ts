@@ -23,17 +23,17 @@ describe("the cleanup command", () => {
 	const mac = createMacLocate();
 	const win = createWinLocate({ systemRoot: "C:\\Windows" });
 	it("passes the root, the fallback folder and the pid as positional parameters of sh on macOS, and the script text holds none of them", () => {
-		const c = cleanupCommand({ platform: "darwin", pid: 4242, root: "/Users/pm/Library/Application Support/straw-boss-desk", fallbackDir: "/Users/pm/.straw-boss-desk/ab12cd34" }, mac, { PATH: "/opt/homebrew/bin", SSH_AUTH_SOCK: "x" });
+		const c = cleanupCommand({ platform: "darwin", pid: 4242, root: "/Users/pm/Library/Application Support/straw-boss-desk", fallbackDir: "/Users/pm/.straw-boss-desk/ab12cd34", marked: true }, mac, { PATH: "/opt/homebrew/bin", SSH_AUTH_SOCK: "x" });
 		assert.equal(c.file, "/bin/sh");
 		assert.deepEqual(c.args.slice(0, 1), ["-c"]);
-		assert.deepEqual(c.args.slice(2), ["sh", "/Users/pm/Library/Application Support/straw-boss-desk", "/Users/pm/.straw-boss-desk/ab12cd34", "4242"]);
+		assert.deepEqual(c.args.slice(2), ["sh", "/Users/pm/Library/Application Support/straw-boss-desk", "/Users/pm/.straw-boss-desk/ab12cd34", "4242", "1"]);
 		assert.ok(!c.args[1]?.includes("Application Support"));
 		assert.deepEqual(c.env, { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
 	});
 
 	it("passes them in the environment on Windows, UTF-16 and unquoted, whatever & ^ % or CJK the root holds, and the encoded script holds none of them", () => {
 		const root = "C:\\Users\\PM\\AppData\\Local\\sbd 測試 & ^ %TEMP% !x!";
-		const c = cleanupCommand({ platform: "win32", pid: 77, root, fallbackDir: null }, win, { SystemRoot: "C:\\Windows" });
+		const c = cleanupCommand({ platform: "win32", pid: 77, root, fallbackDir: null, marked: true }, win, { SystemRoot: "C:\\Windows" });
 		assert.match(c.file, /cmd\.exe$/i);
 		assert.equal(c.verbatim, true);
 		assert.deepEqual(c.args.slice(0, 3), ["/d", "/s", "/c"]);
@@ -65,7 +65,7 @@ describe("the cleanup command", () => {
 		assert.ok(POWERSHELL_SCRIPT.indexOf("-ieq $keepLast") < POWERSHELL_SCRIPT.indexOf("if ($rest -gt 0) { return }"));
 		assert.ok(POWERSHELL_SCRIPT.indexOf("if ($rest -gt 0) { return }") < POWERSHELL_SCRIPT.indexOf("Remove-Tree (Join-Path $path $keepLast)"));
 		// The command the app starts carries that script, whatever the root holds.
-		const c = cleanupCommand({ platform: "win32", pid: 5, root: "C:\\r", fallbackDir: null }, createWinLocate({ systemRoot: "C:\\Windows" }), {});
+		const c = cleanupCommand({ platform: "win32", pid: 5, root: "C:\\r", fallbackDir: null, marked: true }, createWinLocate({ systemRoot: "C:\\Windows" }), {});
 		assert.equal(Buffer.from(/-EncodedCommand ([A-Za-z0-9+/=]+)"$/.exec(c.args[3] as string)?.[1] ?? "", "base64").toString("utf16le"), POWERSHELL_SCRIPT);
 	});
 
@@ -76,10 +76,29 @@ describe("the cleanup command", () => {
 		assert.match(text, /if \[ -z "\$\(find "\$target" -mindepth 1 -maxdepth 1 ! -name 'remove-pending'[^)]*\)" \]; then rm -f -- "\$target\/remove-pending"/);
 	});
 
+	it("T14R-F002: both scripts retry the root only while the marker is in it, when one was written, so a relaunch's new root is never deleted", () => {
+		const text = posixScript();
+		// The retry loop asks `more`, which reads the marker for the root and the folder itself for the fallback; the plain existence loop is gone.
+		assert.match(text, /more\(\) \{ if \[ "\$1" = "\$root" \] && \[ -n "\$marked" \]; then \[ -e "\$1\/remove-pending" \]; else \[ -e "\$1" \]; fi; \}/);
+		assert.match(text, /while more "\$target" && \[ "\$n" -lt 20 \]; do/);
+		assert.doesNotMatch(text, /while \[ -e "\$target" \]/);
+		assert.match(POWERSHELL_SCRIPT, /function Test-Work\(\[string\]\$target\) \{\s+if \(\(\$target -eq \$env:SBD_RM_ROOT\) -and \$env:SBD_RM_MARKED\) \{ return \(Test-Path -LiteralPath \(Join-Path \$target 'remove-pending'\)\) \}/);
+		assert.match(POWERSHELL_SCRIPT, /if \(-not \(Test-Work \$target\)\) \{ break \}/);
+		assert.match(POWERSHELL_SCRIPT, /if \(Test-Work \$target\) \{ Start-Sleep -Seconds 1 \}/);
+		assert.doesNotMatch(POWERSHELL_SCRIPT, /if \(-not \(Test-Path -LiteralPath \$target\)\) \{ break \}/);
+		// The flag travels as the fourth positional parameter on macOS and as `SBD_RM_MARKED` on Windows, and is empty when no marker was written.
+		const mac = createMacLocate();
+		const win = createWinLocate({ systemRoot: "C:\\Windows" });
+		assert.equal(cleanupCommand({ platform: "darwin", pid: 9, root: "/r", fallbackDir: null, marked: true }, mac).args[6], "1");
+		assert.equal(cleanupCommand({ platform: "darwin", pid: 9, root: "/r", fallbackDir: null, marked: false }, mac).args[6], "");
+		assert.equal(cleanupCommand({ platform: "win32", pid: 9, root: "C:\\r", fallbackDir: null, marked: true }, win, {}).env.SBD_RM_MARKED, "1");
+		assert.equal(cleanupCommand({ platform: "win32", pid: 9, root: "C:\\r", fallbackDir: null, marked: false }, win, {}).env.SBD_RM_MARKED, "");
+	});
+
 	it("refuses a relative root and a pid that is not one", () => {
-		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 1, root: "data", fallbackDir: null }, mac), /absolute/);
-		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 0, root: "/data", fallbackDir: null }, mac), /pid/);
-		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 1.5, root: "/data", fallbackDir: null }, mac), /pid/);
+		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 1, root: "data", fallbackDir: null, marked: true }, mac), /absolute/);
+		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 0, root: "/data", fallbackDir: null, marked: true }, mac), /pid/);
+		assert.throws(() => cleanupCommand({ platform: "darwin", pid: 1.5, root: "/data", fallbackDir: null, marked: true }, mac), /pid/);
 	});
 
 	it("starts the program detached, hidden, with no inherited handles and a working folder outside the root, and ignores its start error", () => {
@@ -112,7 +131,7 @@ describe("the cleanup command", () => {
 });
 
 describe("the POSIX cleanup, run for real", { skip: process.platform === "win32" ? "sh runs on macOS" : false }, () => {
-	const run = (root: string, fallback: string, pid: string, wait = 2) => spawnSync("/bin/sh", ["-c", posixScript(wait), "sh", root, fallback, pid], { encoding: "utf8", timeout: 30_000 });
+	const run = (root: string, fallback: string, pid: string, wait = 2, marked = "") => spawnSync("/bin/sh", ["-c", posixScript(wait), "sh", root, fallback, pid, marked], { encoding: "utf8", timeout: 30_000 });
 
 	it("waits for the app's pid to end, then deletes the root and the fallback folder, and the parent when it is empty", async () => {
 		const base = scratch();
@@ -191,6 +210,47 @@ describe("the POSIX cleanup, run for real", { skip: process.platform === "win32"
 		}
 	});
 
+	it("T14R-F002: a marked cleanup leaves a root that has no marker alone (a relaunch's new data folder), and deletes one that has it", () => {
+		const base = scratch();
+		const fresh = join(base, "fresh");
+		mkdirSync(join(fresh, "electron"), { recursive: true });
+		writeFileSync(join(fresh, "state.json"), "{}");
+		assert.equal(run(fresh, "", "999999", 1, "1").status, 0);
+		assert.ok(existsSync(join(fresh, "electron")) && existsSync(join(fresh, "state.json")), "the new root keeps everything");
+		const pending = join(base, "pending");
+		mkdirSync(join(pending, "electron"), { recursive: true });
+		writeFileSync(join(pending, "remove-pending"), "{}");
+		assert.equal(run(pending, "", "999999", 1, "1").status, 0);
+		assert.ok(!existsSync(pending), "the root that holds the marker is deleted");
+	});
+
+	it("T14R-F002: a relaunch that replaces the root while the cleanup retries is not deleted by the next round", { skip: process.getuid?.() === 0 ? "root can delete anything" : false }, async () => {
+		const base = scratch();
+		const root = join(base, "root");
+		const locked = join(root, "locked");
+		mkdirSync(locked, { recursive: true });
+		writeFileSync(join(locked, "held.txt"), "x");
+		writeFileSync(join(root, "remove-pending"), "{}");
+		chmodSync(locked, 0o555);
+		const cleaner = spawn("/bin/sh", ["-c", posixScript(1, 20), "sh", root, "", "999999", "1"], { stdio: "ignore" });
+		const ended = new Promise<void>((resolve) => cleaner.on("exit", () => resolve()));
+		try {
+			// The first round fails on the locked folder and the marker stays; then the relaunch finishes the removal itself and starts afresh in the same place.
+			await new Promise<void>((resolve) => setTimeout(resolve, 600));
+			assert.ok(existsSync(join(root, "remove-pending")), "the cleanup is still retrying");
+			chmodSync(locked, 0o755);
+			rmSync(root, { recursive: true, force: true });
+			mkdirSync(join(root, "electron"), { recursive: true });
+			writeFileSync(join(root, "state.json"), "new");
+			await ended;
+			assert.equal(readFileSync(join(root, "state.json"), "utf8"), "new", "the next round left the new root alone");
+			assert.ok(existsSync(join(root, "electron")));
+		} finally {
+			if (existsSync(locked)) chmodSync(locked, 0o755);
+			cleaner.kill();
+		}
+	});
+
 	it("deletes a root whose pid is already gone at once", () => {
 		const base = scratch();
 		const root = join(base, "gone");
@@ -206,21 +266,46 @@ describe("the PowerShell cleanup, run for real", { skip: process.platform === "w
 		while (!gone() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
 	};
 
-	it("T14-F006: a junction and a symlink inside the root are removed as links; the folder they point to, outside the root, keeps its files", () => {
+	it("T14-F006: a junction, a directory symlink and a file symlink inside the root are each removed as links; what they point to, outside the root, keeps its files", () => {
 		const base = scratch();
 		const root = join(base, "root");
 		const outside = join(base, "outside");
 		mkdirSync(join(root, "electron"), { recursive: true });
 		mkdirSync(join(outside, "deep"), { recursive: true });
 		writeFileSync(join(outside, "deep", "precious.txt"), "mine");
+		writeFileSync(join(outside, "single.txt"), "mine too");
 		writeFileSync(join(root, "electron", "Local State"), "x");
+		// The runner is an administrator, so a symlink can be made; a failure to make one fails the test rather than skipping the case.
 		symlinkSync(outside, join(root, "junction"), "junction");
+		symlinkSync(outside, join(root, "dir-symlink"), "dir");
+		symlinkSync(join(outside, "single.txt"), join(root, "file-symlink"), "file");
 		writeFileSync(join(root, "remove-pending"), "{}");
-		const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: null }, createWinLocate());
+		const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: null, marked: true }, createWinLocate());
 		assert.equal(spawnSync(c.file, c.args, { env: c.env, encoding: "utf8", timeout: 120_000, windowsHide: true, windowsVerbatimArguments: c.verbatim === true }).status, 0);
 		waitFor(() => !existsSync(root));
 		assert.ok(!existsSync(root), "the root is gone");
-		assert.equal(readFileSync(join(outside, "deep", "precious.txt"), "utf8"), "mine", "the junction's target was not entered");
+		assert.equal(readFileSync(join(outside, "deep", "precious.txt"), "utf8"), "mine", "the junction's and the symlink's target was not entered");
+		assert.equal(readFileSync(join(outside, "single.txt"), "utf8"), "mine too", "the file symlink's target was not deleted");
+	});
+
+	it("T14R-F002: a marked cleanup leaves a root that has no marker alone, and deletes one that has it", () => {
+		const base = scratch();
+		const fresh = join(base, "fresh");
+		mkdirSync(join(fresh, "electron"), { recursive: true });
+		writeFileSync(join(fresh, "state.json"), "{}");
+		const pending = join(base, "pending");
+		mkdirSync(join(pending, "electron"), { recursive: true });
+		writeFileSync(join(pending, "remove-pending"), "{}");
+		// PowerShell is run directly here, and waited for: through `cmd /c start` the test could only look for what did not happen.
+		const direct = (root: string): number | null => {
+			const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: null, marked: true }, createWinLocate());
+			const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)"$/.exec(c.args[3] as string)?.[1] ?? "";
+			return spawnSync(createWinLocate().system("powershell"), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], { env: c.env, encoding: "utf8", timeout: 120_000, windowsHide: true }).status;
+		};
+		assert.equal(direct(fresh), 0);
+		assert.ok(existsSync(join(fresh, "electron")) && existsSync(join(fresh, "state.json")), "the new root keeps everything");
+		assert.equal(direct(pending), 0);
+		assert.ok(!existsSync(pending), "the root that holds the marker is deleted");
 	});
 
 	it("deletes a root with CJK, space, ampersand and percent characters, and a fallback folder, once the pid has gone", () => {
@@ -229,7 +314,7 @@ describe("the PowerShell cleanup, run for real", { skip: process.platform === "w
 		const fallback = join(base, ".straw-boss-desk", "ab12cd34");
 		mkdirSync(join(root, "electron"), { recursive: true });
 		mkdirSync(fallback, { recursive: true });
-		const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: fallback }, createWinLocate());
+		const c = cleanupCommand({ platform: "win32", pid: 99999999, root, fallbackDir: fallback, marked: false }, createWinLocate());
 		// `cmd /c start` returns at once; the PowerShell it started does the deletion, so the test looks for it.
 		const r = spawnSync(c.file, c.args, { env: c.env, encoding: "utf8", timeout: 120_000, windowsHide: true, windowsVerbatimArguments: c.verbatim === true });
 		assert.equal(r.status, 0, r.stderr);

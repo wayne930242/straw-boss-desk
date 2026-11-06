@@ -41,8 +41,8 @@ export interface RemovalDeps {
 	resume(): Promise<void>;
 	/** This app's pid and start token, for the marker (a second launch must not finish the removal under it). A start token that cannot be read is null. */
 	self?: () => Promise<{ pid: number; startTime: string | null }>;
-	/** Records that the cleanup must run when the app exits. */
-	arm(spec: { root: string; fallbackDir: string | null }): void;
+	/** Records that the cleanup must run when the app exits. `marked` is whether `remove-pending` was written: the cleanup then goes on only while the marker is there (T14R-F002). */
+	arm(spec: { root: string; fallbackDir: string | null; marked: boolean }): void;
 	/** Leaves the app (the PM read the result). */
 	quit(): void;
 	log: RuntimeEvent;
@@ -273,12 +273,14 @@ export class RemovalService {
 		} catch {
 			// no start token: the marker holds nothing against a second launch, as before
 		}
+		let marked = false;
 		try {
 			writePending(layout.root, { schema: 1, id: layout.id, fallbackDir, owner });
+			marked = true;
 		} catch (error) {
 			problems.push({ step: "files", detail: `remove-pending could not be written: ${firstLine((error as Error).message)}` });
 		}
-		this.#d.arm({ root: layout.root, fallbackDir });
+		this.#d.arm({ root: layout.root, fallbackDir, marked });
 		if (fallbackDir !== null) {
 			try {
 				await (this.#d.removeTree ?? ((path: string) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })))(fallbackDir);
