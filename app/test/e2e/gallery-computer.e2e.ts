@@ -51,6 +51,8 @@ const REMOVE_STATES: Array<[string, RemoveState]> = [
 	["done-left", { phase: "done", result: { root: ROOT, workFolder: WORK, left: LEFT, problems: [] } }],
 	["done-beside", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [{ name: "glab:gitlab.com:token", account: "", host: "gitlab.com", why: "beside" }, { name: "glab:gitlab.com", account: "someone", host: "gitlab.com", why: "foreign" }], problems: [] } }],
 	["done-problems", { phase: "done", result: { root: ROOT, workFolder: null, left: LEFT.slice(0, 1), problems: [{ step: "logins", detail: "gitlab.example.com: glab exited 1" }, { step: "files", detail: "tools: EBUSY: resource busy or locked" }] } }],
+	// SA-T14-6: the sentence that sends the PM to the guide, with no entry that stays: the guide's button is under it.
+	["done-problems-no-left", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [], problems: [{ step: "logins", detail: "gitlab.example.com: glab exited 1" }, { step: "path", detail: "" }] } }],
 	["done-problems-files", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [], problems: [{ step: "files", detail: "electron: EBUSY: resource busy or locked" }] } }],
 ];
 
@@ -195,6 +197,11 @@ describe("every state of Remove all data and of Diagnostics (gallery)", { skip }
 				await sound(`remove ${name} ${locale}`);
 				await shot(`computer-${name}`, locale);
 				await belowTheFold(name, locale, state);
+				// The sentence that points to the guide has the guide's button in its own box, and the screen has one such button (SA-T14-6).
+				if (state.phase === "done" && state.result.problems.some((p) => p.step !== "files")) {
+					assert.equal(await page.locator("#remove-problems #remove-guide-problems").count(), 1, `${name} ${locale}: the guide's button sits with its sentence`);
+					assert.equal(await page.locator('[id^="remove-guide"]').count(), 1, `${name} ${locale}: one guide button on the screen`);
+				}
 			}
 		}
 	});

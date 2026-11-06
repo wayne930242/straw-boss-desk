@@ -29,8 +29,8 @@ describe("the task 14 e2e files", () => {
 		assert.match(helper, /fullPage: true/);
 	});
 
-	it("the gallery has the states of this round: the app's entry beside a foreign one, the busy refusal, a result whose only problem is the files step", () => {
+	it("the gallery has the states of this round: the app's entry beside a foreign one, the busy refusal, a result whose only problem is the files step, and one that points to the guide with no entry left", () => {
 		const text = source("gallery-computer.e2e.ts");
-		for (const needle of ['"confirm-beside"', '"done-beside"', '["busy"', '"done-problems-files"', 'why: "beside"']) assert.ok(text.includes(needle), needle);
+		for (const needle of ['"confirm-beside"', '"done-beside"', '["busy"', '"done-problems-files"', '"done-problems-no-left"', 'why: "beside"']) assert.ok(text.includes(needle), needle);
 	});
 });
