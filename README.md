@@ -10,7 +10,7 @@ The design record is [`docs/specs/2026-10-25-design.md`](docs/specs/2026-10-25-d
 
 | | Windows | macOS |
 | --- | --- | --- |
-| Program | `%LOCALAPPDATA%\Programs\Straw Boss Desk` (per-user NSIS, no administrator prompt) | `/Applications`, or `~/Applications` when `/Applications` is not writable |
+| Program | `%LOCALAPPDATA%\Programs\straw-boss-desk` (per-user NSIS, no administrator prompt) | wherever the PM drags the app (usually `/Applications`) |
 | Data root (`<root>`) | `%LOCALAPPDATA%\straw-boss-desk` | `~/Library/Application Support/straw-boss-desk` |
 | Tools | `<root>\tools` | `<root>/tools` |
 | Chromium profile | `<root>\electron` | `<root>/electron` |

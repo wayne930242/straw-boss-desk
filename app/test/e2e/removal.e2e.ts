@@ -27,6 +27,7 @@ import { createWorld, disposeWorld, noteUserPath, runWorld, stopProcessesUnder, 
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase, realIO, type FixtureIO } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
+import { shotWhole } from "../harness/shot-whole.ts";
 import { createScratchKeychain, type ScratchKeychain } from "../harness/scratch-keychain.ts";
 import { seederFor, storeFor, type Seeder } from "../harness/store-fixtures.ts";
 
@@ -75,7 +76,7 @@ async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, e
 
 const shot = async (page: Page, name: string): Promise<void> => {
 	mkdirSync(screenshotDir, { recursive: true });
-	await page.screenshot({ path: join(screenshotDir, `${name}.png`) });
+	await shotWhole(page, join(screenshotDir, `${name}.png`));
 };
 
 const nonce = randomBytes(4).toString("hex");

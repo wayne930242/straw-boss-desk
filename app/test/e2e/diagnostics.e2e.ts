@@ -18,6 +18,7 @@ import { createWorld, disposeWorld, noteUserPath, runWorld, type World } from ".
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
+import { shotWhole } from "../harness/shot-whole.ts";
 import { readZip } from "../harness/unzip.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
@@ -64,7 +65,7 @@ async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, e
 
 const shot = async (page: Page, name: string): Promise<void> => {
 	mkdirSync(screenshotDir, { recursive: true });
-	await page.screenshot({ path: join(screenshotDir, `${name}.png`) });
+	await shotWhole(page, join(screenshotDir, `${name}.png`));
 };
 
 const isWin = process.platform === "win32";

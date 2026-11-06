@@ -35,9 +35,56 @@ describe("the PM guide", () => {
 	});
 
 	it("covers what the boss decided it covers: install paths, SmartScreen, Gatekeeper, Smart App Control, the existing sign-in, WSL, closing the window, Claude's plain-text login, the WARP line, and Remove all data before uninstalling", () => {
-		for (const needle of ["%LOCALAPPDATA%\\Programs\\Straw Boss Desk", "Application Support/straw-boss-desk", "SmartScreen", "仍要打開", "Smart App Control", "不支援", "WSL", "關閉視窗", ".credentials.json", "Cloudflare WARP", "先在應用程式裡按「移除所有資料」，再解除安裝", "鑰匙圈存取", "認證管理員"]) {
+		for (const needle of ["%LOCALAPPDATA%\\Programs\\straw-boss-desk", "Application Support/straw-boss-desk", "SmartScreen", "仍要打開", "Smart App Control", "不支援", "WSL", "關閉視窗", ".credentials.json", "Cloudflare WARP", "先在應用程式裡按「移除所有資料」，再解除安裝", "鑰匙圈存取", "認證管理員"]) {
 			assert.ok(guide.includes(needle), `the guide says ${needle}`);
 		}
+	});
+
+	it("quotes the app's own refusal sentence from the catalog, not a paraphrase (T14-F009)", async () => {
+		const { catalogs } = await import("../src/renderer/i18n/index.ts");
+		const { format } = await import("../src/renderer/i18n/index.ts");
+		const sentence = format(catalogs["zh-TW"].forge.foreign, { host: "github.com", tool: "GitHub" });
+		assert.ok(guide.includes(`> ${sentence}`), "the blockquote is the catalog sentence with a host and a tool filled in");
+	});
+
+	it("says only what the app does: no move into Applications, no claim that 「稍後」 keeps using the PM's login, the macOS 15 Keychain Access place, the WSL fix as merged but unreleased (T14-F009)", () => {
+		assert.doesNotMatch(guide, /搬進/);
+		assert.doesNotMatch(guide, /~\/Applications/);
+		assert.doesNotMatch(guide, /仍然可以用你自己的登入/);
+		assert.match(guide, /Spotlight/);
+		assert.match(guide, /macOS 15/);
+		assert.match(guide, /PR #112[^]*已在 2026-11-04 合併[^]*發行新版/);
+		assert.doesNotMatch(guide, /我們已經送出修改/);
+		assert.doesNotMatch(guide, /Chromium/);
+		assert.doesNotMatch(readme, /~\/Applications/);
+	});
+
+	it("covers every reason the app gives for an entry it leaves, and tells the PM how to remove the app's own entry beside a foreign one without telling them to keep it (T14-F001, F010)", async () => {
+		const { catalogs } = await import("../src/renderer/i18n/index.ts");
+		const why = catalogs["zh-TW"].settings.computer.remove.why;
+		assert.deepEqual(Object.keys(why).sort(), ["beside", "changed", "failed", "foreign"]);
+		for (const needle of ["同一個網站還有別的登入", "被改過", "別的程式建立的", "移除失敗"]) assert.ok(guide.includes(needle), `the guide names the category ${needle}`);
+		const beside = /\*\*同一個網站還有別的登入\*\*[^\n]*/.exec(guide)?.[0] ?? "";
+		assert.match(beside, /這一筆可以刪/);
+		assert.doesNotMatch(beside, /不要刪[^。]*Straw Boss 建立/);
+		// the screens of the app use the same words as the guide's list
+		assert.ok(guide.includes("「同一個網站還有別的登入」"), "the confirmation list names it");
+	});
+
+	it("tells the PM how to finish each step the result can name as not done, and that only the files step is tried again", async () => {
+		const { catalogs } = await import("../src/renderer/i18n/index.ts");
+		const steps = catalogs["zh-TW"].settings.computer.remove.problem;
+		assert.deepEqual(Object.keys(steps).sort(), ["claude", "files", "linear", "logins", "path", "safe-storage", "stopping"]);
+		assert.ok(guide.includes("### 結果畫面說「沒完成」的步驟"));
+		assert.match(guide, /只有「刪除檔案」這一步，Straw Boss 會在你關閉它時再試一次/);
+		for (const needle of ["Claude Code-credentials-", "Straw Boss Desk Safe Storage", "\\tools\\shims", "secrets"]) assert.ok(guide.includes(needle), `the guide says ${needle}`);
+	});
+
+	it("uses 「登入資料」 and not 「權杖」 for what the app keeps and hides (SA-T14-2)", async () => {
+		assert.doesNotMatch(guide, /權杖/);
+		const { catalogs } = await import("../src/renderer/i18n/index.ts");
+		const zh = catalogs["zh-TW"];
+		for (const text of [zh.settings.diagnostics.logs.lead, zh.settings.diagnostics.collect.lead, zh.forge.storeUnavailable, zh.forge.plainRemoved, zh.forge.plainStays, zh.forge.unverified]) assert.doesNotMatch(text, /權杖/);
 	});
 
 	it("names the buttons by the words of the zh-TW catalog", async () => {

@@ -6,7 +6,7 @@
 // The failure of a pending removal at the next launch is a native error box (`dialog.showErrorBox`), which a page screenshot cannot take; its words are the catalog's `pending` group, which the
 // locale parity tests and `pending-dialog` in `shell-pages.test.ts` cover.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -14,6 +14,7 @@ import { _electron as electron, type ElectronApplication, type Page } from "play
 import type { ComputerView, DiagnosticsView, LeftEntry, RemoveState, RemoveStep } from "../../src/shared/computer.ts";
 import type { Locale } from "../../src/shared/locale.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
+import { shotWhole } from "../harness/shot-whole.ts";
 import { settingsView } from "../harness/views.ts";
 
 const enabled = process.env.SBD_E2E === "1" && process.env.SBD_E2E_KIND !== "release";
@@ -22,6 +23,8 @@ const packaged: Packaged | undefined = enabled ? locatePackaged("dev") : undefin
 const screenshotDir = join(process.env.SBD_SCREENSHOT_DIR ?? join(appRoot, "test-results", "screenshots"), "gallery");
 const LOCALES: readonly Locale[] = ["zh-TW", "en"];
 const isWin = process.platform === "win32";
+/** The height of a PNG, read from its IHDR chunk. */
+const PNG_HEIGHT = (file: string): number => readFileSync(file).readUInt32BE(20);
 
 const ROOT = isWin ? "C:\\Users\\pm\\AppData\\Local\\Straw Boss Desk" : "/Users/pm/Library/Application Support/Straw Boss Desk";
 const WORK = isWin ? "C:\\Users\\pm\\Straw Boss" : "/Users/pm/Straw Boss";
@@ -37,14 +40,18 @@ const REMOVE_STATES: Array<[string, RemoveState]> = [
 	["planning", { phase: "planning" }],
 	["confirm", { phase: "confirm", plan: PLAN }],
 	["confirm-left", { phase: "confirm", plan: { ...PLAN, left: LEFT } }],
+	["confirm-beside", { phase: "confirm", plan: { ...PLAN, left: [{ name: "glab:gitlab.com:token", account: "", host: "gitlab.com", why: "beside" }, { name: "glab:gitlab.com", account: "someone", host: "gitlab.com", why: "foreign" }] } }],
 	["confirm-no-folder", { phase: "confirm", plan: { ...PLAN, workFolder: null, bytes: null } }],
 	["refused-store", { phase: "refused", reason: "store", detail: "security: SecKeychainSearchCopyNext: User interaction is not allowed." }],
 	...STEPS.map((step): [string, RemoveState] => [`working-${step}`, { phase: "working", step }]),
 	["stop-failed", { phase: "stop-failed", leftovers: [{ pid: 4242, file: `${ROOT}${isWin ? "\\" : "/"}tools${isWin ? "\\" : "/"}node${isWin ? "\\" : "/"}24.22.1${isWin ? "\\" : "/"}node` }, { pid: 4310, file: "pi" }], detail: "" }],
+	["busy", { phase: "busy" }],
 	["failed", { phase: "failed", detail: "the data root is, or contains, the home folder" }],
 	["done", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [], problems: [] } }],
 	["done-left", { phase: "done", result: { root: ROOT, workFolder: WORK, left: LEFT, problems: [] } }],
+	["done-beside", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [{ name: "glab:gitlab.com:token", account: "", host: "gitlab.com", why: "beside" }, { name: "glab:gitlab.com", account: "someone", host: "gitlab.com", why: "foreign" }], problems: [] } }],
 	["done-problems", { phase: "done", result: { root: ROOT, workFolder: null, left: LEFT.slice(0, 1), problems: [{ step: "logins", detail: "gitlab.example.com: glab exited 1" }, { step: "files", detail: "tools: EBUSY: resource busy or locked" }] } }],
+	["done-problems-files", { phase: "done", result: { root: ROOT, workFolder: WORK, left: [], problems: [{ step: "files", detail: "electron: EBUSY: resource busy or locked" }] } }],
 ];
 
 const diag = (over: Partial<DiagnosticsView> = {}): DiagnosticsView => ({ status: { phase: "idle" }, collect: { phase: "idle" }, repair: { phase: "idle" }, logsDir: `${ROOT}${isWin ? "\\" : "/"}logs`, wslBash: null, ...over });
@@ -74,13 +81,23 @@ describe("every state of Remove all data and of Diagnostics (gallery)", { skip }
 
 	const shot = async (name: string, locale: Locale): Promise<void> => {
 		mkdirSync(screenshotDir, { recursive: true });
-		await page.screenshot({ path: join(screenshotDir, `${name}-${locale}.png`), fullPage: true });
+		await shotWhole(page, join(screenshotDir, `${name}-${locale}.png`));
 	};
 	const settled = async (locale: Locale): Promise<void> => {
 		const deadline = Date.now() + 10_000;
 		while (Date.now() < deadline && (await page.evaluate(() => document.documentElement.lang)) !== locale) await new Promise((r) => setTimeout(r, 50));
 		assert.equal(await page.evaluate(() => document.documentElement.lang), locale);
 		await new Promise((r) => setTimeout(r, 150));
+	};
+	/** The shot holds the panel's last button, however long the panel is (T14-F010): the whole page was taken, not the window. */
+	const belowTheFold = async (name: string, locale: Locale, state: RemoveState): Promise<void> => {
+		const last = state.phase === "confirm" ? "#remove-cancel" : state.phase === "done" ? "#remove-quit" : null;
+		if (last === null) return;
+		const png = join(screenshotDir, `computer-${name}-${locale}.png`);
+		const { bottom, ratio } = await page.evaluate((sel) => ({ bottom: document.querySelector(sel)?.getBoundingClientRect().bottom ?? 0, ratio: window.devicePixelRatio }), last);
+		assert.ok(bottom > 0, `${name} ${locale}: ${last} is on the page`);
+		const height = PNG_HEIGHT(png);
+		assert.ok(height >= Math.floor((bottom - 2) * ratio), `${name} ${locale}: the picture is ${height}px high, and ${last} ends at ${Math.round(bottom * ratio)}px`);
 	};
 	/** No unfilled placeholder, no sideways scroll, no duplicate id, nothing past the right edge of the panel. */
 	const sound = async (what: string): Promise<void> => {
@@ -177,6 +194,7 @@ describe("every state of Remove all data and of Diagnostics (gallery)", { skip }
 				assert.equal(await page.locator("#remove-panel").getAttribute("data-state"), state.phase, name);
 				await sound(`remove ${name} ${locale}`);
 				await shot(`computer-${name}`, locale);
+				await belowTheFold(name, locale, state);
 			}
 		}
 	});
