@@ -36,7 +36,7 @@ import { LinearAccounts, tttCommand } from "./accounts/linear.ts";
 import { agentModules, locateClaude } from "./bootstrap/stages/claude.ts";
 import { QuitGate } from "./quit-gate.ts";
 import { stopForRemoval, stopSequence, type StopParts } from "./stop-sequence.ts";
-import { preLaunch } from "./pre-launch.ts";
+import { handOver, preLaunch } from "./pre-launch.ts";
 import { KeepAwake } from "./computer/keep-awake.ts";
 import { ComputerService } from "./computer/service.ts";
 import { DiagnosticsService } from "./diagnostics/service.ts";
@@ -70,13 +70,18 @@ const identity = identityFromProductName(app.getName());
 const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform: process.platform, home: homedir() });
 
 // Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
-// and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock.
+// and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock (a launch that finds the removal's owner alive only asks for that lock, on the owner's folder).
 const earlyPlatform = createPlatform();
 const early = await preLaunch({ argv: process.argv, root, home: homedir(), platform: process.platform, userPath: earlyPlatform.userPath, processes: earlyPlatform.processes });
 if (early.action === "stop") {
 	dialog.showErrorBox(format(catalogs.en.pending.failedTitle, {}), `${format(catalogs.en.pending.failedBody, { folder: early.folder })}\n\n${format(catalogs["zh-TW"].pending.failedBody, { folder: early.folder })}\n\n${early.detail}`);
 }
-if (early.action !== "continue") process.exit(early.code);
+if (early.action === "handover") {
+	// The app that is removing its data still runs: the lock on its user data folder tells it to show its window. This launch creates nothing in the root and ends.
+	handOver({ userData: electronDir(root), exists: existsSync, setUserData: (path) => app.setPath("userData", path), lock: () => app.requestSingleInstanceLock(), release: () => app.releaseSingleInstanceLock() });
+	process.exit(0);
+}
+if (early.action === "stop" || early.action === "exit") process.exit(early.code);
 
 // userData moves first: the single-instance lock is keyed on it, and Chromium must never write into the roaming %APPDATA%.
 mkdirSync(electronDir(root), { recursive: true });
@@ -449,14 +454,14 @@ const recipeCard = new RecipeService({
 // ---- Diagnostics, Computer and Remove all data (task 14) ----------------------------------------------------------------------------------------------------------------------------
 
 /** The cleanup that deletes `<root>` after the app has gone (`removal/cleanup.ts`): armed by **Remove all data**, started once, at the app's exit. */
-let pendingCleanup: { root: string; fallbackDir: string | null } | null = null;
+let pendingCleanup: { root: string; fallbackDir: string | null; marked: boolean } | null = null;
 
 function runCleanup(): void {
 	if (pendingCleanup === null) return;
 	const spec = pendingCleanup;
 	pendingCleanup = null;
 	try {
-		spawnCleanup(cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir }, platform.locate));
+		spawnCleanup(cleanupCommand({ platform: process.platform, pid: process.pid, root: spec.root, fallbackDir: spec.fallbackDir, marked: spec.marked }, platform.locate));
 	} catch {
 		// The marker `remove-pending` is in the root: the next launch deletes it.
 	}
@@ -772,7 +777,15 @@ if (!app.requestSingleInstanceLock()) {
 			refreshNotices();
 		});
 		recipeCard.onChange(() => desk?.pushSettings());
-		removal.onChange(() => desk?.pushSettings());
+		removal.onChange(() => {
+			desk?.pushSettings();
+			// A quit asked while the removal worked was held (T14R-F001): the result is shown now, in a window opened for it if the PM had closed theirs, and closing it quits.
+			if (removal.state.phase === "done" && quitGate.removalDone()) {
+				openWindow();
+				desk?.openSettings("computer");
+				desk?.window?.focus();
+			}
+		});
 		diagnostics.onChange(() => desk?.pushSettings());
 		keepAwake.apply();
 		desk.setWizardActive(mode === "wizard");

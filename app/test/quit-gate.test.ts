@@ -116,4 +116,51 @@ describe("the removal's stop through the gate (T14-F004)", () => {
 		await tick();
 		assert.deepEqual(r.calls, ["log remove-resume-quit", "stopAll 1", "exit 0"]);
 	});
+
+	it("T14R-F001: a quit asked while the removal works is held even after its stop has ended, and is answered when the removal is done, not dropped", async () => {
+		const r = rig();
+		const outcome = await r.gate.stopForRemoval(async () => ({ ok: true, leftovers: [] }));
+		assert.equal(outcome.ok, true);
+		assert.equal(r.gate.beforeQuit(), false, "the stop is over, and the quit still waits for the rest of the removal");
+		assert.equal(r.gate.stopped, true);
+		assert.equal(r.gate.removalDone(), true, "the removal ends: a quit was asked, so the result is to be shown");
+		assert.equal(r.gate.beforeQuit(), true, "closing the result then quits through the usual rule");
+		assert.equal(r.gate.removalDone(), false, "answered once");
+		assert.deepEqual(r.calls, [], "the quit starts no second stop and leaves nothing half done");
+	});
+
+	it("T14R-F001: a quit asked while the removal's own stop runs is remembered, and a removal that ends is not left windowless", async () => {
+		const r = rig();
+		let finish: (v: { ok: boolean; leftovers: [] }) => void = () => undefined;
+		const stop = r.gate.stopForRemoval(() => new Promise<{ ok: boolean; leftovers: [] }>((resolve) => (finish = resolve)));
+		assert.equal(r.gate.beforeQuit(), false);
+		finish({ ok: true, leftovers: [] });
+		await stop;
+		assert.equal(r.gate.removalDone(), true);
+	});
+
+	it("T14R-F001: with no quit asked the removal's end asks for no window, and a quit before or after the removal is unchanged", async () => {
+		const r = rig();
+		assert.equal(r.gate.removalDone(), false, "no removal, nothing to answer");
+		await r.gate.stopForRemoval(async () => ({ ok: true, leftovers: [] }));
+		assert.equal(r.gate.removalDone(), false);
+		assert.equal(r.gate.beforeQuit(), true, "after the removal the app leaves as any app that is stopped");
+	});
+
+	it("T14R-F001: a refused removal ends the hold: a quit asked during it still leaves, and one asked after the app went on stops the stack and leaves as always", async () => {
+		const r = rig();
+		await r.gate.stopForRemoval(async () => ({ ok: false, leftovers: [] }));
+		assert.equal(r.gate.beforeQuit(), false);
+		const resumed = r.gate.resumeAfterRefusedRemoval();
+		r.endStop();
+		assert.equal(await resumed, false);
+		assert.equal(r.gate.removalDone(), false, "the hold is gone: a later removal starts clean");
+		const later = rig();
+		await later.gate.stopForRemoval(async () => ({ ok: false, leftovers: [] }));
+		assert.equal(await later.gate.resumeAfterRefusedRemoval(), true, "no quit was asked: the app goes on");
+		assert.equal(later.gate.beforeQuit(), false, "a quit now is held by the stop sequence, not by the removal");
+		later.endStop();
+		await tick();
+		assert.deepEqual(later.calls, ["resume", "stopAll 1", "exit 0"], "the stop ran: the hold of the refused removal is gone");
+	});
 });

@@ -7,7 +7,7 @@ import { after, describe, it } from "node:test";
 import { KeepAwake, readKeepAwake, type PowerBlockerLike } from "../src/main/computer/keep-awake.ts";
 import { statusFields } from "../src/main/diagnostics/status.ts";
 import { anchorOf, guideUrl, GUIDE_REMOVE_HEADING, GUIDE_REPO } from "../src/main/guide.ts";
-import { preLaunch } from "../src/main/pre-launch.ts";
+import { handOver, preLaunch } from "../src/main/pre-launch.ts";
 import { claudeItem, safeStorageItem } from "../src/main/removal/names.ts";
 import { writePending } from "../src/main/removal/pending.ts";
 import { hasRemoveUserPath, hasStopStack } from "../src/main/runtime/args.ts";
@@ -99,18 +99,33 @@ describe("pre-launch (before userData, the lock and any window)", () => {
 		assert.deepEqual(await preLaunch({ ...base, argv: ["--stop-stack"], userPath: userPath([]), exists: () => false, finish: () => ({ found: false }) }), { action: "exit", code: 0 });
 		assert.deepEqual(await preLaunch({ ...base, argv: ["--stop-stack"], userPath: userPath([]), exists: () => true, finish: () => ({ found: false }) }), { action: "continue" });
 	});
-	it("T14-F005: a launch beside the app that is removing its data leaves the root alone, does not finish it, and exits", async () => {
+	it("T14-F005 and T14R-F001: a launch beside the app that is removing its data leaves the root alone, does not finish it, and hands over to it instead of ending silently", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sbd-held-"));
 		bases.push(root);
 		writePending(root, { schema: 1, id: null, fallbackDir: null, owner: { pid: 777, startTime: "S1" } });
 		let finished = 0;
 		const finish = () => (finished++, { found: true as const, removed: true, fallbackRemoved: false });
 		const live = { inspect: async () => [{ pid: 777, startTime: "S1", executable: null }] };
-		assert.deepEqual(await preLaunch({ ...base, root, argv: ["app"], userPath: userPath([]), processes: live, finish }), { action: "exit", code: 0 });
+		assert.deepEqual(await preLaunch({ ...base, root, argv: ["app"], userPath: userPath([]), processes: live, finish }), { action: "handover" });
 		assert.equal(finished, 0, "the removal is not finished under the instance that holds the root");
 		const dead = { inspect: async () => [{ pid: 777, startTime: null, executable: null }] };
 		assert.deepEqual(await preLaunch({ ...base, root, argv: ["app"], userPath: userPath([]), processes: dead, finish }), { action: "continue" });
 		assert.equal(finished, 1);
+	});
+
+	it("T14R-F001: the handover asks for the single-instance lock on the owner's folder, which tells the owner to show its window, and creates nothing", () => {
+		const calls: string[] = [];
+		const deps = (held: boolean, folder: boolean) => ({ userData: "/r/electron", exists: (p: string) => (calls.push(`exists ${p}`), folder), setUserData: (p: string) => void calls.push(`setUserData ${p}`), lock: () => (calls.push("lock"), !held), release: () => void calls.push("release") });
+		assert.equal(handOver(deps(true, true)), "handed");
+		assert.deepEqual(calls, ["exists /r/electron", "setUserData /r/electron", "lock"]);
+		// The owner ended in between: the lock is let go again and nothing keeps it; the next launch finishes the removal.
+		calls.length = 0;
+		assert.equal(handOver(deps(false, true)), "free");
+		assert.deepEqual(calls, ["exists /r/electron", "setUserData /r/electron", "lock", "release"]);
+		// No `electron/` folder, so no instance can hold a lock there: nothing is asked and nothing is created.
+		calls.length = 0;
+		assert.equal(handOver(deps(true, false)), "free");
+		assert.deepEqual(calls, ["exists /r/electron"]);
 	});
 
 	it("finishes a pending removal first and then starts as on a new machine; a failed deletion stops the launch with the folder named", async () => {

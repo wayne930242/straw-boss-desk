@@ -18,8 +18,10 @@ export class QuitGate {
 	readonly #d: QuitGateDeps;
 	#stopping = false;
 	#stopped = false;
-	/** A quit was asked while a stop was already under way (an update's), so the app must leave when that stop's own plan fails. */
+	/** A quit was asked while a stop was already under way (an update's, or the removal's), so the app must leave when that stop's own plan fails, or show the removal's result when it ends. */
 	#quitAsked = false;
+	/** **Remove all data** holds the gate: from the start of its stop until it is refused, fails, or is done. A quit asked meanwhile is held even after the stop itself has ended (T14R-F001). */
+	#removing = false;
 
 	constructor(deps: QuitGateDeps) {
 		this.#d = deps;
@@ -32,6 +34,10 @@ export class QuitGate {
 
 	/** `before-quit`: true when the quit is let through, false when it is held (the caller calls `preventDefault`). */
 	beforeQuit(): boolean {
+		if (this.#removing) {
+			this.#quitAsked = true;
+			return false;
+		}
 		if (this.#stopped) return true;
 		this.quit(() => 0);
 		return false;
@@ -69,14 +75,27 @@ export class QuitGate {
 
 	/**
 	 * **Remove all data** stops the stack through the gate. A stop already under way (an update's, a quit's) is neither joined nor undone, so the removal gets `busy` and the other stop goes on: the
-	 * stack is never started again in the middle of an update (T14-F004). The stop is held like a quit's until the removal is refused or the app leaves.
+	 * stack is never started again in the middle of an update (T14-F004). The stop is held like a quit's until the removal is refused or done (`removalDone`).
 	 */
 	async stopForRemoval<T extends { ok: boolean }>(run: () => Promise<T>): Promise<RemovalStopResult<T>> {
 		if (this.#stopping) return { ok: false, busy: true, leftovers: [] };
 		this.#stopping = true;
+		this.#removing = true;
 		const outcome = await run();
 		this.#stopped = outcome.ok;
 		return outcome;
+	}
+
+	/**
+	 * The removal is done and shows its result. A quit asked while it worked (the window closed on Windows, Cmd-Q) was held, and is answered here, not dropped: the result is shown, and closing it quits
+	 * through the usual rule. Returns whether such a quit was asked, which tells the caller to open the window if none is open (T14R-F001).
+	 */
+	removalDone(): boolean {
+		if (!this.#removing) return false;
+		const asked = this.#quitAsked;
+		this.#removing = false;
+		this.#quitAsked = false;
+		return asked;
 	}
 
 	/** The removal's stop did not finish (programs still run) or the removal failed before deleting anything: the app goes on as it was, or leaves if the PM asked to quit meanwhile. */
@@ -86,6 +105,7 @@ export class QuitGate {
 
 	async #undoStop(leavingEvent: string, resumeEvent: string): Promise<boolean> {
 		const leaving = this.#quitAsked;
+		this.#removing = false;
 		this.#stopping = false;
 		this.#stopped = false;
 		this.#quitAsked = false;
