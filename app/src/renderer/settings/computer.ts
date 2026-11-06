@@ -62,8 +62,8 @@ function confirmPanel(ctx: SettingsCtx, state: Extract<RemoveState, { phase: "co
 
 const problemLine = (tr: Tr, p: RemovalProblem): HTMLElement => h("li", { "data-step": p.step }, h("span", {}, tr(`settings.computer.remove.problem.${p.step}`)), p.detail === "" ? null : h("span", { class: "remove-detail" }, ` ${p.detail}`));
 
-/** What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. */
-function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[]): HTMLElement {
+/** What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. `guideShown`: the list of entries that stay above already has the guide's button, so there is one button on the screen. */
+function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[], guideShown: boolean): HTMLElement {
 	const { tr } = ctx;
 	const files = problems.some((p) => p.step === "files");
 	const others = problems.some((p) => p.step !== "files");
@@ -74,7 +74,7 @@ function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[]): HTM
 		h("ul", { class: "remove-entries" }, ...problems.map((p) => problemLine(tr, p))),
 		files ? h("p", { class: "note", "data-role": "retry-files" }, tr("settings.computer.remove.problemsLater")) : null,
 		others ? h("p", { class: "note", "data-role": "see-guide" }, tr("settings.computer.remove.problemsGuide")) : null,
-		others ? h("p", {}, h("button", { type: "button", id: "remove-guide-problems", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide"))) : null,
+		others && !guideShown ? h("p", {}, h("button", { type: "button", id: "remove-guide-problems", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide"))) : null,
 	);
 }
 
@@ -89,7 +89,7 @@ function donePanel(ctx: SettingsCtx, result: RemovalResult): HTMLElement {
 		result.left.length === 0
 			? h("p", { class: "note", "data-role": "leaves" }, tr("settings.computer.remove.leavesNone"))
 			: h("div", { class: "finding", id: "remove-left" }, leftList(tr, result.left, tr("settings.computer.remove.leftTitle"), "leaves"), h("p", {}, h("button", { type: "button", id: "remove-guide", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide")))),
-		result.problems.length === 0 ? null : problemsBox(ctx, result.problems),
+		result.problems.length === 0 ? null : problemsBox(ctx, result.problems, result.left.length > 0),
 		h("p", { class: "note" }, tr("settings.computer.remove.uninstall")),
 		h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-quit", class: "primary", onclick: () => ctx.act({ type: "computer-quit" }) }, tr("settings.computer.remove.quit"))),
 	);

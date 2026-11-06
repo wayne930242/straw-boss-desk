@@ -139,6 +139,11 @@ describe("Remove all data: one panel per state", () => {
 		const path = drawComputer(result(["path", "logins"]));
 		assert.equal(path.querySelector('[data-role="retry-files"]'), null, "a failed sign-out or PATH step is never retried");
 		assert.ok(path.querySelector('[data-role="see-guide"]') && path.querySelector("#remove-guide-problems"));
+		// With entries that stay, the guide's button is already above: one button on the screen, not two.
+		const withLeft = drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: LEFT, problems: [{ step: "path", detail: "d" }] } });
+		assert.ok(withLeft.querySelector('[data-role="see-guide"]'));
+		assert.equal(withLeft.querySelector("#remove-guide-problems"), null);
+		assert.equal(withLeft.querySelectorAll("button").filter((b) => b.getAttribute("id")?.startsWith("remove-guide")).length, 1);
 		const both = drawComputer(result(["files", "linear"]));
 		assert.ok(both.querySelector('[data-role="retry-files"]') && both.querySelector('[data-role="see-guide"]'));
 	});
