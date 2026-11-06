@@ -19,8 +19,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { request as httpRequest } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
@@ -36,8 +37,11 @@ import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts"
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { statusSummary } from "../harness/status-summary.ts";
 import { relaunchNotice } from "../harness/relaunch-time.ts";
+import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
+import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
+import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
-import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, seedDownloads, WorldHerdr, type World } from "../harness/e2e-light.ts";
+import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, seedDownloads, WorldHerdr, type World } from "../harness/e2e-light.ts";
 import { tttCommand } from "../../src/main/accounts/linear.ts";
 import { parseStack } from "../../src/main/bootstrap/stack.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
@@ -79,6 +83,8 @@ async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, e
 
 const exampleDir = fileURLToPath(new URL("../../../recipe/examples/invalid/", import.meta.url));
 const ciRecipe = fileURLToPath(new URL("../fixtures/ci.strawboss.json", import.meta.url));
+/** The update the repository serves for the raw-URL check of the Team recipe card (task 15): the same team at a higher version. */
+const ciUpdateRecipe = fileURLToPath(new URL("../fixtures/ci-update.strawboss.json", import.meta.url));
 const PLANTED = "LEAKCHECK123";
 /** The stand-in `claude` (task 11) and the code planted in the Claude screen's field. */
 const FAKE_CLAUDE = fileURLToPath(new URL("../harness/fake-claude.mjs", import.meta.url));
@@ -280,7 +286,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		if (aside.state === "refused") throw new Error(aside.reason);
 		if (aside.state === "active") await aside.enter(ioForSudo);
 		world = createWorld("wiz");
+		panes = rpcPanes(world, hostPlatform);
 		await noteUserPath(world);
+		// macOS: the PM's own startup file, with a fake gh and git ahead of the real ones and GH_TOKEN=fake (a guarded fixture: written into the scratch home only, before the first launch).
+		if (!isWindows) plantShellStartupDecoy(world);
 		// The CI cache holds the pinned downloads; the engine hashes every file it finds there, so a bad one is replaced, not trusted.
 		seedDownloads(world);
 		// The store the app will use: on macOS a keychain of its own in the world's HOME (the app gets the same HOME), on Windows the runner's Credential Manager. One foreign GitHub sign-in is in
@@ -298,12 +307,109 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		// Entries of this run that a failed test left behind (the runner is ephemeral, so this is tidiness, not safety).
 		for (const e of [GH_FOREIGN, GL_FOREIGN, { name: "gh:github.com", account: "" }]) await rig?.seeder.remove(e.name, e.account).catch(() => undefined);
 		await rig?.dispose().catch((error: Error) => console.log(`forge rig: ${error.message.slice(0, 200)}`));
+		await stub?.close().catch(() => undefined);
+		const pathBefore = world.userPathBefore;
+		const realPath = world.realUserPath;
 		await disposeWorld(world);
 		if (aside.state === "active") await aside.leave(ioForSudo);
+		// Windows: the entry the app added is off again, and the value is what it was, type included (spec: step 7).
+		if (realPath) assert.deepEqual(await world.userPath.read(), pathBefore ?? null, "the user PATH is as it was before the run");
 	});
 
 	let first: ElectronApplication;
 	let page: Page;
+
+	// ---- steps 3 and 5 to 9 of the spec's list (task 15) ---------------------------------------------------------------------------------------------------------------------------
+	let panes: RpcPanes;
+	let stub: StubModel | undefined;
+	const hostPlatform = createPlatform();
+	const slotFile = (name: string) => join(world.layout.agent, "straw-boss", name);
+	const readJsonFile = <T>(file: string): T | undefined => {
+		try {
+			return JSON.parse(readFileSync(file, "utf8")) as T;
+		} catch {
+			return undefined;
+		}
+	};
+	interface Proc {
+		pid: number;
+		startTime: string | null;
+	}
+	const startRecord = () => readJsonFile<{ herdr: Proc | null; sb: Proc | null }>(join(world.layout.state, "start.json"));
+	const serverRecord = () => readJsonFile<{ pid: number; started?: string; gui?: { stopped?: boolean } }>(slotFile("server.json"));
+	const startLines = (): Array<Record<string, unknown>> => {
+		const file = join(world.layout.logs, "start.jsonl");
+		return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as Record<string, unknown>]; } catch { return []; } }) : [];
+	};
+	const startEventsSince = (event: string, since: number, skewMs = 0) => lineEventsSince(startLines(), event, since, skewMs);
+	/** On a failed step, the tail of the start log (events and their short details only): the CI log is all there is of a runner. */
+	const withStartTail = (fn: () => Promise<void>, name: string) => async (): Promise<void> => {
+		try {
+			await fn();
+		} catch (error) {
+			const tail = startLines().slice(-40).map((l) => `${String(l.t).slice(11, 23)} ${String(l.event)} ${["detail", "which", "pid", "kind", "exit"].filter((k) => l[k] !== undefined).map((k) => `${k}=${JSON.stringify(l[k]).slice(0, 120)}`).join(" ")}`);
+			console.log(`--- start.jsonl tail after "${name}" failed ---\n${tail.join("\n")}\n---`);
+			throw error;
+		}
+	};
+	const httpStatus = (url: string): Promise<number> =>
+		new Promise((resolve) => {
+			const req = httpRequest(url, { method: "GET", timeout: 5000 }, (res) => {
+				res.resume();
+				resolve(res.statusCode ?? 0);
+			});
+			req.on("timeout", () => req.destroy());
+			req.on("error", () => resolve(0));
+			req.end();
+		});
+	const inScreen = (app: ElectronApplication, code: string): Promise<unknown> =>
+		app.evaluate(({ webContents }, source) => webContents.getAllWebContents().find((w) => w.getURL().endsWith("screen.html"))?.executeJavaScript(source, true), code);
+	const shellView = () =>
+		inScreen(first, `(() => { const c = document.getElementById('card'); return { mode: document.body.dataset.mode, screen: c.hidden ? null : c.dataset.screen ?? null }; })()`) as Promise<{ mode: string; screen: string | null } | undefined>;
+	const shellVisible = () => first.evaluate(({ BaseWindow }) => (BaseWindow.getAllWindows()[0]?.contentView.children[1] as unknown as { getVisible(): boolean } | undefined)?.getVisible());
+	const sbCli = (...args: string[]) => {
+		const found = readInstalled(world.layout);
+		assert.ok(isInstalled(found));
+		return run(found.node, [found.sbCli, ...args], { env: childEnvOf(world), timeoutMs: 180_000 });
+	};
+	/** The sb server's pid, killed the way a crash would, after the platform confirms it is the app's own program. */
+	const killSb = async (): Promise<number> => {
+		const rec = serverRecord();
+		assert.ok(rec?.pid, "server.json names the sb server");
+		const info = (await hostPlatform.processes.inspect([rec.pid]))[0];
+		assert.ok(info?.executable?.startsWith(world.layout.tools.root), `the sb server runs from the tools folder: ${info?.executable}`);
+		process.kill(rec.pid, "SIGKILL");
+		return rec.pid;
+	};
+	/** A workspace of Herdr by its label, and one of its panes (a pi in a split of that pane is a member of the base, as a PM's own is). */
+	const baseOf = async (label: string): Promise<{ workspace: string; pane: string }> => {
+		const h = new WorldHerdr(world);
+		const parse = (text: string, key: "workspaces" | "panes"): Array<Record<string, unknown>> => ((JSON.parse(text) as { result: Record<string, Array<Record<string, unknown>>> }).result[key] ?? []);
+		const workspaces = parse((await h.cli(["workspace", "list"])).stdout, "workspaces");
+		const found = workspaces.find((w) => JSON.stringify(w).includes(label));
+		assert.ok(found, `no workspace labelled ${label}: ${workspaces.length} workspaces`);
+		const workspace = String(found.workspace_id);
+		const mine = (list: Array<Record<string, unknown>>) => list.filter((p) => p.workspace_id === workspace || p.workspace === workspace);
+		let inBase = mine(parse((await h.cli(["pane", "list"])).stdout, "panes"));
+		if (inBase.length === 0) inBase = parse((await h.cli(["pane", "list", "--workspace", workspace])).stdout, "panes");
+		assert.ok(inBase.length > 0, `no pane in ${workspace}: the workspace has the keys ${Object.keys(found).join(",")}`);
+		return { workspace, pane: String(inBase[0]?.pane_id) };
+	};
+	/** The quit: nothing is left under <root>/tools, Herdr's socket does not answer, and the stop sequence ran to its end and was ok (spec: step 8). */
+	const assertQuitClean = async (app: ElectronApplication, what: string): Promise<void> => {
+		const began = Date.now();
+		await app.close();
+		const deadline = Date.now() + 180_000;
+		while (Date.now() < deadline && ((await panes.underTools()).length > 0 || (await panes.herdrAnswers()))) await sleep(1000);
+		assert.deepEqual((await panes.underTools()).map((p) => `${p.pid} ${basename(p.executable ?? "")}`), [], `${what}: a program is left under <root>/tools`);
+		assert.equal(await panes.herdrAnswers(), false, `${what}: Herdr's socket still answers`);
+		const quit = lineEventsSince(logEvents(), "quit-stop", began, CLOCK_SKEW_MS).at(-1);
+		const stop = lineEventsSince(logEvents(), "stop-end", began, CLOCK_SKEW_MS).at(-1);
+		assert.ok(quit !== undefined && stop !== undefined, `${what}: the quit ran the stop sequence to its end`);
+		assert.equal(stop.herdrAnswers, false, `${what}: the stop saw Herdr's socket go quiet`);
+		assert.equal(quit.ok, true, `${what}: the quit's stop was not ok: ${JSON.stringify(stop)}`);
+		assert.deepEqual(stop.leftovers ?? [], [], `${what}: the stop reported a program left under tools`);
+	};
 
 	it("opens on the welcome screen in zh-TW from an empty root, with no WSL line", async () => {
 		assert.deepEqual(["wizard.json", "bootstrap.json", "current.json"].filter((f) => existsSync(join(world.layout.state, f))), [], "the root starts with no wizard or install record");
@@ -815,6 +921,29 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.ok(existsSync(join(world.home, "StrawBoss", "Straw Boss")), "the home base folder exists under the work folder");
 	});
 
+	it("step 3: every stage is verified, the status says live, primary and desk, one home base has one tower, and the clone is a base beside it", async () => {
+		const record = readJsonFile<{ stages: Record<string, { status: string; evidence: string }> }>(join(world.layout.state, "bootstrap.json"));
+		assert.ok(record, "state/bootstrap.json is there");
+		const stages = Object.entries(record.stages);
+		assert.ok(stages.length >= 10, `the install recorded its stages: ${stages.length}`);
+		assert.deepEqual(stages.filter(([, r]) => r.status !== "ok" || r.evidence === "").map(([name, r]) => `${name}: ${r.status}`), [], "every stage is verified");
+		const installed = readInstalled(world.layout);
+		assert.ok(isInstalled(installed));
+		const status = await run(installed.node, [installed.sbCli, "status"], { env: childEnvOf(world), timeoutMs: 120_000 });
+		assert.equal(status.code, 0);
+		const parsed = JSON.parse(status.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "{}") as Record<string, unknown>;
+		assert.deepEqual([parsed.state, parsed.primary, parsed.desk], ["live", true, true], statusSummary(status.stdout));
+		const h = new WorldHerdr(world);
+		const list = (text: string, key: string): Array<Record<string, unknown>> => ((JSON.parse(text) as { result: Record<string, Array<Record<string, unknown>>> }).result[key] ?? []);
+		const workspaces = list((await h.cli(["workspace", "list"])).stdout, "workspaces");
+		const towers = list((await h.cli(["pane", "list"])).stdout, "panes").filter((p) => (p.tokens as { sb_role?: string } | undefined)?.sb_role === "tower");
+		console.log(`herdr: ${workspaces.length} workspaces (${workspaces.map((w) => String(w.label ?? w.name ?? "?")).join(", ")}), ${towers.length} tower pane(s)`);
+		assert.equal(towers.length, 1, "one home base has one tower");
+		assert.equal(workspaces.filter((w) => JSON.stringify(w).includes("Hello World")).length, 1, "the clone is one base beside the home base");
+		assert.ok(workspaces.length >= 2, "the home base and the clone");
+		assert.ok(existsSync(join(workFolderNow(), "Straw Boss", ".git")) || existsSync(join(workFolderNow(), "Straw Boss")), "the home base folder exists");
+	});
+
 	let settings: Page;
 	const GH_OWNED = { name: "gh:github.com", account: "" };
 
@@ -997,6 +1126,148 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.deepEqual(items.shipped, shippedSafeStorage, "the shipped product's Safe Storage item is as it was");
 	});
 
+	// Step 5 to 8 of the spec's list run in the root the wizard just installed, with the app that installed it: a pi turn against the stub model, the follower, the panes, and the quit. The stub is the
+	// harness's own (`stub-model.ts`), written into the agent folder's `models.json` and default model, never configured by the app. On macOS the PM's startup file with the fake gh and git was
+	// written into the scratch home before the first launch (`before`).
+	let member: RpcPi | undefined;
+	let bossSeq = 0;
+	let clonePane: { workspace: string; pane: string } | undefined;
+	const clonePath = (): string => join(workFolderNow(), "hello-world");
+	/** `/boss <line>` typed into a pi of the clone's base: that pane is the PM's, where a `/boss` command is the PM's (the home base's own pane is the tower's prompt, which takes none). */
+	const boss = async (line: string): Promise<void> => {
+		assert.ok(clonePane, "the clone's base was found");
+		member ??= await panes.openRpcPi("member", clonePane.pane, clonePath());
+		const open = member;
+		const seen = open.lines().length;
+		const answer = await open.call({ id: `boss-${++bossSeq}`, type: "prompt", message: `/boss ${line}` }, 90_000).catch(async (error: Error) => {
+			await open.dump();
+			throw error;
+		});
+		assert.equal(answer.success, true, `/boss ${line}: ${JSON.stringify(answer)}`);
+		const told = open.lines().slice(seen).filter((l) => (l as { type?: string; method?: string }).type === "extension_ui_request" && (l as { method?: string }).method === "notify") as Array<{ message?: string; notifyType?: string }>;
+		assert.deepEqual(told.filter((n) => n.notifyType === "error").map((n) => n.message), [], `/boss ${line} reported an error`);
+	};
+
+	it("step 5: a pi turn through the stub model in the cloned repository's base", { timeout: 600_000 }, async () => {
+		stub = await startStubModel();
+		writeFileSync(join(world.layout.agent, "models.json"), modelsJson(stub.baseUrl));
+		const settingsFile = join(world.layout.agent, "settings.json");
+		writeFileSync(settingsFile, JSON.stringify({ ...(readJsonFile<Record<string, unknown>>(settingsFile) ?? {}), defaultProvider: "stub", defaultModel: "stub-1", enabledModels: ["stub/stub-1"] }, null, 2));
+		clonePane = await baseOf("Hello World");
+		const known = await panes.paneIds();
+		const programsBefore = await panes.toolPids();
+		const turn = await panes.openRpcPi("turn", clonePane.pane, clonePath());
+		try {
+			const sent = await turn.call({ id: "turn", type: "prompt", message: "Say hello." }, 60_000);
+			assert.equal(sent.success, true, JSON.stringify(sent));
+			await until("the stub model's answer", 180_000, () => strings(turn.lines()).some((s) => s.includes("Stub model: ready.")), 500);
+			await until("the turn to end", 60_000, () => turn.lines().some((l) => (l as { type?: string }).type === "agent_end"), 500);
+			assert.ok(stub.requests.some((r) => r.text.includes("Say hello.")), "the turn reached the stub model");
+		} catch (error) {
+			await turn.dump();
+			throw error;
+		} finally {
+			await panes.settlePanes(known, programsBefore);
+		}
+	});
+
+	it("step 6: `cli.mjs restart` is logged by pid change while the window stays live, and start.json holds the new pid with its start time", { timeout: 400_000 }, withStartTail(async () => {
+		const firstUrl = (await guiUrl(first)) as string;
+		assert.equal(await httpStatus(firstUrl), 200);
+		const before = startRecord()?.sb?.pid as number;
+		const since = Date.now();
+		const restarted = await sbCli("restart", "--reason", "e2e wizard");
+		assert.equal(restarted.code, 0, `cli.mjs restart: ${restarted.stdout.slice(0, 300)} ${restarted.stderr.slice(0, 300)}`);
+		const sb = await until("start.json to hold the new sb server with its start time", 120_000, () => {
+			const r = startRecord()?.sb;
+			return r && r.pid !== before && r.startTime ? r : undefined;
+		});
+		assert.notEqual(sb.pid, before);
+		await until("the restart in logs/start.jsonl", 30_000, () => startEventsSince("follow-restart", since).length >= 1);
+		assert.equal(await guiUrl(first), firstUrl, "the window stays on its page: a restart keeps the address");
+		assert.equal(await httpStatus(firstUrl), 200);
+		assert.equal(JSON.stringify(startRecord()).includes(`"pid":${before},`), false, "the old sb record is gone");
+	}, "restart"));
+
+	it("step 6: a killed sb server is followed within 15 s, and the new pid is recorded the same way", { timeout: 600_000 }, withStartTail(async () => {
+		const old = startRecord()?.sb?.pid as number;
+		const killed = await killSb();
+		const began = Date.now();
+		assert.equal(killed, old);
+		await until("the follower to act on the kill", 15_000, () => startEventsSince("follow-restart", began).length + startEventsSince("follow-gone", began).length > 0);
+		console.log(`followed the killed sb server after ${((Date.now() - began) / 1000).toFixed(1)} s`);
+		await until("the new sb server recorded", 180_000, () => {
+			const r = startRecord()?.sb;
+			return r && r.pid !== old ? r : undefined;
+		});
+		const url = (await until("the GUI view's address", 30_000, () => guiUrl(first))) as string;
+		await until("the GUI to answer 200", 120_000, async () => (await httpStatus(url)) === 200);
+		await until("the new sb start time", 120_000, () => startRecord()?.sb?.startTime);
+		console.log(`the killed sb server was back after ${((Date.now() - began) / 1000).toFixed(1)} s`);
+		assert.ok(startEventsSince("follow-restart", began).length + startEventsSince("follow-gone", began).length > 0);
+	}, "kill"));
+
+	it("step 6: `/boss gui stop` shows the shell screen, and Start brings the GUI back", { timeout: 900_000 }, withStartTail(async () => {
+		const since = Date.now();
+		try {
+			await boss("gui stop");
+			await until("the gui-stopped screen", 90_000, async () => (await shellView())?.screen === "gui-stopped");
+			assert.equal(await shellVisible(), true);
+			await inScreen(first, `document.getElementById('retry').click()`);
+			await until("the GUI to come back and the screen to go", 120_000, async () => {
+				const url = await guiUrl(first);
+				return url && (await httpStatus(url)) === 200 && (await shellVisible()) === false ? url : undefined;
+			});
+			assert.ok(startEventsSince("follow-up", since).some((l) => l.detail === "start button"), "the Start button ran `up`");
+			assert.equal(serverRecord()?.gui?.stopped ?? false, false);
+		} finally {
+			// The next step opens its own pi: one that has seen the server stop and start again is not the one that starts a pane.
+			await member?.close().catch(() => undefined);
+			member = undefined;
+		}
+	}, "gui stop"));
+
+	it("step 7: in a pane of the cloned repository's base, gh, git and pi resolve to the app's folders, and a subagent's do too", { timeout: 900_000 }, async () => {
+		assert.ok(clonePane, "the clone's base was found");
+		const known = await panes.paneIds();
+		const programsBefore = await panes.toolPids();
+		const parent = await panes.openRpcPi("parent", clonePane.pane, clonePath());
+		try {
+			const lookup = await parent.call({ id: "lookup", type: "bash", command: LOOKUP_COMMAND }, 180_000);
+			assert.equal(lookup.success, true, JSON.stringify(lookup));
+			const resolved = panes.resolutions(lookup.data?.output ?? "");
+			panes.assertAppFolders(resolved, ["gh", "git", "pi"]);
+			console.log(`pane resolves: ${JSON.stringify(Object.fromEntries(Object.entries(resolved).map(([k, v]) => [k, v.replace(/[^\x20-\x7e]/g, "?")])))}`);
+			// One subagent through the scripted stub: the parent calls `subagent`, the child runs the lookup in its bash tool, and the parent hears of its completion. The `bash` command above
+			// makes pi run a turn of its own, so the prompt is queued behind it when that turn still runs.
+			const dispatched = await parent.call({ id: "dispatch", type: "prompt", message: `${SUBAGENT_MARKER} go`, streamingBehavior: "followUp" }, 60_000);
+			assert.equal(dispatched.success, true, JSON.stringify(dispatched));
+			const heard = await until("the parent to hear of the child", 300_000, () => strings(parent.lines()).find((s) => s.includes(`Sub-agent "${CHILD_NAME}"`) && /completed|failed/.test(s)), 500).catch(async (error: Error) => {
+				await parent.dump();
+				throw error;
+			});
+			assert.match(heard, new RegExp(`Sub-agent "${CHILD_NAME}" completed`), `the child's result: ${heard.slice(0, 600)}`);
+			assert.ok(heard.includes(RESULT_PREFIX), "the child's final answer carries what it saw");
+			const child = panes.resolutions(heard);
+			panes.assertAppFolders(child, ["gh", "git", "pi"]);
+			if (isWindows) panes.assertAppFolders(child, ["bash"]);
+			if (isWindows) {
+				// The user PATH holds one entry of the app, `tools\shims`, and its registry value kept its type.
+				const now = await world.userPath.read();
+				const mine = (now?.value ?? "").split(";").filter((p) => p.toLowerCase().startsWith(world.root.toLowerCase()));
+				assert.deepEqual(mine.map((p) => p.toLowerCase()), [world.layout.tools.shims.toLowerCase()], "exactly one app entry on the user PATH");
+				if (world.userPathBefore) assert.equal(now?.kind, world.userPathBefore.kind, "the PATH value kept its registry type");
+			}
+		} finally {
+			await panes.settlePanes(known, programsBefore);
+		}
+	});
+
+	it("step 8: the quit leaves no Herdr or sb server process of this root, the Herdr socket goes quiet, and the stop ran to its end", { timeout: 400_000 }, async () => {
+		await assertQuitClean(first, "the first quit");
+		assert.equal(existsSync(join(world.layout.state, "start.json")), false, "nothing is left running, so start.json goes");
+	});
+
 	it("macOS: a launch whose HOME has no keychain stops Sign in again at the store probe at once, and no token reaches the disk", { skip: isWindows ? "macOS only" : false, timeout: 240_000 }, async () => {
 		await close(first);
 		const empty = mkdtempSync("/tmp/sbd-nokc-");
@@ -1024,7 +1295,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		if (existsSync(heldKey)) renameSync(heldKey, keyFile);
 	});
 
-	it("quits, and a later launch opens no wizard, reaches the GUI, and shows the banner in the language chosen", async () => {
+	it("step 9: a later launch opens no wizard, reaches the GUI in time, keeps the bases and the banner's language, and its quit leaves nothing", async () => {
 		await close(first);
 		const file = readWizard();
 		writeFileSync(wizardFile(), JSON.stringify({ ...file, locale: "zh-TW" }));
@@ -1035,11 +1306,65 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		console.log(relaunchNotice(Date.now() - began));
 		assert.ok(url);
 		assert.equal(readWizard().done, true);
+		assert.equal(await again.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length), 1);
 		const notices = await pageOf(again, "screen.html");
 		await notices.locator('[data-notice="wsl"]').waitFor({ timeout: 30_000 });
 		assert.equal(await notices.locator('[data-notice="wsl"] .notice-text').innerText(), zhTW.welcome.wsl, "the saved language wins over the OS language");
-		assert.equal(await again.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length), 1);
-		await close(again);
+		// The bases are kept: the home base's folder and the clone, as Herdr lists them and as the GUI shows them.
+		assert.ok(existsSync(join(workFolderNow(), "Straw Boss")), "the home base is still there");
+		const herdr = new WorldHerdr(world);
+		await until("the clone's base in Herdr's list after the relaunch", 90_000, async () => (await herdr.cli(["workspace", "list"])).stdout.includes("Hello World"), 1000);
+		await until("the clone's base in the page", 90_000, async () => String(await inGui(again, "document.body.innerText")).includes("Hello World"), 500);
+		await assertQuitClean(again, "the second quit");
+	});
+
+	it("step 8, adoption: the app's main process killed leaves the stack running, and the relaunch reaches the GUI, starts no second Herdr and logs start-time-adopted for both servers", { timeout: 600_000 }, async () => {
+		const herdrCount = async (): Promise<number> => {
+			let lowest = Number.POSITIVE_INFINITY;
+			for (let i = 0; i < 3; i++) {
+				lowest = Math.min(lowest, (await panes.underTools()).filter((p) => /^herdr(\.exe)?$/i.test(basename(p.executable ?? ""))).length);
+				if (i < 2) await sleep(700);
+			}
+			return lowest;
+		};
+		const live = await launch("en-US", { SBD_TEST_WSL_BASH: WSL_BASH });
+		await until("the GUI view to load the server's address", 240_000, () => guiUrl(live));
+		const record = await until("both start times in start.json", 120_000, () => {
+			const r = startRecord();
+			return r?.herdr?.startTime && r.sb?.startTime ? r : undefined;
+		});
+		const herdrProcesses = await herdrCount();
+		assert.ok(herdrProcesses >= 1, "Herdr runs from the tools folder");
+		const pid = await live.evaluate(() => process.pid);
+		process.kill(pid, "SIGKILL");
+		await until("the app's process to be gone", 60_000, () => {
+			try {
+				process.kill(pid, 0);
+				return undefined;
+			} catch {
+				return true;
+			}
+		}, 250);
+		await sleep(2000);
+		assert.equal(await panes.herdrAnswers(), true, "Herdr keeps running");
+		assert.equal((await hostPlatform.processes.inspect([record.sb?.pid as number]))[0]?.startTime !== null, true, "the sb server keeps running");
+		const began = Date.now();
+		const second = await launch("en-US", { SBD_TEST_WSL_BASH: WSL_BASH });
+		const url = await until("the GUI view to load the server's address", 45_000, () => guiUrl(second));
+		console.log(`relaunch after a killed app reached the GUI in ${((Date.now() - began) / 1000).toFixed(1)} s`);
+		assert.ok(url);
+		assert.equal(await herdrCount(), herdrProcesses, "no second Herdr");
+		const adopted = await until("the recorded pids to be held", 60_000, () => {
+			const r = startRecord();
+			return r?.herdr?.startTime && r.sb?.startTime ? r : undefined;
+		});
+		assert.equal(adopted.herdr?.pid, record.herdr?.pid);
+		assert.equal(adopted.sb?.pid, record.sb?.pid);
+		await until("the adoption to be logged for both servers", 60_000, () => {
+			const kinds = lineEventsSince(logEvents(), "start-time-adopted", began, CLOCK_SKEW_MS).map((l) => l.kind);
+			return kinds.includes("herdr") && kinds.includes("sb") ? true : undefined;
+		});
+		await assertQuitClean(second, "the quit after the adoption");
 	});
 
 	it("settings' Team recipe: an update served by a local fixture server shows its change list and applies; each fetch refusal shows its sentence; Keep and Replace (task 12)", { timeout: 1_800_000 }, async () => {
@@ -1171,6 +1496,68 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			// A test that failed must not leave its app running: the next launch would meet the single-instance lock and fail with `electron.launch: WebSocket error: read ECONNRESET`.
+			for (const a of apps) await close(a);
+		}
+	});
+
+	it("settings' Team recipe against the repository's raw URL: the check fetches the fixture over the internet, shows its change list, and Apply applies it (task 15)", { timeout: 1_800_000 }, async () => {
+		// No seam: the app's own fetch, with its SSRF rules (https, no proxy, the resolved address checked and dialled), reads the fixture from raw.githubusercontent.com. On `main` that is the
+		// spec's address; a run of another ref reads the fixture at its own ref (SBD_RECIPE_FIXTURE_REF), so a branch can be proved before it is merged.
+		const ref = process.env.SBD_RECIPE_FIXTURE_REF || "main";
+		const rawUrl = `https://raw.githubusercontent.com/wayne930242/straw-boss-desk/${ref}/app/test/fixtures/ci-update.strawboss.json`;
+		const fixture = JSON.parse(readFileSync(ciUpdateRecipe, "utf8")) as { version: string; updateUrl: string };
+		assert.equal(fixture.updateUrl, "https://raw.githubusercontent.com/wayne930242/straw-boss-desk/main/app/test/fixtures/ci-update.strawboss.json", "the fixture names its own address on main");
+		assert.equal(fixture.version, "2.0.0");
+		const activeFile = (): { version: string; updateUrl?: string } => {
+			const files = readdirSync(world.layout.recipe);
+			assert.equal(files.length, 1, `one active recipe: ${files.join(", ")}`);
+			return JSON.parse(readFileSync(join(world.layout.recipe, files[0] as string), "utf8")) as { version: string; updateUrl?: string };
+		};
+		// The recipe that points at the raw address is a file the PM chooses (Replace); it is older than the fixture, so the fixture is an update to it.
+		const mine = join(world.base, "ci-raw-recipe.json");
+		writeFileSync(mine, JSON.stringify({ ...activeFile(), version: "1.3.0", updateUrl: rawUrl }));
+		const app = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
+		try {
+			const notices = await pageOf(app, "screen.html");
+			await notices.locator("#open-settings").click();
+			const s = await pageOf(app, "settings.html");
+			await s.locator('button.nav-item[data-section="recipe"]').click();
+			await s.locator("#recipe-cards").waitFor({ timeout: 30_000 });
+			const updateCard = s.locator('li[data-role="update"]');
+			const stateOf = async (): Promise<string> => (await updateCard.getAttribute("data-state")) ?? "";
+			const settled = (what: string, ms: number, ok: string[]) =>
+				until(what, ms, async () => ok.includes(await stateOf()) || undefined, 500).catch(async (error: Error) => {
+					const events = logEvents().slice(-25).map((e) => JSON.stringify(e).slice(0, 260));
+					throw new Error(`${error.message}; the card says ${await updateCard.innerText()}; last events: ${events.join(" / ")}`);
+				});
+			await stubDialog(app, mine);
+			await s.locator("#recipe-replace").click();
+			await until("the chosen file to be offered", 30_000, async () => (await stateOf()) === "offered", 200);
+			await s.locator("#recipe-apply").click();
+			await settled("the chosen file to apply", 900_000, ["applied", "failed", "error"]);
+			assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			assert.deepEqual([activeFile().version, activeFile().updateUrl], ["1.3.0", rawUrl]);
+
+			// The check itself: a real fetch of the fixture, its change list first and nothing written.
+			const since = Date.now();
+			const before = readdirSync(world.layout.recipe).map((f) => readFileSync(join(world.layout.recipe, f), "utf8"));
+			await s.locator("#recipe-check").click();
+			await settled("the check to end", 90_000, ["offered", "refused", "idle", "kept", "error"]);
+			assert.equal(await stateOf(), "offered", `the raw fetch: ${await updateCard.innerText()}; ${JSON.stringify(lineEventsSince(logEvents(), "recipe-fetch-refused", since, CLOCK_SKEW_MS))}`);
+			const fetched = lineEventsSince(logEvents(), "recipe-fetched", since, CLOCK_SKEW_MS);
+			assert.deepEqual(fetched.map((e) => e.ok), [true], "the check fetched and validated the fixture");
+			assert.deepEqual(lineEventsSince(logEvents(), "recipe-fetch-refused", since, CLOCK_SKEW_MS), [], "no fetch rule refused it");
+			const changes = await s.locator("#recipe-changes li").evaluateAll((items) => items.map((i) => i.getAttribute("data-change")));
+			assert.deepEqual(changes, ["version", "instructions"]);
+			assert.match(await s.locator("#recipe-changes").innerText(), /2\.0\.0/);
+			assert.deepEqual(readdirSync(world.layout.recipe).map((f) => readFileSync(join(world.layout.recipe, f), "utf8")), before, "nothing was written by the check");
+			await shot(s, "recipe-raw-offered-zh-TW");
+			await s.locator("#recipe-apply").click();
+			await settled("the update to apply", 900_000, ["applied", "failed", "error"]);
+			assert.equal(await stateOf(), "applied", await updateCard.innerText());
+			assert.equal(activeFile().version, "2.0.0", "the fixture's version is the active one");
+			await shot(s, "recipe-raw-applied-zh-TW");
+		} finally {
 			for (const a of apps) await close(a);
 		}
 	});
