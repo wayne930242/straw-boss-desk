@@ -1223,6 +1223,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		if (left) await left.locator("#settings-back").click();
 		await pageOf(first, "screen.html");
 		const since = Date.now();
+		const known = await panes.paneIds();
+		const programsBefore = await panes.toolPids();
 		try {
 			await boss("gui stop");
 			await until("the gui-stopped screen", 90_000, async () => (await shellView())?.screen === "gui-stopped");
@@ -1236,9 +1238,11 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			assert.ok(startEventsSince("follow-up", since).some((l) => l.detail === "start button"), "the Start button ran `up`");
 			assert.equal(serverRecord()?.gui?.stopped ?? false, false);
 		} finally {
-			// The next step opens its own pi: one that has seen the server stop and start again is not the one that starts a pane.
+			// The next step opens its own pi: one that has seen the server stop and start again is not the one that starts a pane. The member's pane is closed and its programs are waited for, so
+			// that neither the next step's snapshot of the tools folder nor the quit finds a pi that is still ending (a run of the `all` dispatch: the stop reported OpenConsole.exe and node.exe left).
 			await member?.close().catch(() => undefined);
 			member = undefined;
+			await panes.settlePanes(known, programsBefore);
 		}
 	}, "gui stop"));
 
