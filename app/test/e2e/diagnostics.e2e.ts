@@ -176,12 +176,15 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		await shotBoth("idle");
 	});
 
-	it("reads the status of the running stack: live, started by the desk, and the version; never the address or the token", async () => {
+	it("reads the status of the running stack: running, started by the desk, and the version; never the address or the token", async () => {
 		await page.locator("#diag-status").click();
 		await page.locator('li.update-card[data-role="status"][data-state="ok"]').waitFor({ timeout: 90_000 });
 		const fields = await page.locator("#diag-status-fields li").evaluateAll((els) => els.map((e) => [e.getAttribute("data-field"), (e.textContent ?? "").trim()]));
 		assert.deepEqual(fields.map((f) => f[0]), ["state", "primary", "desk", "version"]);
-		assert.match(fields[0]?.[1] ?? "", /live/i);
+		// The server says `live`; the page says it in the catalog's words, and the raw word is not on it (T14-F010).
+		assert.equal(await page.locator('#diag-status-fields li[data-field="state"]').getAttribute("data-state"), "live");
+		assert.match(fields[0]?.[1] ?? "", /State: running/);
+		assert.doesNotMatch(fields[0]?.[1] ?? "", /live/i);
 		assert.doesNotMatch(await page.locator("#diag-cards").innerText(), /127\.0\.0\.1|http:\/\//, "no address on the page");
 		await shotBoth("status-ok");
 	});
