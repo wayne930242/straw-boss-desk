@@ -21,6 +21,7 @@ import { ALT_NODE_VERSION, altStack } from "../harness/alt-pins.ts";
 import { createWorld, disposeWorld, noteUserPath, realStack, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
+import { startTrouble } from "../harness/start-trouble.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { FeedServer, latestYml, makeTestKey, type TestKey } from "../fixtures/feed/feed-server.ts";
 
@@ -199,7 +200,10 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		writeFileSync(stackFiles(world.layout).active, `${JSON.stringify(realStack, null, "\t")}\n`);
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
 		appVersion = await app.evaluate(({ app: electronApp }) => electronApp.getVersion());
-		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, 500);
+		// A start that never reaches the GUI (task 15: a Windows runner) carries what the app logged and what ran.
+		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, 500).catch(async (error: Error) => {
+			throw new Error(`${error.message}\n--- diagnostics --- ${await startTrouble(world, { app })}`, { cause: error });
+		});
 		assert.equal(await guiStatus(url), 200);
 		// The reveal of a dmg must not open a Finder window on the runner.
 		await app.evaluate(({ shell }) => {

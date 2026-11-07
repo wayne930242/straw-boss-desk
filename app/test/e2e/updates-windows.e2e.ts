@@ -18,6 +18,7 @@ import { createPlatform } from "../../src/main/platform/index.ts";
 import { stackFiles } from "../../src/main/update/stack.ts";
 import { childEnvOf, createWorld, disposeWorld, noteUserPath, realStack, run, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
+import { startTrouble } from "../harness/start-trouble.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, readAsarFile } from "../harness/packaged.ts";
 import { buildIdentity } from "../../src/main/build.ts";
@@ -44,21 +45,6 @@ if (enabled && process.platform === "win32" && !hosted.run && hosted.fail) {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
-function logTails(dir: string, lines = 14, width = 360): string[] {
-	if (!existsSync(dir)) return [];
-	// The supervisor's and the shell's own logs come first and get more lines: the stage logs sort before `start.jsonl`, and the five thousand characters the message keeps were all theirs, so a
-	// start that never recorded itself (task 15: "timed out waiting for the stack", `start.json` missing) left no sign of what the app did.
-	const own = (name: string): boolean => name === "start.jsonl" || name === "shell.jsonl";
-	return [...readdirSync(dir)].sort((a, b) => Number(own(b)) - Number(own(a))).flatMap((name) => {
-		try {
-			return [`${name}: ${readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean).slice(own(name) ? -40 : -lines).map((l) => l.slice(0, own(name) ? 520 : width)).join(" | ")}`];
-		} catch {
-			return [];
-		}
-	});
-}
 
 async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 500): Promise<NonNullable<T>> {
 	const deadline = Date.now() + ms;
@@ -108,16 +94,9 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 				} catch {
 					parts.push("update.json: (missing)");
 				}
-				parts.push(`state folder: ${existsSync(world.layout.state) ? readdirSync(world.layout.state).join(", ") : "(none)"}`);
-				try {
-					const running = [...(await platform.processes.listUnder(world.layout.tools.root)), ...(await platform.processes.listUnder(installDir))];
-					parts.push(`running from tools or the install folder: ${running.map((p) => `${p.pid} ${p.executable?.split(/[\\/]/).pop() ?? "?"}`).join(", ") || "(none)"}`);
-				} catch (listError) {
-					parts.push(`running programs: (unreadable: ${(listError as Error).message.slice(0, 120)})`);
-				}
 				parts.push(`feed requests: ${feed.requests.slice(-12).join(", ")}`);
-				parts.push(...logTails(world.layout.logs));
-				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 9000)}`;
+				parts.push(await startTrouble(world, { app, alsoUnder: installDir, max: 8000 }));
+				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 11_000)}`;
 				throw error;
 			}
 		});

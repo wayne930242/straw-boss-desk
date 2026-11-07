@@ -26,6 +26,7 @@ import { writeWizardFile } from "../../src/main/wizard/state-file.ts";
 import { createWorld, disposeWorld, noteUserPath, runWorld, stopProcessesUnder, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase, realIO, type FixtureIO } from "../harness/hosted.ts";
+import { startTrouble } from "../harness/start-trouble.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
 import { createScratchKeychain, type ScratchKeychain } from "../harness/scratch-keychain.ts";
@@ -220,10 +221,8 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 		try {
 			url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), 500);
 		} catch (error) {
-			// What the shell page says (a start failure has its own screen) and what the logs end with: the only things to read when a runner's start does not come up.
-			const pages: string[] = [];
-			for (const w of app.windows()) pages.push(`${w.url().slice(-40)}: ${(await w.locator("body").innerText({ timeout: 3000 }).catch(() => "(unreadable)")).replace(/\s+/g, " ").slice(0, 700)}`);
-			throw new Error(`${(error as Error).message}\n--- diagnostics --- pages: ${pages.join(" ;; ")} ;; ${logTails(world.layout.logs).join(" ;; ")}`.slice(0, 6000), { cause: error });
+			// What the shell page says (a start failure has its own screen) and what the logs end with, the app's own first: the only things to read when a runner's start does not come up.
+			throw new Error(`${(error as Error).message}\n--- diagnostics --- ${await startTrouble(world, { app, max: 6000 })}`, { cause: error });
 		}
 		assert.equal(await guiStatus(url), 200);
 		if (process.platform === "darwin") {

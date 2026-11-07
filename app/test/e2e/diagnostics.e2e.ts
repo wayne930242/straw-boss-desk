@@ -19,6 +19,7 @@ import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
+import { startTrouble } from "../harness/start-trouble.ts";
 import { readZip } from "../harness/unzip.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
@@ -147,7 +148,10 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
 		writeWizardFile(world.layout, { schema: 1, step: "done", done: true, later: [], hostsIndex: 0, locale: "en" });
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
-		const url = await until("the GUI view to load the server's address", 300_000, guiUrl, 500);
+		// A start that never reaches the GUI (task 15: a Windows runner, 300 s, nothing else said) carries what the app logged and what ran.
+		const url = await until("the GUI view to load the server's address", 300_000, guiUrl, 500).catch(async (error: Error) => {
+			throw new Error(`${error.message}\n--- diagnostics --- ${await startTrouble(world, { app })}`, { cause: error });
+		});
 		assert.equal(await guiStatus(url), 200);
 		// A zip is shown in its folder: the reveal must not open a window on the runner, and the test learns the zip's name from the call.
 		await app.evaluate(({ shell }) => {
