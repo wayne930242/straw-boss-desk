@@ -464,6 +464,31 @@ describe("the rows of settings", () => {
 		assert.equal(r.accounts.views([{ kind: "gitlab", host: "gitlab.com" }])[0]?.state, "signed-in");
 	});
 
+	it("T14R2-F003: an entry the record holds as left is not called changed before the store is listed: the row is checking, then foreign when it is as the app left it beside a foreign sign-in, and left only when it changed", async () => {
+		const forges = [{ kind: "gitlab" as const, host: "gitlab.com" }];
+		const NAME = "glab:gitlab.com:token";
+		const session = (storeTime: string | null, recordedTime: string) => {
+			const r = rig();
+			mkdirSync(r.layout.state, { recursive: true });
+			writeFileSync(join(r.layout.state, "accounts.json"), JSON.stringify({ schema: 1, entries: [], left: [{ name: NAME, account: "", host: "gitlab.com", kind: "gitlab", modified: recordedTime }] }));
+			if (storeTime !== null) r.store.write(NAME, "", storeTime);
+			return r;
+		};
+		const beside = session("2026-11-04T01:00:02Z", "2026-11-04T01:00:02Z");
+		assert.equal(beside.accounts.views(forges)[0]?.state, "checking", "the first draw of a new session");
+		await beside.accounts.refresh(forges);
+		assert.equal(beside.accounts.views(forges)[0]?.state, "foreign", "as the app left it, so a foreign sign-in, not a change");
+		const changed = session("2026-11-04T01:00:09Z", "2026-11-04T01:00:02Z");
+		assert.equal(changed.accounts.views(forges)[0]?.state, "checking");
+		await changed.accounts.refresh(forges);
+		assert.equal(changed.accounts.views(forges)[0]?.state, "left", "changed afterwards");
+		const failed = session("2026-11-04T01:00:02Z", "2026-11-04T01:00:02Z");
+		failed.store.listError = "security dump-keychain exited 1";
+		assert.equal(failed.accounts.views(forges)[0]?.state, "checking");
+		await failed.accounts.refresh(forges);
+		assert.equal(failed.accounts.views(forges)[0]?.state, "unknown", "a listing that fails does not leave the row checking");
+	});
+
 	it("dispose ends a login that waits", async () => {
 		const r = rig();
 		await r.accounts.begin("github", "github.com");

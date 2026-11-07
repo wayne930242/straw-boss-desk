@@ -79,6 +79,18 @@ describe("settings: one card per host, ids that are the host's own", () => {
 		}
 	});
 
+	it("T14R2-F003: a row still checking the store shows a neutral badge and no sentence about a change, in both languages", () => {
+		for (const locale of ["en", "zh-TW"] as const) {
+			const card = drawSettings([forgeView("gitlab", "gitlab.com", { phase: "idle" }, "checking")], locale).querySelectorAll("li.forge-card")[0] as MiniElement;
+			assert.equal(card.querySelectorAll(".forge-note").length, 0, `${locale}: no note until the state is known`);
+			const badge = card.querySelectorAll(".badge")[0] as MiniElement;
+			assert.equal(badge.getAttribute("data-badge"), "checking");
+			assert.equal(badge.textContent, catalogs[locale].settings.accounts.checking);
+			assert.notEqual(catalogs[locale].settings.accounts.checking, catalogs[locale].settings.accounts.left);
+			assert.ok(!badge.className.split(/\s+/).includes("badge-failed"), "not the colour of a change");
+		}
+	});
+
 	it("says the state's sentence once: the note is left out while the flow speaks the same refusal", () => {
 		const foreign = forgeView("github", "github.com", { phase: "foreign", entries: [{ name: "gh:github.com", account: "someone" }], changed: [] }, "foreign");
 		const speaking = drawSettings([foreign]);

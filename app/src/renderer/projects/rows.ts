@@ -43,6 +43,7 @@ function doneSentences(ctx: RowsCtx, row: ProjectRow): string[] {
 	}
 	out.push(ctx.tr(row.reused ? "projects.done.reused" : "projects.done.cloned", { folder: row.folder }));
 	if (row.defaultBranch !== null) out.push(ctx.tr("projects.done.branch", { branch: row.defaultBranch }));
+	if (row.delivery !== undefined) out.push(ctx.tr(`projects.done.delivery.${row.delivery}`, { repository: row.label }));
 	return out;
 }
 

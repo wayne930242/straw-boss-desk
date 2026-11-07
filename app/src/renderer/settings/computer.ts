@@ -64,8 +64,11 @@ function confirmPanel(ctx: SettingsCtx, state: Extract<RemoveState, { phase: "co
 const problemLine = (tr: Tr, p: RemovalProblem): HTMLElement =>
 	h("li", { "data-step": p.step }, h("span", {}, tr(`settings.computer.remove.problem.${p.step}`)), p.detail === "" ? null : h("details", {}, h("summary", {}, tr("settings.diagnostics.details")), h("pre", { class: "remove-detail" }, p.detail)));
 
-/** What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. `guideShown`: the list of entries that stay above already has the guide's button, so there is one button on the screen. */
-function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[], guideShown: boolean): HTMLElement {
+/**
+ * What did not finish. Only the files step is tried again (when the app closes); the others are named with a pointer to the guide, because the record that knew about them is gone. That sentence carries
+ * the guide's button, whether or not an entry stays (SA-T14-6); the list of entries above has none then, so there is one button on the screen.
+ */
+function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[]): HTMLElement {
 	const { tr } = ctx;
 	const files = problems.some((p) => p.step === "files");
 	const others = problems.some((p) => p.step !== "files");
@@ -76,7 +79,7 @@ function problemsBox(ctx: SettingsCtx, problems: readonly RemovalProblem[], guid
 		h("ul", { class: "remove-entries" }, ...problems.map((p) => problemLine(tr, p))),
 		files ? h("p", { class: "note", "data-role": "retry-files" }, tr("settings.computer.remove.problemsLater")) : null,
 		others ? h("p", { class: "note", "data-role": "see-guide" }, tr("settings.computer.remove.problemsGuide")) : null,
-		others && !guideShown ? h("p", {}, h("button", { type: "button", id: "remove-guide-problems", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide"))) : null,
+		others ? h("p", {}, h("button", { type: "button", id: "remove-guide-problems", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide"))) : null,
 	);
 }
 
@@ -84,6 +87,8 @@ function donePanel(ctx: SettingsCtx, result: RemovalResult): HTMLElement {
 	const { tr } = ctx;
 	// A files step that failed changes the head: the files are not all deleted, and the page must not say they are (SA-T14-4).
 	const filesFailed = result.problems.some((p) => p.step === "files");
+	// The problems box points to the guide in its own words and holds the one guide button; the list of entries that stay has it only when that box does not (SA-T14-6).
+	const guideBelow = result.problems.some((p) => p.step !== "files");
 	return h(
 		"div",
 		{ class: "panel", id: "remove-done-panel", "data-state": "done", "data-files": filesFailed ? "failed" : "deleted" },
@@ -92,8 +97,8 @@ function donePanel(ctx: SettingsCtx, result: RemovalResult): HTMLElement {
 		h("p", { "data-role": "kept" }, keptSentence(tr, result.workFolder, "settings.computer.remove.doneKept", "settings.computer.remove.doneKeptNone")),
 		result.left.length === 0
 			? h("p", { class: "note", "data-role": "leaves" }, tr("settings.computer.remove.leavesNone"))
-			: h("div", { class: "finding", id: "remove-left" }, leftList(tr, result.left, tr("settings.computer.remove.leftTitle"), "leaves"), h("p", {}, h("button", { type: "button", id: "remove-guide", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide")))),
-		result.problems.length === 0 ? null : problemsBox(ctx, result.problems, result.left.length > 0),
+			: h("div", { class: "finding", id: "remove-left" }, leftList(tr, result.left, tr("settings.computer.remove.leftTitle"), "leaves"), guideBelow ? null : h("p", {}, h("button", { type: "button", id: "remove-guide", onclick: () => ctx.act({ type: "computer-open-guide" }) }, tr("settings.computer.remove.guide")))),
+		result.problems.length === 0 ? null : problemsBox(ctx, result.problems),
 		h("p", { class: "note" }, tr("settings.computer.remove.uninstall")),
 		h("div", { class: "update-buttons" }, h("button", { type: "button", id: "remove-quit", class: "primary", onclick: () => ctx.act({ type: "computer-quit" }) }, tr("settings.computer.remove.quit"))),
 	);

@@ -19,6 +19,8 @@ export type ForgeState =
 	| "foreign"
 	/** The app signed in, and its entry was changed afterwards by something else (**Ownership**). */
 	| "left"
+	/** The store has not been listed yet in this session, and the record cannot tell whether an entry it holds as `left` was changed or only left beside a foreign one: the row says nothing about it yet. */
+	| "checking"
 	/** The store could not be listed, so nothing is known. */
 	| "unknown";
 

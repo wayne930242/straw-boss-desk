@@ -139,13 +139,43 @@ describe("Remove all data: one panel per state", () => {
 		const path = drawComputer(result(["path", "logins"]));
 		assert.equal(path.querySelector('[data-role="retry-files"]'), null, "a failed sign-out or PATH step is never retried");
 		assert.ok(path.querySelector('[data-role="see-guide"]') && path.querySelector("#remove-guide-problems"));
-		// With entries that stay, the guide's button is already above: one button on the screen, not two.
+		// With entries that stay the guide's button is still the one beside the sentence that points to it: one button on the screen, not two (SA-T14-6).
 		const withLeft = drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: LEFT, problems: [{ step: "path", detail: "d" }] } });
 		assert.ok(withLeft.querySelector('[data-role="see-guide"]'));
-		assert.equal(withLeft.querySelector("#remove-guide-problems"), null);
+		assert.ok(withLeft.querySelector("#remove-guide-problems"));
+		assert.equal(withLeft.querySelector("#remove-guide"), null);
 		assert.equal(withLeft.querySelectorAll("button").filter((b) => b.getAttribute("id")?.startsWith("remove-guide")).length, 1);
 		const both = drawComputer(result(["files", "linear"]));
 		assert.ok(both.querySelector('[data-role="retry-files"]') && both.querySelector('[data-role="see-guide"]'));
+	});
+
+	it("SA-T14-6: the sentence that sends the PM to the guide has the guide's button in the same box, with or without an entry that stays, in both languages, and there is one button on the screen", () => {
+		const done = (left: LeftEntry[], steps: RemoveStep[], locale: Locale, acts: SettingsAction[] = []): MiniElement =>
+			drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left, problems: steps.map((step) => ({ step, detail: "d" })) } }, locale, acts);
+		const guideButtons = (c: MiniElement): MiniElement[] => c.querySelectorAll("button").filter((b) => b.getAttribute("id")?.startsWith("remove-guide"));
+		for (const locale of ["en", "zh-TW"] as const) {
+			for (const left of [[], LEFT]) {
+				const acts: SettingsAction[] = [];
+				const c = done(left, ["logins", "files"], locale, acts);
+				const box = c.querySelector("#remove-problems") as MiniElement;
+				assert.equal(box.querySelector('[data-role="see-guide"]')?.textContent, catalogs[locale].settings.computer.remove.problemsGuide, `${locale}: the sentence`);
+				const inBox = box.querySelectorAll("button");
+				assert.deepEqual(inBox.map((b) => b.id), ["remove-guide-problems"], `${locale}, ${left.length} entries: the button is in the sentence's box`);
+				assert.equal(inBox[0]?.textContent, catalogs[locale].settings.computer.remove.guide);
+				assert.equal(guideButtons(c).length, 1, `${locale}, ${left.length} entries: one guide button on the screen`);
+				click(c, "remove-guide-problems");
+				assert.deepEqual(acts, [{ type: "computer-open-guide" }]);
+			}
+		}
+		assert.equal(text(done([], ["path"], "zh-TW"), "#remove-guide-problems"), "手動移除的做法");
+		// No such sentence (the files step alone, or no problem): an entry that stays keeps the button of its own list.
+		for (const steps of [[], ["files"]] as RemoveStep[][]) {
+			const c = done(LEFT, steps, "en");
+			assert.deepEqual(guideButtons(c).map((b) => b.id), ["remove-guide"], `steps ${steps.join(",") || "none"}`);
+			assert.ok(c.querySelector("#remove-left #remove-guide"), "inside the list of entries that stay");
+			assert.equal(c.querySelector('[data-role="see-guide"]'), null);
+		}
+		assert.equal(guideButtons(done([], ["files"], "en")).length, 0, "nothing to point to when no entry stays and only the files step failed");
 	});
 
 	it("the result's condition for the next launch is about a folder that could not be deleted, not about not closing (F010)", () => {
@@ -213,7 +243,7 @@ describe("Remove all data: one panel per state", () => {
 		assert.equal(c.querySelector('#remove-left li[data-why="changed"]')?.getAttribute("data-entry"), "glab:gitlab.example.com:token");
 		assert.deepEqual(c.querySelectorAll("#remove-problems li").map((l) => l.getAttribute("data-step")), ["files", "path"]);
 		assert.match(text(c, "#remove-problems"), /EBUSY/);
-		assert.ok(c.querySelector("#remove-guide"));
+		assert.ok(c.querySelector("#remove-guide-problems"), "the one guide button sits with the sentence that points to the guide (SA-T14-6)");
 		click(c, "remove-quit");
 		assert.deepEqual(acts, [{ type: "computer-quit" }]);
 		const clean = drawComputer({ phase: "done", result: { root: PLAN.root, workFolder: null, left: [], problems: [] } });

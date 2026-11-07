@@ -161,6 +161,18 @@ describe("the projects step: one card per repository", () => {
 		assert.match(text({ opened: false, defaultBranch: "develop" }), /starting branch is now develop/);
 	});
 
+	it("says what the server told of the first message after the base opened, in both languages and in the sentence style of the card; sent and silence add nothing", () => {
+		const text = (r: Partial<ProjectRow>, locale: "en" | "zh-TW" = "en") => draw(view([row({ label: "Web app", phase: "done", opened: true, ...r })]), locale).querySelector("#project-0-note")?.textContent ?? "";
+		assert.equal(text({}), "Copied to web and opened.");
+		assert.equal(text({}, "zh-TW"), "已複製到 web 並開啟。");
+		assert.equal(text({ delivery: "unknown" }), "Copied to web and opened. Straw Boss cannot tell whether the first message reached the agent in Web app. Check the agent in the Straw Boss window before you send it again.");
+		assert.equal(text({ delivery: "not_sent" }), "Copied to web and opened. The first message was not sent to the agent in Web app. Send it from the Straw Boss window.");
+		assert.equal(text({ delivery: "unknown" }, "zh-TW"), "已複製到 web 並開啟。 Straw Boss 無法確定第一則訊息有沒有送到 Web app 的 agent。要再送一次之前，請先在 Straw Boss 視窗裡看一下那個 agent。");
+		assert.equal(text({ delivery: "not_sent" }, "zh-TW"), "已複製到 web 並開啟。 第一則訊息沒有送給 Web app 的 agent。請在 Straw Boss 視窗裡自己送出。");
+		// A row that opened nothing (a head-only run) says nothing of a message.
+		assert.ok(!/first message/.test(text({ opened: false, defaultBranch: "main", delivery: "unknown" })));
+	});
+
 	it("names the step that works, and the trust question that waits", () => {
 		assert.equal(draw(view([row({ phase: "working", step: "cloning" })], { running: true })).querySelector("#project-0-note")?.textContent, "Copying…");
 		assert.match(draw(view([row({ phase: "trust" })], { held: true })).querySelector("#project-0-note")?.textContent ?? "", /Straw Boss window/);

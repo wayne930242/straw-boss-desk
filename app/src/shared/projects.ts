@@ -45,6 +45,8 @@ export interface ProjectRow {
 	reused: boolean;
 	/** Done: the folder is open as a base. A head-only run of an update leaves it as it was. */
 	opened: boolean;
+	/** Done and opened: the server could not say the first message of the open arrived (`unknown`), or it was never typed (`not_sent`). Absent when there was none, or it was sent. */
+	delivery?: "unknown" | "not_sent";
 	/** Windows: the index entries of mode 120000 under `.agents`, `.pi` and `.claude`; null where the check does not run or found none. */
 	links: ProjectLinks | null;
 	failure: ProjectFailure | null;
