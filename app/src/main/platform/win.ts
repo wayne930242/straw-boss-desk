@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { win32 } from "node:path";
 import { execRunner } from "./exec.ts";
-import { CREDENTIAL_LIST_SCRIPT, CREDENTIAL_PROBE_SCRIPT, PROCESS_SCRIPT, USER_PATH_SCRIPT } from "./win-scripts.ts";
+import { createNativeHelper, PowerShellExit, type RunNative } from "./win-helper-cache.ts";
+import { CREDENTIAL_LIST_BODY, CREDENTIAL_PROBE_BODY, PROCESS_SCRIPT, USER_PATH_BODY } from "./win-scripts.ts";
 import { CredentialStoreError, type CommandRunner, type CredentialStore, type Locate, type Platform, type ProbeResult, type ProcessInfo, type Processes, type StoreEntry, type SystemTool, type UserPath, type UserPathValue } from "./types.ts";
 
 /** One PowerShell start costs 2 to 5 s (spec: Start times); a slow machine under antivirus may take much longer. */
@@ -61,8 +62,16 @@ async function powershell(run: CommandRunner, locate: Locate, script: string, en
 	const encoded = Buffer.from(script, "utf16le").toString("base64");
 	const r = await run(locate.system("powershell"), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], { env, timeoutMs });
 	if (r.timedOut) throw new Error(`PowerShell did not finish within ${timeoutMs / 1000} s`);
-	if (r.code !== 0) throw new Error(`PowerShell exited ${r.code}: ${firstLine(r.stderr || r.stdout)}`);
+	if (r.code !== 0) throw new PowerShellExit(r.code ?? -1, firstLine(r.stderr || r.stdout));
 	return r.stdout.trim();
+}
+
+/**
+ * The scripts that call Win32 run through one cached native helper (`win-helper-cache.ts`); `root` is the data root it is built under. Without a root the C# is compiled
+ * on every call, as before the cache.
+ */
+export function nativeRunner(run: CommandRunner, locate: Locate, root?: string, log?: (line: string) => void): RunNative {
+	return createNativeHelper({ root, call: (script, env) => powershell(run, locate, script, env), ...(log ? { log } : {}) });
 }
 
 const b64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
@@ -144,14 +153,18 @@ export function planRemove(current: UserPathValue | null, entry: string): { next
 export interface WinUserPathOptions {
 	run: CommandRunner;
 	locate: Locate;
+	/** The data root, where the compiled native helper is cached (the broadcast needs it). */
+	root?: string;
 	/** The HKCU subkey that holds `Path`. Default `Environment`; a test points it at a scratch key. */
 	key?: string;
 	/** Broadcast `WM_SETTINGCHANGE` after a write, so new terminals and Herdr panes see it. Default true. */
 	broadcast?: boolean;
 }
 
-export function createWinUserPath({ run, locate, key = "Environment", broadcast = true }: WinUserPathOptions): UserPath {
-	const call = (env: Record<string, string>) => powershell(run, locate, USER_PATH_SCRIPT, { SBD_KEY: key, ...env });
+export function createWinUserPath({ run, locate, root, key = "Environment", broadcast = true }: WinUserPathOptions): UserPath {
+	const native = nativeRunner(run, locate, root);
+	// Reading, and writing without the broadcast, never use the native helper, so they compile and load nothing.
+	const call = (env: Record<string, string>) => native(env.SBD_BROADCAST === "1" ? "native" : "none", USER_PATH_BODY, { SBD_KEY: key, ...env });
 
 	async function read(): Promise<UserPathValue | null> {
 		const answer = await call({ SBD_OP: "read" });
@@ -222,12 +235,13 @@ export function splitTarget(target: string, user: string): { name: string; accou
 	return target.endsWith(suffix) ? { name: target.slice(0, target.length - suffix.length), account: user } : { name: target, account: user };
 }
 
-export function createWinCredentialStore({ run, locate, log = () => {} }: { run: CommandRunner; locate: Locate; log?: (line: string) => void }): CredentialStore {
+export function createWinCredentialStore({ run, locate, root, log = () => {} }: { run: CommandRunner; locate: Locate; root?: string; log?: (line: string) => void }): CredentialStore {
+	const native = nativeRunner(run, locate, root, log);
 	return {
 		async probe(): Promise<ProbeResult> {
 			const target = `straw-boss-desk-probe-${randomBytes(6).toString("hex")}`;
 			try {
-				const answer = await powershell(run, locate, CREDENTIAL_PROBE_SCRIPT, { SBD_TARGET: target });
+				const answer = await native("native", CREDENTIAL_PROBE_BODY, { SBD_TARGET: target });
 				log(`credential probe: ${answer}`);
 				return answer === "ok" ? { ok: true } : { ok: false, reason: `Credential Manager refused a step (${answer})` };
 			} catch (error) {
@@ -241,7 +255,7 @@ export function createWinCredentialStore({ run, locate, log = () => {} }: { run:
 			for (const name of names) if (name === "" || /[|*?]/.test(name)) throw new CredentialStoreError(`not a credential service name: ${JSON.stringify(name)}`);
 			let stdout: string;
 			try {
-				stdout = await powershell(run, locate, CREDENTIAL_LIST_SCRIPT, { SBD_OP: "list", SBD_FILTERS: names.map((n) => `${n}*`).join("|") });
+				stdout = await native("native", CREDENTIAL_LIST_BODY, { SBD_OP: "list", SBD_FILTERS: names.map((n) => `${n}*`).join("|") });
 			} catch (error) {
 				throw new CredentialStoreError(`the credential listing failed: ${(error as Error).message}`);
 			}
@@ -254,7 +268,7 @@ export function createWinCredentialStore({ run, locate, log = () => {} }: { run:
 		async delete({ name, account }) {
 			let answer: string;
 			try {
-				answer = await powershell(run, locate, CREDENTIAL_LIST_SCRIPT, { SBD_OP: "delete", SBD_TARGET: b64(`${name}:${account}`) });
+				answer = await native("native", CREDENTIAL_LIST_BODY, { SBD_OP: "delete", SBD_TARGET: b64(`${name}:${account}`) });
 			} catch (error) {
 				throw new CredentialStoreError(`deleting ${name} failed: ${(error as Error).message}`);
 			}
@@ -264,13 +278,13 @@ export function createWinCredentialStore({ run, locate, log = () => {} }: { run:
 	};
 }
 
-export function createWin(options: { run?: CommandRunner; log?: (line: string) => void } = {}): Platform {
+export function createWin(options: { run?: CommandRunner; log?: (line: string) => void; root?: string } = {}): Platform {
 	const run = options.run ?? execRunner();
 	const locate = createWinLocate();
 	return {
 		locate,
 		processes: createWinProcesses(run, locate),
-		userPath: createWinUserPath({ run, locate }),
-		credentials: createWinCredentialStore({ run, locate, ...(options.log ? { log: options.log } : {}) }),
+		userPath: createWinUserPath({ run, locate, ...(options.root !== undefined ? { root: options.root } : {}) }),
+		credentials: createWinCredentialStore({ run, locate, ...(options.root !== undefined ? { root: options.root } : {}), ...(options.log ? { log: options.log } : {}) }),
 	};
 }

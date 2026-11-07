@@ -73,7 +73,7 @@ const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform:
 // Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
 // and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock. A launch that finds the removal's owner
 // alive hands over to it through that lock on the owner's folder and ends; one that finds the lock free goes on with the launch (`earlyLaunch`).
-const earlyPlatform = createPlatform();
+const earlyPlatform = createPlatform({ root });
 const early = await earlyLaunch({
 	argv: process.argv,
 	root,
@@ -102,7 +102,7 @@ const runtimeLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(
 const shellLog = new RuntimeLog({ dir: layout.logs, redactor: runtimeRedactor(secretPatterns), file: "shell.jsonl" });
 // The recipe validator is a plain module beside the recipe schema (`recipe/validate.mjs`), copied to `dist/assets/recipe` by `scripts/copy-assets.ts`; it is loaded from there, not bundled.
 const { validateRecipe, privateOrLocalHost } = (await import(pathToFileURL(join(assetsDir, "recipe", "validate.mjs")).href)) as { validateRecipe: ValidateRecipe; privateOrLocalHost: (hostname: string) => boolean };
-const platform = createPlatform();
+const platform = createPlatform({ root });
 const run = execRunner();
 
 // One `utilityProcess` per engine run (spec: Decisions, Where the engine runs); `engine.js` starts its message loop when it finds a parent port.

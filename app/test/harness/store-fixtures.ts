@@ -3,8 +3,13 @@
 // Seeded names look like gh's (`gh:<host>`, accounts "" and a user) but use a host under .example.test, so they can never be anyone's real sign-in.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { removeTree } from "../../src/main/bootstrap/fsutil.ts";
 import { createMacCredentialStore, createMacLocate } from "../../src/main/platform/mac.ts";
-import { createWinCredentialStore, createWinLocate } from "../../src/main/platform/win.ts";
+import { helperPath, helpersDir } from "../../src/main/platform/win-helper-cache.ts";
+import { createWinCredentialStore, createWinLocate, createWinUserPath } from "../../src/main/platform/win.ts";
 import type { CommandRunner, CredentialStore } from "../../src/main/platform/types.ts";
 import { defineFixture, type FixtureIO } from "./hosted.ts";
 
@@ -216,5 +221,62 @@ export const credentialProbe = defineFixture({
 			: (await io.run(`${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\cmdkey.exe`, ["/list"], { timeoutMs: 20_000 })).stdout;
 		assert.ok(!dump.includes("straw-boss-desk-probe"), "the probe left an entry in the store");
 		assert.ok(captured.some((line) => line.includes("probe")), "the probe logged its steps");
+	},
+});
+
+/** The native helper's cache on the real Windows PowerShell: one build, then loads, a corrupt file replaced, and the same answers each time. Timings go to the log, not to an assertion. */
+export const nativeHelperCache = defineFixture({
+	name: "native helper cache: the first call builds one DLL, later calls load it, a corrupt file is replaced, and the answers stay the same",
+	platforms: ["win32"],
+	async body(io: FixtureIO): Promise<void> {
+		const root = join(realpathSync.native(mkdtempSync(join(tmpdir(), "sbd-helper-"))), "root 測試");
+		const dll = helperPath(root);
+		const run: CommandRunner = (file, args, options) => io.run(file, args, options);
+		const lines: string[] = [];
+		const store = createWinCredentialStore({ run, locate: createWinLocate(), root, log: (line) => lines.push(line) });
+		const dlls = () => readdirSync(helpersDir(root)).filter((f) => f.startsWith("sbd-native-"));
+		const timed = async <T>(what: string, body: () => Promise<T>): Promise<T> => {
+			const t0 = Date.now();
+			try {
+				return await body();
+			} finally {
+				console.log(`native helper cache: ${what} took ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+			}
+		};
+		const nonce = randomBytes(5).toString("hex");
+		const scratchKey = `Software\\StrawBossDeskTest-${nonce}`;
+		try {
+			assert.deepEqual(await timed("the first probe (builds the helper)", () => store.probe()), { ok: true });
+			assert.deepEqual(dlls(), [basename(dll)], "exactly one helper file, named by the hash of its source");
+			assert.ok(statSync(dll).size > 2000, "a compiled assembly, not a stub");
+			const built = statSync(dll).mtimeMs;
+
+			assert.deepEqual(await timed("the second probe (loads the helper)", () => store.probe()), { ok: true });
+			assert.deepEqual(await timed("a listing of a name nothing has (loads the helper)", () => store.list([`gh:sbd-${nonce}.example.test`])), []);
+			await assert.rejects(store.delete({ name: `gh:sbd-${nonce}.example.test`, account: "x" }), /Win32 error 1168/, "the Win32 error comes through the loaded helper unchanged");
+			assert.equal(statSync(dll).mtimeMs, built, "loading never rebuilds the file");
+
+			// The registry broadcast lives in the same assembly: a write with the broadcast on a scratch key loads it and builds nothing.
+			const userPath = createWinUserPath({ run, locate: createWinLocate(), root, key: scratchKey });
+			await timed("a user PATH write with the broadcast (loads the helper)", async () => {
+				assert.deepEqual(await userPath.ensureFirst("C:\\sbd-test\\shims"), { changed: true });
+				assert.deepEqual(await userPath.remove("C:\\sbd-test\\shims"), { changed: true });
+			});
+			assert.equal(statSync(dll).mtimeMs, built);
+
+			// A file that will not load is deleted and built again, in the same call, and the answer is the one a good file gives.
+			writeFileSync(dll, "this is not an assembly");
+			assert.deepEqual(await timed("a probe over a corrupt file (deletes it, builds again)", () => store.probe()), { ok: true });
+			assert.equal(dlls().length, 1);
+			assert.ok(statSync(dll).size > 2000, "the corrupt file was replaced by a real assembly");
+			const rebuilt = statSync(dll).mtimeMs;
+			assert.deepEqual(await timed("the probe after the rebuild (loads the helper)", () => store.probe()), { ok: true });
+			assert.equal(statSync(dll).mtimeMs, rebuilt);
+			assert.ok(lines.some((l) => l.includes("would not load")), "the replacement is logged");
+			console.log(`native helper cache: files in the helpers folder: ${readdirSync(helpersDir(root)).join(", ")}`);
+		} finally {
+			await io.run(`${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\reg.exe`, ["delete", `HKCU\\${scratchKey}`, "/f"], { timeoutMs: 20_000 }).catch(() => undefined);
+			removeTree(join(root, ".."));
+		}
 	},
 });

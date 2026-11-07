@@ -72,7 +72,7 @@ app/                         the Electron app (package.json, electron-builder.js
 │  ├─ index.ts               single instance, lifecycle, menus, the window
 │  ├─ paths.ts               the app data layout and its checks
 │  ├─ env.ts                 the constructed environment for every child
-│  ├─ platform/              one interface per concern: Processes, UserPath, CredentialStore, Locate; win.ts and mac.ts behind each
+│  ├─ platform/              one interface per concern: Processes, UserPath, CredentialStore, Locate; win.ts and mac.ts behind each; win-scripts.ts (the PowerShell and the C#), win-helper-cache.ts (the compiled helper)
 │  ├─ bootstrap/             engine.ts (utilityProcess entry), graph.ts, stage.ts, state.ts, download.ts, extract.ts, log.ts, stages/*.ts
 │  ├─ runtime/               herdr.ts, sbup.ts (up and its failure table), stop.ts, follow.ts (from the kit), supervisor.ts, power.ts
 │  ├─ accounts/              claude.ts, forge.ts (from forge-cli.mjs and account-verdict.ps1), linear.ts, probe.ts, existing.ts (K1: the entry check and the record), token-search.ts (tests and diagnostics)
@@ -119,6 +119,7 @@ The kit uses the same Windows folder; a VM that ran the kit is reset before the 
 ├─ recipe/<id>.json
 ├─ state/            bootstrap.json, current.json (active tool versions), start.json, wizard.json, layout.json, accounts.json (the store entries the app created, each with the modification time it read right after its login, and those it created but did not remove, marked `left`; no secrets)
 ├─ logs/             shell.jsonl, bootstrap.jsonl, start.jsonl, per-stage logs
+├─ helpers/          Windows only: sbd-native-<16 hex>.dll, the compiled native helper (see Windows native helper)
 └─ electron/         app.setPath("userData"): Chromium's profile and caches
 ```
 
@@ -131,6 +132,20 @@ Constraints, each checked by the preflight stage and recorded once in `state/lay
 - **The root's path has a space on macOS** ("Application Support"). Every launcher and helper quotes its paths already; the macOS CI anchor runs under the default root, and the Windows one under a root with a space and CJK characters (**Workflows**), so a quoting bug fails CI on both.
 - **Chromium's profile is moved into `<root>/electron`**, so nothing lands in the roaming `%APPDATA%`. `app.setPath("userData")` runs before `requestSingleInstanceLock`, which is keyed on it. On Windows `safeStorage`'s key is wrapped by DPAPI and kept in `<root>/electron/Local State`, so **Repair** and **Collect diagnostics** never reset or remove that folder; only **Remove all data** does, last.
 - **Free space**: 3 GB, checked before the first download (the Windows install measured about 1.5 GB).
+
+### Windows native helper
+
+The Windows credential store (list, delete, probe) and the user-PATH broadcast call Win32 (`CredEnumerateW`, `CredWriteW`, `CredReadW`, `CredDeleteW`, `SendMessageTimeout`) from C# through PowerShell. `Add-Type -TypeDefinition` compiled that C# on every call, and a compile is slow where the compiler is slow: a one-line `Add-Type` took 52.6 s and the credential probe about 42 s on `windows-11-arm` (x64 Node, x64 PowerShell under emulation; **Build note: task 15**), against a PowerShell start of 2 to 5 s on `windows-2025`. The app now compiles the helper once and loads it afterwards, so a call costs one PowerShell start plus the load.
+
+- **One assembly.** `platform/win-scripts.ts` holds one C# class, `SbdNative` (`List`, `Delete`, `Probe`, `Broadcast`), instead of three separate compiles; the probe and the listing of the GitHub step's check therefore share one build. The scripts' operations, their ASCII output and their exit codes are unchanged. The process listing (`PROCESS_SCRIPT`) reads CIM and compiles nothing; a read of the user PATH, and a write without the broadcast, load nothing either.
+- **Where and what name.** `<root>/helpers/sbd-native-<first 16 hex digits of the SHA-256 of the C# source>.dll` (`platform/win-helper-cache.ts`). The hash is in the name, so an app version with other C# never loads an older helper; a stale file is just unused and goes with the root (**Remove all data**).
+- **First use.** The script compiles with `Add-Type -TypeDefinition … -OutputAssembly <helpers>/sbd-tmp-<guid>.dll`, then renames the temp file to the final name (`File.Move`, which fails if the name exists, so a lost race keeps the winner's file; a copy is the fallback when a loaded file will not rename). A reader never sees a half-written file. Temp files older than ten minutes are swept by the next build. If the caching itself fails (a folder that cannot be written), the script loads the file if one exists and otherwise compiles in memory, so its result does not depend on the cache.
+- **Later calls.** The main process looks for the file and, if it is there, sends a script with no C# in it that only runs `Add-Type -LiteralPath <file>` (a command line of about 3 KB instead of 19 KB).
+- **A file that will not load** (corrupt, locked, wrong build) makes that script exit 99 before any output. The app deletes that one file (only a name `sbd-native-<16 hex>.dll` directly inside `<root>/helpers`, checked before the delete) and runs the same script again with the compiling prelude, which writes the file anew. A script that fails for its own reasons (any other exit code) is not retried and deletes nothing. If the file cannot be deleted, the compiling prelude still gives the script its types.
+- **No long-lived process.** Every call is still one short PowerShell process that ends with its script; the kill rule (**Start times**) is untouched, and nothing keeps a PowerShell running between calls.
+- **Security.** The DLL lies under the app's own data root, which only the user can write (`%LOCALAPPDATA%`), the same trust as `<root>/tools`, whose programs the app already runs. The path is never taken from input: `helperPath(root)` builds it from the data root and a name made from the source's hash, refuses a root that is not absolute, and the delete refuses anything else. No file outside the data root is loaded. A process of the same user that can replace the DLL could equally replace `tools/node`, so the cache adds no new boundary. The helper still copies out only `TargetName`, `UserName` and `LastWritten`, and `Probe` reads back only the throwaway secret it wrote (**The code-host screens**).
+- **Without a root** (a test that builds the platform without one) the C# is compiled in memory on every call, as before.
+- **Tests.** Unit: the file name and the hash, the folder and the files the delete may touch, which prelude each case gets, the fallback after a load failure (delete, rebuild, no retry for other failures), the size of the command line. On the hosted Windows runner the fixture `native helper cache` runs the real PowerShell: one build, loads, a corrupt file replaced, the Win32 error 1168 unchanged, the broadcast through the loaded helper, with the times in the log.
 
 ## Bootstrap engine
 

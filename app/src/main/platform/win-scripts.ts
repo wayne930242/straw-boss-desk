@@ -1,18 +1,22 @@
 // The PowerShell helpers of the Windows implementations. Each script is plain text run with `-EncodedCommand` (so no quoting of a path with CJK
 // characters or a space is ever needed), takes its input from environment variables, and prints only ASCII: names, users, and registry values leave
 // as base64 of their UTF-8, so no console code page touches them. Avoid backticks and `${` here: the scripts are String.raw templates.
+//
+// The three scripts that call Win32 compile their C# once: `NATIVE_SOURCE` is one assembly, built into the app's own helpers folder on first use and loaded
+// from there afterwards (`win-helper-cache.ts`; spec: Windows native helper). A script is `prelude + body`: the prelude puts `[SbdNative]` in the session
+// (one of the three below), the body is the operation and does not know which prelude ran.
 
-/** Lists, and deletes, generic credentials. The C# struct names `CredentialBlob` as a bare pointer so it has its real size; nothing in this script reads it, copies it, or follows it. */
-export const CREDENTIAL_LIST_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-Add-Type -TypeDefinition @'
-using System;
+/**
+ * The one native helper, as C#. Credentials: `List` and `Delete` for the listing and the sign-out, `Probe` for the store check; `Broadcast` sends WM_SETTINGCHANGE.
+ * The struct names `CredentialBlob` as a bare pointer so it has its real size; nothing here reads it, copies it, or follows it, except `Probe`, which reads
+ * back the one throwaway secret it wrote itself.
+ */
+export const NATIVE_SOURCE = String.raw`using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class SbdCredentials {
+public static class SbdNative {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct CREDENTIAL {
         public uint Flags;
@@ -35,10 +39,19 @@ public static class SbdCredentials {
     private static extern bool CredEnumerateW(string filter, uint flags, out uint count, out IntPtr credentials);
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredWriteW(ref CREDENTIAL credential, uint flags);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CredDeleteW(string target, uint type, uint flags);
 
     [DllImport("advapi32.dll")]
     private static extern void CredFree(IntPtr buffer);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 
     private static string B64(string text) {
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(text == null ? "" : text));
@@ -78,59 +91,9 @@ public static class SbdCredentials {
         if (CredDeleteW(target, 1, 0)) return 0;
         return Marshal.GetLastWin32Error();
     }
-}
-'@
-$op = $env:SBD_OP
-if ($op -eq 'list') {
-    $filters = $env:SBD_FILTERS -split '\|'
-    [Console]::Out.Write([SbdCredentials]::List($filters))
-} elseif ($op -eq 'delete') {
-    $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SBD_TARGET))
-    [Console]::Out.Write([string][SbdCredentials]::Delete($target))
-} else {
-    throw 'unknown operation'
-}
-`;
 
-/** The store probe: writes, reads back, and deletes one throwaway generic credential of its own. Prints `ok` or `fail <step> <Win32 error>`. */
-export const CREDENTIAL_PROBE_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class SbdProbe {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct CREDENTIAL {
-        public uint Flags;
-        public uint Type;
-        public string TargetName;
-        public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-        public uint CredentialBlobSize;
-        public IntPtr CredentialBlob;
-        public uint Persist;
-        public uint AttributeCount;
-        public IntPtr Attributes;
-        public string TargetAlias;
-        public string UserName;
-    }
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CredWriteW(ref CREDENTIAL credential, uint flags);
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CredDeleteW(string target, uint type, uint flags);
-
-    [DllImport("advapi32.dll")]
-    private static extern void CredFree(IntPtr buffer);
-
-    public static string Run(string target) {
+    // Writes, reads back, and deletes one throwaway credential. Returns "ok" or "fail <step> <Win32 error>".
+    public static string Probe(string target) {
         byte[] secret = Encoding.Unicode.GetBytes("straw-boss-desk-probe");
         IntPtr blob = Marshal.AllocHGlobal(secret.Length);
         bool written = false;
@@ -164,15 +127,102 @@ public static class SbdProbe {
             Marshal.FreeHGlobal(blob);
         }
     }
-}
-'@
-[Console]::Out.Write([SbdProbe]::Run($env:SBD_TARGET))
-`;
 
-/** Reads, writes, and deletes the `Path` value of one HKCU subkey (default `Environment`), keeping its registry type and every %VAR% entry as written. */
-export const USER_PATH_SCRIPT = String.raw`
+    // Tells running programs that the user environment changed (HKCU\Environment), waiting at most 5 s for each.
+    public static void Broadcast() {
+        UIntPtr result;
+        SendMessageTimeout(new IntPtr(0xffff), 0x001A, UIntPtr.Zero, "Environment", 2, 5000, out result);
+    }
+}`;
+
+/** The exit code of a prelude that could not put `[SbdNative]` in the session from the cached file; the caller deletes that file and runs the build prelude. */
+export const HELPER_LOAD_EXIT = 99;
+/** The line the load prelude prints to standard error before it exits with `HELPER_LOAD_EXIT`. */
+export const HELPER_LOAD_MARKER = "sbd-helper-load-failed";
+
+const SCRIPT_HEAD = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+`;
+
+/** A script that never calls the helper: only the head. */
+export const NATIVE_PRELUDE_NONE = SCRIPT_HEAD;
+
+/** No cache (no helpers folder given): the C# is compiled in memory on every call, as before. */
+export const NATIVE_PRELUDE_MEMORY = `${SCRIPT_HEAD}$source = @'
+${NATIVE_SOURCE}
+'@
+Add-Type -TypeDefinition $source
+`;
+
+/** The cached file exists: load it, and say so by exit code when it will not load (corrupt, locked, from another build). Nothing is compiled. */
+export const NATIVE_PRELUDE_LOAD =
+	SCRIPT_HEAD +
+	String.raw`try {
+    Add-Type -LiteralPath $env:SBD_HELPER_DLL
+} catch {
+}
+if (-not ('SbdNative' -as [type])) {
+    [Console]::Error.WriteLine('${HELPER_LOAD_MARKER}')
+    exit ${HELPER_LOAD_EXIT}
+}
+`;
+
+/**
+ * The cached file is missing (first use, or deleted after a failed load): compile into a temp file beside it and rename that into place, so a reader
+ * never sees a half-written file. Any failure of the caching itself (a folder that cannot be written, a lost race for the name) leaves the types in
+ * the session some other way: loaded from the file that exists, else compiled in memory, so the script's result does not depend on the cache.
+ */
+export const NATIVE_PRELUDE_BUILD =
+	SCRIPT_HEAD +
+	`$source = @'
+${NATIVE_SOURCE}
+'@
+` +
+	String.raw`$dll = $env:SBD_HELPER_DLL
+try {
+    $dir = [IO.Path]::GetDirectoryName($dll)
+    [void][IO.Directory]::CreateDirectory($dir)
+    foreach ($old in [IO.Directory]::GetFiles($dir, 'sbd-tmp-*.dll')) {
+        if (([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($old)).TotalMinutes -gt 10) {
+            try { [IO.File]::Delete($old) } catch { }
+        }
+    }
+    $tmp = [IO.Path]::Combine($dir, 'sbd-tmp-' + [Guid]::NewGuid().ToString('N') + '.dll')
+    Add-Type -TypeDefinition $source -OutputAssembly $tmp
+    try { [IO.File]::Move($tmp, $dll) } catch { try { [IO.File]::Copy($tmp, $dll, $false) } catch { } }
+    try { [IO.File]::Delete($tmp) } catch { }
+} catch {
+}
+if (-not ('SbdNative' -as [type])) {
+    try { Add-Type -LiteralPath $dll } catch { }
+}
+if (-not ('SbdNative' -as [type])) {
+    Add-Type -TypeDefinition $source
+}
+`;
+
+/** Lists, and deletes, generic credentials. Nothing in this script reads a credential's secret, copies it, or follows its pointer. */
+export const CREDENTIAL_LIST_BODY = String.raw`
+$op = $env:SBD_OP
+if ($op -eq 'list') {
+    $filters = $env:SBD_FILTERS -split '\|'
+    [Console]::Out.Write([SbdNative]::List($filters))
+} elseif ($op -eq 'delete') {
+    $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SBD_TARGET))
+    [Console]::Out.Write([string][SbdNative]::Delete($target))
+} else {
+    throw 'unknown operation'
+}
+`;
+
+/** The store probe: writes, reads back, and deletes one throwaway generic credential of its own. Prints `ok` or `fail <step> <Win32 error>`. */
+export const CREDENTIAL_PROBE_BODY = String.raw`
+[Console]::Out.Write([SbdNative]::Probe($env:SBD_TARGET))
+`;
+
+/** Reads, writes, and deletes the `Path` value of one HKCU subkey (default `Environment`), keeping its registry type and every %VAR% entry as written. The write and delete ask for `SbdNative` only when they broadcast. */
+export const USER_PATH_BODY = String.raw`
 $sub = $env:SBD_KEY
 $op = $env:SBD_OP
 $hkcu = [Microsoft.Win32.Registry]::CurrentUser
@@ -209,22 +259,13 @@ if ($op -eq 'read') {
         throw 'unknown operation'
     }
     if ($env:SBD_BROADCAST -eq '1') {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class SbdBroadcast {
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
-}
-'@
-        $result = [UIntPtr]::Zero
-        [void][SbdBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+        [SbdNative]::Broadcast()
     }
     [Console]::Out.Write('ok')
 }
 `;
 
-/** Start time and executable of processes: Win32_Process reads ProcessId, ExecutablePath, and CreationDate only, never a command line. */
+/** Start time and executable of processes: Win32_Process reads ProcessId, ExecutablePath, and CreationDate only, never a command line. It compiles nothing. */
 export const PROCESS_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'

@@ -160,7 +160,7 @@ export function createEngine(deps: EngineDeps): Engine {
 
 		const layout = deps.layout ?? loadLayout({ root: config.root, home: config.home ?? homedir(), platform: platformName });
 		const logger = new Logger({ dir: layout.logs, redactor: live, ...deps.log });
-		const platform = deps.platform ?? createPlatform();
+		const platform = deps.platform ?? createPlatform({ root: layout.root });
 		const lock = await acquireEngineLock(layout, platform.processes);
 		try {
 			const stack = parseStack(config.stack);
