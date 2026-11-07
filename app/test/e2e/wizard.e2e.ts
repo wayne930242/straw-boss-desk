@@ -39,6 +39,7 @@ import { statusSummary } from "../harness/status-summary.ts";
 import { relaunchNotice } from "../harness/relaunch-time.ts";
 import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
 import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
+import { startTrouble } from "../harness/start-trouble.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, seedDownloads, WorldHerdr, type World } from "../harness/e2e-light.ts";
@@ -572,8 +573,21 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const relaunchedAt = new Date().toISOString();
 		const third = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		const again = await pageOf(third, "wizard.html");
-		// The relaunch resumes: it ends on the first sign-in step with the stack started.
-		await waitStep(again, "claude", 25 * 60_000);
+		// The relaunch resumes: it ends on the first sign-in step with the stack started. A passing run takes 5 to 6 minutes; three `windows-2025` jobs in about thirty sat here the whole 25 minutes with
+		// nothing printed (task 15: runs 42217940816, 42230310295, 42368188880), so the wait also stops at an install that ended on a failure, and either way says what the app did and what ran.
+		const relaunchTrouble = async (): Promise<string> => {
+			const text = await again.evaluate(() => ({ step: document.body.dataset.step ?? "", status: document.querySelector("[data-step='install']")?.getAttribute("data-status") ?? "", body: (document.querySelector("[data-step]")?.textContent ?? "").replace(/\s+/g, " ").slice(0, 900) })).catch(() => ({ step: "(page gone)", status: "", body: "" }));
+			const mine = events().filter((e) => typeof e.t === "string" && e.t >= relaunchedAt).slice(-60).map((e) => JSON.stringify(e).slice(0, 260));
+			const recordedNow = existsSync(join(world.layout.state, "bootstrap.json")) ? (JSON.parse(readFileSync(join(world.layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> }).stages : {};
+			return `page: step ${text.step}, install status ${text.status || "(none)"}: ${text.body} ;; stage records: ${Object.entries(recordedNow).filter(([, r]) => r.status !== "ok").map(([n, r]) => `${n}=${r.status}`).join(", ") || "(all ok)"} ;; events since the relaunch: ${mine.join(" | ")} ;; ${await startTrouble(world, { app: third, max: 5000 })}`;
+		};
+		const arrived = await until("the claude step, or an install that ended on a failure", 25 * 60_000, async () => {
+			if ((await stepOf(again)) === "claude") return "claude";
+			return (await again.locator("[data-step='install'][data-status='failed']").count()) > 0 ? "failed" : undefined;
+		}, 200).catch(async (error: Error) => {
+			throw new Error(`${error.message}\n--- diagnostics --- ${await relaunchTrouble()}`, { cause: error });
+		});
+		if (arrived === "failed") throw new Error(`the relaunch's install ended on a failure\n--- diagnostics --- ${await relaunchTrouble()}`);
 		page = again;
 		first = third;
 		const exitedAt = await exited;
