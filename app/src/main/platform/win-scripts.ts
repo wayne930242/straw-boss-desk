@@ -145,21 +145,44 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 `;
 
+// No script here calls a cmdlet from a module PowerShell has to find and import (Add-Type, New-Object, Get-CimInstance, Get-Process, Test-Path, ...). Measured on windows-11-arm
+// (x64 PowerShell 5.1 under emulation), the first such cmdlet of a process costs 41 to 48 s, whatever it is asked to do: `Get-Command Add-Type` alone took 40.8 s, `Add-Type -LiteralPath`
+// of a finished DLL 40.9 s, `New-Object` 48.2 s, `Get-CimInstance` 43.0 s, `Get-Process` 41.4 s; a built-in `ForEach-Object` took 0.03 s, `[Reflection.Assembly]::LoadFrom` 0.03 s,
+// the C# compiler through `CSharpCodeProvider` 1.3 s, and a WMI query through `ManagementObjectSearcher` 0.2 s. So these scripts use .NET types and the language only
+// (test/win-helper-cache.test.ts keeps it that way). On windows-2025 the same cmdlets cost well under a second, which is why this stayed unseen.
+
+/** Compiles `NATIVE_SOURCE` with the C# compiler of .NET Framework, as `Add-Type` does, but without the cmdlet: to `$Output` when given, else in memory. */
+const BUILD_FUNCTION = String.raw`function Build-SbdNative([string]$Source, [string]$Output) {
+    $provider = [Microsoft.CSharp.CSharpCodeProvider]::new()
+    $options = [System.CodeDom.Compiler.CompilerParameters]::new()
+    [void]$options.ReferencedAssemblies.Add('System.dll')
+    [void]$options.ReferencedAssemblies.Add('System.Core.dll')
+    if ($Output) {
+        $options.GenerateInMemory = $false
+        $options.OutputAssembly = $Output
+    } else {
+        $options.GenerateInMemory = $true
+    }
+    $result = $provider.CompileAssemblyFromSource($options, $Source)
+    if ($result.Errors.HasErrors) { throw ('the native helper did not compile: ' + $result.Errors[0].ToString()) }
+}
+`;
+
 /** A script that never calls the helper: only the head. */
 export const NATIVE_PRELUDE_NONE = SCRIPT_HEAD;
 
-/** No cache (no helpers folder given): the C# is compiled in memory on every call, as before. */
-export const NATIVE_PRELUDE_MEMORY = `${SCRIPT_HEAD}$source = @'
+/** No cache (no data root given): the C# is compiled in memory on every call. */
+export const NATIVE_PRELUDE_MEMORY = `${SCRIPT_HEAD}${BUILD_FUNCTION}$source = @'
 ${NATIVE_SOURCE}
 '@
-Add-Type -TypeDefinition $source
+Build-SbdNative $source ''
 `;
 
 /** The cached file exists: load it, and say so by exit code when it will not load (corrupt, locked, from another build). Nothing is compiled. */
 export const NATIVE_PRELUDE_LOAD =
 	SCRIPT_HEAD +
 	String.raw`try {
-    Add-Type -LiteralPath $env:SBD_HELPER_DLL
+    [void][Reflection.Assembly]::LoadFrom($env:SBD_HELPER_DLL)
 } catch {
 }
 if (-not ('SbdNative' -as [type])) {
@@ -175,6 +198,7 @@ if (-not ('SbdNative' -as [type])) {
  */
 export const NATIVE_PRELUDE_BUILD =
 	SCRIPT_HEAD +
+	BUILD_FUNCTION +
 	`$source = @'
 ${NATIVE_SOURCE}
 '@
@@ -189,16 +213,16 @@ try {
         }
     }
     $tmp = [IO.Path]::Combine($dir, 'sbd-tmp-' + [Guid]::NewGuid().ToString('N') + '.dll')
-    Add-Type -TypeDefinition $source -OutputAssembly $tmp
+    Build-SbdNative $source $tmp
     try { [IO.File]::Move($tmp, $dll) } catch { try { [IO.File]::Copy($tmp, $dll, $false) } catch { } }
     try { [IO.File]::Delete($tmp) } catch { }
 } catch {
 }
 if (-not ('SbdNative' -as [type])) {
-    try { Add-Type -LiteralPath $dll } catch { }
+    try { [void][Reflection.Assembly]::LoadFrom($dll) } catch { }
 }
 if (-not ('SbdNative' -as [type])) {
-    Add-Type -TypeDefinition $source
+    Build-SbdNative $source ''
 }
 `;
 
@@ -265,20 +289,41 @@ if ($op -eq 'read') {
 }
 `;
 
-/** Start time and executable of processes: Win32_Process reads ProcessId, ExecutablePath, and CreationDate only, never a command line. It compiles nothing. */
+/**
+ * Start time and executable of processes: Win32_Process reads ProcessId, ExecutablePath, and CreationDate only, never a command line. It queries WMI through
+ * `System.Management` and reads the creation date's DMTF text itself (`yyyymmddHHMMSS.ffffff+UUU`, UUU the offset in minutes), which gives the instant `Get-CimInstance` gave,
+ * to the microsecond, in UTC with seven fraction digits. It compiles nothing and calls no cmdlet.
+ */
 export const PROCESS_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$wanted = @()
-if ($env:SBD_PIDS) { $wanted = @($env:SBD_PIDS -split ',' | ForEach-Object { [int]$_ }) }
-$lines = New-Object System.Collections.ArrayList
-foreach ($p in (Get-CimInstance -ClassName Win32_Process -Property ProcessId,ExecutablePath,CreationDate)) {
-    if ($env:SBD_PIDS -and ($wanted -notcontains [int]$p.ProcessId)) { continue }
-    $exe = ''
-    if ($p.ExecutablePath) { $exe = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$p.ExecutablePath)) }
-    $started = ''
-    if ($p.CreationDate) { $started = $p.CreationDate.ToUniversalTime().ToString('o') }
-    [void]$lines.Add(([string]$p.ProcessId) + ' ' + $exe + ' ' + $started)
+[void][Reflection.Assembly]::Load('System.Management, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a')
+$wanted = [System.Collections.Generic.HashSet[int]]::new()
+if ($env:SBD_PIDS) {
+    foreach ($token in $env:SBD_PIDS.Split(',')) { [void]$wanted.Add([int]$token) }
 }
-[Console]::Out.Write(($lines -join [string][char]10))
+$lines = [System.Collections.Generic.List[string]]::new()
+$searcher = [System.Management.ManagementObjectSearcher]::new('SELECT ProcessId,ExecutablePath,CreationDate FROM Win32_Process')
+try {
+    foreach ($p in $searcher.Get()) {
+        $id = [int]$p.Properties['ProcessId'].Value
+        if ($env:SBD_PIDS -and -not $wanted.Contains($id)) { continue }
+        $exe = ''
+        $path = $p.Properties['ExecutablePath'].Value
+        if ($path) { $exe = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$path)) }
+        $started = ''
+        $created = $p.Properties['CreationDate'].Value
+        if ($created) {
+            $text = [string]$created
+            $utc = [DateTime]::new([int]$text.Substring(0, 4), [int]$text.Substring(4, 2), [int]$text.Substring(6, 2), [int]$text.Substring(8, 2), [int]$text.Substring(10, 2), [int]$text.Substring(12, 2), [DateTimeKind]::Utc)
+            $utc = $utc.AddTicks([long]$text.Substring(15, 6) * 10).AddMinutes(-[int]$text.Substring(21))
+            $started = $utc.ToString('o')
+        }
+        $lines.Add(([string]$id) + ' ' + $exe + ' ' + $started)
+        $p.Dispose()
+    }
+} finally {
+    $searcher.Dispose()
+}
+[Console]::Out.Write([string]::Join([string][char]10, $lines))
 `;

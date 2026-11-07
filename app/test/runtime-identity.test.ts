@@ -188,7 +188,7 @@ describe("the listing and the reads never touch a process command line", () => {
 	});
 
 	it("Windows: the one call reads ProcessId, ExecutablePath and CreationDate and never the command line", () => {
-		assert.match(PROCESS_SCRIPT, /-Property ProcessId,ExecutablePath,CreationDate/);
+		assert.match(PROCESS_SCRIPT, /SELECT ProcessId,ExecutablePath,CreationDate FROM Win32_Process/);
 		assert.ok(!/CommandLine/i.test(PROCESS_SCRIPT));
 	});
 

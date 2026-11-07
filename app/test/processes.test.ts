@@ -37,6 +37,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 describe("Processes", () => {
 	it("reads the executable and a stable start token of a running process, and lists it under its folder", { timeout: 120_000 }, async () => {
+		const spawnedAt = Date.now();
 		const { child, dir, exe } = startChild();
 		const pid = child.pid ?? 0;
 		// The process may not have mapped its executable the instant spawn returns.
@@ -46,6 +47,12 @@ describe("Processes", () => {
 		assert.equal(basename(info.executable).toLowerCase(), basename(exe).toLowerCase());
 		assert.ok(info.executable.toLowerCase().includes("sbd 測試"), `the executable path keeps its folder: ${info.executable}`);
 		assert.ok(info.startTime && info.startTime.length > 0, "a start token");
+		// On Windows the token is the start as an ISO 8601 UTC instant (read from WMI's DMTF text), so it can be checked against the clock.
+		if (process.platform === "win32") {
+			assert.match(info.startTime, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/);
+			const at = Date.parse(info.startTime);
+			assert.ok(at >= spawnedAt - 10_000 && at <= Date.now() + 10_000, `the start ${info.startTime} is when the process was started (${new Date(spawnedAt).toISOString()})`);
+		}
 		const again = (await processes.inspect([pid]))[0];
 		assert.equal(again?.startTime, info.startTime, "the token is the same on a second read");
 

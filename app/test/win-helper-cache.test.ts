@@ -47,7 +47,7 @@ function recorder(answer: (index: number, script: string, env: Record<string, st
 
 const ok = (stdout = "ok") => ({ code: 0, stdout });
 const loadFailure = { code: HELPER_LOAD_EXIT, stderr: "sbd-helper-load-failed" };
-const usesBuild = (script: string) => script.includes("-OutputAssembly");
+const usesBuild = (script: string) => script.includes("[IO.File]::Move($tmp, $dll)");
 const usesLoad = (script: string) => script.includes("exit 99") && !usesBuild(script);
 
 describe("helper file name and place", () => {
@@ -198,7 +198,7 @@ describe("which prelude a call gets", () => {
 		await native("none", USER_PATH_BODY, { SBD_OP: "read" });
 		assert.equal(calls.length, 1);
 		assert.ok(calls[0]?.script.startsWith(NATIVE_PRELUDE_NONE));
-		assert.equal(calls[0]?.script.includes("Add-Type"), false);
+		assert.equal(calls[0]?.script.includes("Build-SbdNative"), false);
 		assert.equal(calls[0]?.env.SBD_HELPER_DLL, undefined);
 	});
 
@@ -215,11 +215,25 @@ describe("which prelude a call gets", () => {
 describe("the scripts themselves", () => {
 	it("compile the C# in one place: the three bodies hold none, and only the helper's types are called", () => {
 		for (const body of [CREDENTIAL_LIST_BODY, CREDENTIAL_PROBE_BODY, USER_PATH_BODY]) {
-			assert.equal(body.includes("Add-Type"), false);
+			assert.equal(body.includes("Build-SbdNative"), false);
 			assert.equal(body.includes("DllImport"), false);
 		}
-		assert.equal(PROCESS_SCRIPT.includes("Add-Type"), false, "the process listing reads CIM and compiles nothing");
+		assert.equal(PROCESS_SCRIPT.includes("Add-Type"), false, "the process listing reads WMI and compiles nothing");
 		assert.equal(CREDENTIAL_PROBE_BODY.includes("[SbdNative]::Probe($env:SBD_TARGET)"), true);
+	});
+
+	it("call no cmdlet that PowerShell must find in a module: each one costs 41 to 48 s on windows-11-arm, and these scripts run on every check", () => {
+		// Measured on the hosted ARM runner (spec: Windows native helper): Add-Type, New-Object, Get-CimInstance, Get-Process and Get-Command each cost that for the first call in a process.
+		const moduleCmdlet = /\b(?:Add|Get|Set|New|Remove|Test|Join|Split|Select|Where|Sort|Measure|Import|Invoke|Write|Out|Start|Stop|Convert|ConvertTo|ConvertFrom|Export|Compare|Format)-[A-Z][A-Za-z]+/g;
+		const scripts: Record<string, string> = {
+			none: NATIVE_PRELUDE_NONE + USER_PATH_BODY, memory: NATIVE_PRELUDE_MEMORY + CREDENTIAL_LIST_BODY + CREDENTIAL_PROBE_BODY, load: NATIVE_PRELUDE_LOAD + CREDENTIAL_LIST_BODY,
+			build: NATIVE_PRELUDE_BUILD + CREDENTIAL_PROBE_BODY, process: PROCESS_SCRIPT,
+		};
+		for (const [name, script] of Object.entries(scripts)) {
+			// The C# is text for the compiler, not PowerShell.
+			const withoutCs = script.split(NATIVE_SOURCE).join("");
+			assert.deepEqual(withoutCs.match(moduleCmdlet) ?? [], [], `${name} calls a cmdlet`);
+		}
 	});
 
 	it("keep the Win32 surface the cache replaced: list, delete, probe, and the settings-change broadcast", () => {
@@ -232,7 +246,7 @@ describe("the scripts themselves", () => {
 	});
 
 	it("only ever load the file named by the app, and clean only temp files of their own kind", () => {
-		assert.ok(NATIVE_PRELUDE_LOAD.includes("Add-Type -LiteralPath $env:SBD_HELPER_DLL"));
+		assert.ok(NATIVE_PRELUDE_LOAD.includes("[Reflection.Assembly]::LoadFrom($env:SBD_HELPER_DLL)"));
 		assert.ok(NATIVE_PRELUDE_BUILD.includes("GetFiles($dir, 'sbd-tmp-*.dll')"));
 		assert.ok(NATIVE_PRELUDE_BUILD.includes("[IO.File]::Move($tmp, $dll)"), "a temp name, then a rename");
 	});
@@ -275,7 +289,7 @@ describe("through the Windows stores", () => {
 	it("without a root keeps the old behavior: compile in memory, every call", async () => {
 		const { run, calls } = recorder(() => ok("ok"));
 		await createWinCredentialStore({ run, locate }).probe();
-		assert.ok(calls[0]?.script.includes("Add-Type -TypeDefinition $source"));
+		assert.ok(calls[0]?.script.includes("Build-SbdNative $source ''"));
 		assert.equal(usesBuild(calls[0]?.script ?? ""), false);
 	});
 
@@ -285,7 +299,7 @@ describe("through the Windows stores", () => {
 		const quiet = createWinUserPath({ run, locate, root, broadcast: false, key: "Software\\sbd-test" });
 		await quiet.read();
 		await quiet.ensureFirst("C:\\x");
-		for (const c of calls) assert.equal(c.script.includes("Add-Type"), false, "no helper without the broadcast");
+		for (const c of calls) assert.equal(c.script.includes("Build-SbdNative"), false, "no helper without the broadcast");
 		const before = calls.length;
 		const loud = createWinUserPath({ run, locate, root, key: "Software\\sbd-test" });
 		await loud.ensureFirst("C:\\x");
