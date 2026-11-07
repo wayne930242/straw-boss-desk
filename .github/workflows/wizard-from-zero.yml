@@ -25,9 +25,10 @@ on:
 permissions:
   contents: read
 
-# A push cancels the run of the branch's earlier push; a dispatched run has a group of its own, so five of them can run side by side.
+# A push cancels the run of the branch's earlier push; a dispatched run and the nightly have a group of their own, so five dispatches can run side by side and a push to main (the same ref as the
+# nightly's) neither cancels the nightly nor is cancelled by it. Groups do not keep two runs off the shared GitLab test branch: see the build note's "Runs of the anchor must not overlap".
 concurrency:
-  group: wizard-from-zero-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  group: wizard-from-zero-${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 defaults:

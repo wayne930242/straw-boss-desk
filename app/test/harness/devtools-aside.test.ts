@@ -136,4 +136,20 @@ describe("developer tools moved aside", () => {
 		assert.ok(strict.state === "active");
 		await assert.rejects(strict.enter(other), /still runs/, "only the value 1 counts");
 	});
+
+	for (const [what, answering] of [
+		["xcode-select -p names a developer directory", "/usr/bin/xcode-select"],
+		["xcrun --find git finds a git", "/usr/bin/xcrun"],
+	] as const) {
+		it(`with SBD_ASIDE_GIT_MAY_RUN=1 the scope still refuses when ${what}, because tools the move missed are still there (T15R-F001)`, async () => {
+			const io = gitStillRuns();
+			const run = io.run;
+			io.run = async (command, args, options) => (command === answering ? { code: 0, stdout: "/Library/Developer/CommandLineTools\n", stderr: "" } : run(command, args, options));
+			const before = new Set(io.disk);
+			const scope = developerToolsAsideScope({ ...hostedMac, env: { ...hostedMac.env, SBD_ASIDE_GIT_MAY_RUN: "1" } });
+			assert.ok(scope.state === "active");
+			await assert.rejects(scope.enter(io), /\/usr\/bin\/git still runs .*SBD_ASIDE_GIT_MAY_RUN=1 goes on only when xcode-select -p and xcrun --find git both fail/);
+			assert.deepEqual(io.disk, before, "the tools are back");
+		});
+	}
 });

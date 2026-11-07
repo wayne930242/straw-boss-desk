@@ -93,13 +93,16 @@ export function developerToolsAsideScope(ctx: GateContext = currentContext()): A
 				const seen = `moved ${JSON.stringify(moved)}; xcode-select -p: ${first(select.stdout || select.stderr)}; git --version: ${first(git.stdout || git.stderr)}; xcrun --find git: ${first(where.stdout || where.stderr)}; /Applications: ${apps.stdout.split("\n").filter((n) => /xcode|developer/i.test(n)).join(", ")}; /Library/Developer: ${dev.stdout.split("\n").slice(0, 8).join(" | ")}`;
 				// macos-15-intel's image answers `git --version` from /usr/bin/git with git 2.55.0 while no developer tools exist (`xcrun --find git` says none were found), so that path is not the stub
 				// there. The nightly workflow sets SBD_ASIDE_GIT_MAY_RUN=1 for that runner alone: the tools are still aside, only the "a stub call fails loudly" half of the fixture cannot hold, and the
-				// run says so as a warning. Everywhere else the refusal stands.
-				if (ctx.env.SBD_ASIDE_GIT_MAY_RUN === "1") {
+				// run says so as a warning. It holds only while the machine itself says the tools are gone, `xcode-select -p` and `xcrun --find git` both failing (T15R-F001): a developer directory
+				// or a git that `xcrun` finds means tools the move missed, and that still refuses. Everywhere else the refusal stands.
+				const gone = select.code !== 0 && where.code !== 0;
+				if (ctx.env.SBD_ASIDE_GIT_MAY_RUN === "1" && gone) {
 					console.log(`::warning title=developer tools aside::/usr/bin/git runs with the developer tools aside, so a call into it would not fail loudly on this runner (${seen})`);
 					return;
 				}
+				const relaxed = ctx.env.SBD_ASIDE_GIT_MAY_RUN === "1" ? "; SBD_ASIDE_GIT_MAY_RUN=1 goes on only when xcode-select -p and xcrun --find git both fail" : "";
 				await putDeveloperToolsBack(io, moved);
-				throw new Error(`developer tools aside: /usr/bin/git still runs (${seen})`);
+				throw new Error(`developer tools aside: /usr/bin/git still runs (${seen})${relaxed}`);
 			}
 		},
 		async leave(io) {

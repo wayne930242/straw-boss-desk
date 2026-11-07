@@ -514,6 +514,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 			assertAppFolders(child, ["gh", "git", "pi"]);
 			if (isWindows) assertAppFolders(child, ["bash"]);
 		} finally {
+			// On Windows the pi's input is ended before its pane closes (`RpcPi.close`, as in the wizard's steps 5 and 7): a pi whose pane closed under it keeps reading from the feeder (T15R-F003).
+			await parent.close().catch(() => undefined);
 			await settlePanes(knownPanes, programsBefore);
 		}
 	});

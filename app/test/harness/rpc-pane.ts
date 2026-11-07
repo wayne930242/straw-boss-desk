@@ -1,6 +1,6 @@
 // Test code only; never shipped. The panes half of the follow and wizard anchors (spec: Workflows, step 7): a pi started in a Herdr pane of a base as the pane starts it (`pi`, by name, in RPC
-// mode), driven by typed RPC commands, and the lookups that show where `gh`, `git`, `pi` and `bash` resolve in it. It was written for `follow.e2e.ts` (task 8b) and moved here, unchanged, so
-// `wizard.e2e.ts` runs the same machinery in the root the wizard installed (task 15).
+// mode), driven by typed RPC commands, and the lookups that show where `gh`, `git`, `pi` and `bash` resolve in it. It was written for `follow.e2e.ts` (task 8b) and moved here so `wizard.e2e.ts`
+// runs the same machinery in the root the wizard installed (task 15). Task 15 added the end of a Windows pi's input (`FEEDER_END`, and `RpcPi.close()` appending it) to what was moved.
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -46,15 +46,21 @@ export const FEEDER = [
 	"const buf = Buffer.alloc(65536);",
 	"let pos = 0;",
 	`const END = Buffer.from(${JSON.stringify(FEEDER_END)});`,
+	// The marker can arrive in two reads (an append caught half written, or input that fills the buffer): the longest tail of what was read that is the start of the marker is held back until the
+	// next read, so a split marker still ends the feeder and no part of it reaches pi. A tail that is not the start of the marker (every line of JSON ends in a newline) is never held (T15R-F006).
+	"let held = Buffer.alloc(0);",
 	"process.stdout.on('error', () => process.exit(0));",
 	"setInterval(() => {",
 	"  const n = readSync(fd, buf, 0, buf.length, pos);",
 	"  if (n <= 0) return;",
 	"  pos += n;",
-	"  const text = Buffer.from(buf.subarray(0, n));",
+	"  const text = Buffer.concat([held, buf.subarray(0, n)]);",
 	"  const at = text.indexOf(END);",
 	"  if (at >= 0) { process.stdout.write(text.subarray(0, at), () => process.exit(0)); return; }",
-	"  process.stdout.write(text);",
+	"  let keep = Math.min(END.length - 1, text.length);",
+	"  while (keep > 0 && !text.subarray(text.length - keep).equals(END.subarray(0, keep))) keep--;",
+	"  held = Buffer.from(text.subarray(text.length - keep));",
+	"  process.stdout.write(text.subarray(0, text.length - keep));",
 	"}, 100);",
 	"process.on('exit', () => closeSync(fd));",
 	"",
@@ -188,7 +194,8 @@ export function rpcPanes(world: World, platform: ReturnType<typeof createPlatfor
 				// time to end (the shell writes its exit code to a file when it does), and then the pane is closed.
 				if (isWindows) {
 					appendFileSync(input, FEEDER_END);
-					await until(`pi to end by itself in the pane (${label})`, 30_000, () => existsSync(code) || undefined).catch(() => undefined);
+					const ended = await until(`pi to end by itself in the pane (${label})`, 30_000, () => existsSync(code) || undefined).then(() => true, () => false);
+					if (!ended) console.log(`${label}: pi did not end within 30 s of the end of its input; its pane is closed under it (T15R-F006)`);
 				}
 				await h.cli(["pane", "close", pane]).catch(() => undefined);
 			},

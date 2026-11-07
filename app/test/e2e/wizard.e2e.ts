@@ -38,6 +38,7 @@ import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { statusSummary } from "../harness/status-summary.ts";
 import { relaunchNotice } from "../harness/relaunch-time.ts";
 import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
+import { busySentenceShown } from "../harness/busy-card.ts";
 import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
@@ -979,7 +980,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(towers.length, 1, "one home base has one tower");
 		assert.equal(workspaces.filter((w) => JSON.stringify(w).includes("Hello World")).length, 1, "the clone is one base beside the home base");
 		assert.ok(workspaces.length >= 2, "the home base and the clone");
-		assert.ok(existsSync(join(workFolderNow(), "Straw Boss", ".git")) || existsSync(join(workFolderNow(), "Straw Boss")), "the home base folder exists");
+		assert.ok(existsSync(join(workFolderNow(), "Straw Boss")), "the home base folder exists");
 	});
 
 	let settings: Page;
@@ -1582,12 +1583,13 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 				});
 			/**
 			 * Apply, and once more after the minute the card asks for when it says the stack could not be stopped yet ("a program the earlier setup left is still running"): a PM would wait and press
-			 * it again, and a pi of a closed pane on Windows may still be ending (task 15: one run in ten). The retry is logged, and a second refusal fails the test.
+			 * it again, and a pi of a closed pane on Windows may still be ending (task 15: one run in ten). Only the card's busy sentences earn the retry (T15R-F002): an error of any other kind
+			 * fails the test at once. The retry is logged, and a second refusal fails the test.
 			 */
 			const applyOffered = async (offerAgain: () => Promise<void>, what: string): Promise<void> => {
 				await s.locator("#recipe-apply").click();
 				await settled(`${what} to apply`, 900_000, ["applied", "failed", "error"]);
-				if ((await stateOf()) === "error") {
+				if ((await stateOf()) === "error" && busySentenceShown(await updateCard.innerText(), zhTW.settings.recipe)) {
 					console.log(`${what}: the first apply said the stack was busy (${(await updateCard.innerText()).replace(/\s+/g, " ").slice(0, 200)}); trying again after a minute`);
 					await sleep(60_000);
 					await offerAgain();

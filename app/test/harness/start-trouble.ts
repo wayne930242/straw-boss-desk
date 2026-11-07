@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ElectronApplication } from "playwright-core";
+import { hideToken } from "../../src/main/runtime/failure.ts";
 import { createPlatform } from "../../src/main/platform/index.ts";
 import type { World } from "./e2e-light.ts";
 
@@ -25,6 +26,17 @@ export function logTailsOf(dir: string, lines = 14, width = 360): string[] {
 		});
 }
 
+/** The windows' addresses and text, one line each. The GUI's address ends in the page token (`http://127.0.0.1:<port>/<token>/`) and the logs are public annotations, so the whole address and the text go through `hideToken` before they are cut (T15R-F005). */
+export async function pageLines(app: Pick<ElectronApplication, "windows">): Promise<string[]> {
+	try {
+		const lines: string[] = [];
+		for (const w of app.windows()) lines.push(`page ${hideToken(w.url()).slice(-40)}: ${hideToken((await w.locator("body").innerText({ timeout: 3000 }).catch(() => "(unreadable)")).replace(/\s+/g, " ")).slice(0, 700)}`);
+		return lines;
+	} catch (error) {
+		return [`pages: (unreadable: ${(error as Error).message.slice(0, 120)})`];
+	}
+}
+
 /**
  * The text a failure carries: the logs (own first), the state folder, the programs running from `<root>/tools` and, when given, from another folder (an install folder), and the text of every
  * page the app has open. The whole is cut at `max` characters from the end, so what is dropped is the last of the stage logs.
@@ -39,12 +51,6 @@ export async function startTrouble(world: World, options: { app?: ElectronApplic
 	} catch (error) {
 		parts.push(`running programs: (unreadable: ${(error as Error).message.slice(0, 120)})`);
 	}
-	if (options.app) {
-		try {
-			for (const w of options.app.windows()) parts.push(`page ${w.url().slice(-40)}: ${(await w.locator("body").innerText({ timeout: 3000 }).catch(() => "(unreadable)")).replace(/\s+/g, " ").slice(0, 700)}`);
-		} catch (error) {
-			parts.push(`pages: (unreadable: ${(error as Error).message.slice(0, 120)})`);
-		}
-	}
+	if (options.app) parts.push(...(await pageLines(options.app)));
 	return parts.join(" ;; ").slice(0, options.max ?? 9000);
 }

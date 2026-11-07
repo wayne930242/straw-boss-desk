@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { logTailsOf } from "./start-trouble.ts";
+import { logTailsOf, pageLines } from "./start-trouble.ts";
 
 // A failure message is cut at a fixed length, and the stage logs sort before `start.jsonl`: two Windows runs of task 15 lost the supervisor's log that way and said nothing of what the start did.
 const scratch = mkdtempSync(join(tmpdir(), "sbd-trouble-"));
@@ -26,5 +26,21 @@ describe("the tails of a log folder", () => {
 
 	it("is empty for a folder that does not exist", () => {
 		assert.deepEqual(logTailsOf(join(scratch, "nowhere")), []);
+	});
+});
+
+describe("the lines about the windows", () => {
+	const token = "0123456789abcdef0123456789abcdef";
+	const window = (url: string, text: string) => ({ url: () => url, locator: () => ({ innerText: async () => text }) });
+	it("never carries a page token, in the address or in the text, even when the cut would have hidden the address's front", async () => {
+		const app = { windows: () => [window(`http://127.0.0.1:5123/${token}/`, `the GUI at http://127.0.0.1:5123/${token}/ is up`)] } as unknown as Parameters<typeof pageLines>[0];
+		const lines = await pageLines(app);
+		assert.equal(lines.length, 1);
+		assert.equal((lines[0] ?? "").includes(token), false, lines[0] ?? "");
+		assert.match(lines[0] as string, /<token>/);
+	});
+	it("names a window that cannot be read instead of failing", async () => {
+		const app = { windows: () => { throw new Error("closed"); } } as unknown as Parameters<typeof pageLines>[0];
+		assert.deepEqual(await pageLines(app), ["pages: (unreadable: closed)"]);
 	});
 });

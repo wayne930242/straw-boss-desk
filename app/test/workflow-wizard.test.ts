@@ -24,8 +24,8 @@ describe("wizard-from-zero.yml runners", () => {
 		assert.match(text, /^  workflow_dispatch:\n    inputs:\n      runners:\n(?:.*\n)*?        options: \[required, all\]\n        default: required$/m);
 	});
 
-	it("gives a dispatched run a concurrency group of its own, so runs started one after another do not cancel each other", () => {
-		assert.match(text, /group: wizard-from-zero-\$\{\{ github\.event_name == 'workflow_dispatch' && github\.run_id \|\| github\.ref \}\}/);
+	it("gives a dispatched run and the nightly a concurrency group of their own, so runs started one after another do not cancel each other and a push to main does not cancel the nightly (T15R-F004)", () => {
+		assert.match(text, /group: wizard-from-zero-\$\{\{ \(github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'schedule'\) && github\.run_id \|\| github\.ref \}\}/);
 	});
 
 	it("builds the nightly-only runners as x64 and reads the update fixture at the ref under test", () => {
