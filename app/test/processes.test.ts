@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, constants, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -52,6 +52,9 @@ describe("Processes", () => {
 			assert.match(info.startTime, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/);
 			const at = Date.parse(info.startTime);
 			assert.ok(at >= spawnedAt - 10_000 && at <= Date.now() + 10_000, `the start ${info.startTime} is when the process was started (${new Date(spawnedAt).toISOString()})`);
+			// A start.json written by an older build holds the Get-CimInstance token: the System.Management route must give the same string. The cmdlet is allowed here, in this test only.
+			const old = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.ToUniversalTime().ToString('o')`], { encoding: "utf8", windowsHide: true, timeout: 120_000 }).trim();
+			assert.equal(info.startTime, old, "the new start token equals the old Get-CimInstance one");
 		}
 		const again = (await processes.inspect([pid]))[0];
 		assert.equal(again?.startTime, info.startTime, "the token is the same on a second read");

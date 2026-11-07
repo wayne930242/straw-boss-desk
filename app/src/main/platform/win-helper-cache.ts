@@ -3,8 +3,8 @@ import { existsSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { HELPER_LOAD_EXIT, NATIVE_PRELUDE_BUILD, NATIVE_PRELUDE_LOAD, NATIVE_PRELUDE_MEMORY, NATIVE_PRELUDE_NONE, NATIVE_SOURCE } from "./win-scripts.ts";
 
-// The compiled native helper of the Windows implementations (spec: Windows native helper). `Add-Type -TypeDefinition` costs seconds on every call
-// (52 s under x64 emulation on a hosted ARM runner), so the C# is compiled once into a DLL in the app's own data root and loaded from there afterwards.
+// The compiled native helper of the Windows implementations (spec: Windows native helper). Compiling the C# on every call costs seconds, and the first module cmdlet of a process
+// costs 41 to 48 s on a hosted ARM runner (spec table), so the scripts call no module cmdlet and the C# is compiled once into a DLL in the app's own data root, loaded from there afterwards.
 // The file's name carries a hash of the C# it was built from, so a new app version never loads an old helper. The DLL lies under the data root, the
 // same trust as the tools folder the app already runs programs from, and nothing is ever loaded from a path outside it.
 

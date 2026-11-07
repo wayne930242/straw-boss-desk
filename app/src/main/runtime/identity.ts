@@ -121,7 +121,7 @@ export interface Leftover {
 
 /**
  * Any process whose executable, by its full path, lies under `<root>/tools`: one listing, after the stop sequence. The app's own process and the
- * pids in `except` are left out. The listing runs `lsof -d txt -Fpn` on macOS and one `Get-CimInstance Win32_Process` reading `ProcessId` and
+ * pids in `except` are left out. The listing runs `lsof -d txt -Fpn` on macOS and one `Win32_Process` query (`ManagementObjectSearcher`) reading `ProcessId` and
  * `ExecutablePath` on Windows; neither reads a command line.
  */
 export async function listLeftovers(processes: Processes, layout: Layout, except: readonly number[] = []): Promise<Leftover[]> {

@@ -214,7 +214,7 @@ try {
     }
     $tmp = [IO.Path]::Combine($dir, 'sbd-tmp-' + [Guid]::NewGuid().ToString('N') + '.dll')
     Build-SbdNative $source $tmp
-    try { [IO.File]::Move($tmp, $dll) } catch { try { [IO.File]::Copy($tmp, $dll, $false) } catch { } }
+    try { [IO.File]::Move($tmp, $dll) } catch { }
     try { [IO.File]::Delete($tmp) } catch { }
 } catch {
 }

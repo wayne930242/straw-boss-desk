@@ -73,7 +73,8 @@ const root = dataRoot({ env: process.env, argv: process.argv.slice(1), platform:
 // Before anything is created in the data root (spec: Uninstall and data): a **Remove all data** whose cleanup never ran is finished now, the uninstaller's `--remove-user-path` is carried out,
 // and a `--stop-stack` with no data root ends at once. None of these may re-create the root, so they run before `userData` is set and before the single-instance lock. A launch that finds the removal's owner
 // alive hands over to it through that lock on the owner's folder and ends; one that finds the lock free goes on with the launch (`earlyLaunch`).
-const earlyPlatform = createPlatform({ root });
+// No root: the early platform compiles the native helper in memory, since caching it would create `<root>/helpers` (and so the root) for a PM who deleted the folder by hand.
+const earlyPlatform = createPlatform();
 const early = await earlyLaunch({
 	argv: process.argv,
 	root,

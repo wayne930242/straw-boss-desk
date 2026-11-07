@@ -224,7 +224,8 @@ describe("the scripts themselves", () => {
 
 	it("call no cmdlet that PowerShell must find in a module: each one costs 41 to 48 s on windows-11-arm, and these scripts run on every check", () => {
 		// Measured on the hosted ARM runner (spec: Windows native helper): Add-Type, New-Object, Get-CimInstance, Get-Process and Get-Command each cost that for the first call in a process.
-		const moduleCmdlet = /\b(?:Add|Get|Set|New|Remove|Test|Join|Split|Select|Where|Sort|Measure|Import|Invoke|Write|Out|Start|Stop|Convert|ConvertTo|ConvertFrom|Export|Compare|Format)-[A-Z][A-Za-z]+/g;
+		// Structural: any Verb-Noun token (except our own function) and the common aliases, not a list of names.
+		const moduleCmdlet = /\b(?!Build-SbdNative\b)[A-Z][a-z]+-[A-Z][A-Za-z]+\b|(?<![\w$.'"-])(?:gci|ls|dir|cat|gc|type|rm|ri|del|cp|copy|mv|move|mi|ni|gp|sl|cd|pwd|echo|iex|icm|sleep|select|where|foreach|sort|measure|gm|gcm|gal|oss)(?=\s+[-$'"A-Za-z])/g;
 		const scripts: Record<string, string> = {
 			none: NATIVE_PRELUDE_NONE + USER_PATH_BODY, memory: NATIVE_PRELUDE_MEMORY + CREDENTIAL_LIST_BODY + CREDENTIAL_PROBE_BODY, load: NATIVE_PRELUDE_LOAD + CREDENTIAL_LIST_BODY,
 			build: NATIVE_PRELUDE_BUILD + CREDENTIAL_PROBE_BODY, process: PROCESS_SCRIPT,
@@ -314,5 +315,24 @@ describe("through the Windows stores", () => {
 		const e = new PowerShellExit(99, "x");
 		assert.equal(e.code, 99);
 		assert.match(e.message, /^PowerShell exited 99: x$/);
+	});
+});
+
+describe("the early platform (--remove-user-path, before launch)", () => {
+	it("writes the user PATH with the broadcast without creating the data root: no helper path, an in-memory compile", async () => {
+		const root = join(scratchDir(), "never-created");
+		const entry = "C:\\gone\\shims";
+		const { run, calls } = recorder((_i, _s, env) => (env.SBD_OP === "read" ? ok(`String ${Buffer.from(entry, "utf8").toString("base64")}`) : ok("done")));
+		const locate = createWinLocate(process.env);
+		const userPath = createWinUserPath({ run, locate });
+		assert.deepEqual(await userPath.remove(entry), { changed: true });
+		const write = calls.find((c) => c.env.SBD_BROADCAST === "1");
+		assert.ok(write?.script.startsWith(NATIVE_PRELUDE_MEMORY), "the broadcast write compiles in memory");
+		for (const c of calls) {
+			assert.equal(c.env.SBD_HELPER_DLL, undefined);
+			assert.equal(c.script.includes("CreateDirectory"), false);
+		}
+		assert.equal(existsSync(root), false);
+		assert.equal(existsSync(join(root, "helpers")), false);
 	});
 });
