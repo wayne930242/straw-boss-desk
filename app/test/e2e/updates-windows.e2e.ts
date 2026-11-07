@@ -48,9 +48,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
 function logTails(dir: string, lines = 14, width = 360): string[] {
 	if (!existsSync(dir)) return [];
-	return readdirSync(dir).flatMap((name) => {
+	// The supervisor's and the shell's own logs come first and get more lines: the stage logs sort before `start.jsonl`, and the five thousand characters the message keeps were all theirs, so a
+	// start that never recorded itself (task 15: "timed out waiting for the stack", `start.json` missing) left no sign of what the app did.
+	const own = (name: string): boolean => name === "start.jsonl" || name === "shell.jsonl";
+	return [...readdirSync(dir)].sort((a, b) => Number(own(b)) - Number(own(a))).flatMap((name) => {
 		try {
-			return [`${name}: ${readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean).slice(-lines).map((l) => l.slice(0, width)).join(" | ")}`];
+			return [`${name}: ${readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean).slice(own(name) ? -40 : -lines).map((l) => l.slice(0, own(name) ? 520 : width)).join(" | ")}`];
 		} catch {
 			return [];
 		}
@@ -105,9 +108,16 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 				} catch {
 					parts.push("update.json: (missing)");
 				}
-				parts.push(...logTails(world.layout.logs));
+				parts.push(`state folder: ${existsSync(world.layout.state) ? readdirSync(world.layout.state).join(", ") : "(none)"}`);
+				try {
+					const running = [...(await platform.processes.listUnder(world.layout.tools.root)), ...(await platform.processes.listUnder(installDir))];
+					parts.push(`running from tools or the install folder: ${running.map((p) => `${p.pid} ${p.executable?.split(/[\\/]/).pop() ?? "?"}`).join(", ") || "(none)"}`);
+				} catch (listError) {
+					parts.push(`running programs: (unreadable: ${(listError as Error).message.slice(0, 120)})`);
+				}
 				parts.push(`feed requests: ${feed.requests.slice(-12).join(", ")}`);
-				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 5000)}`;
+				parts.push(...logTails(world.layout.logs));
+				(error as Error).message = `${(error as Error).message}\n--- diagnostics --- ${parts.join(" ;; ").slice(0, 9000)}`;
 				throw error;
 			}
 		});

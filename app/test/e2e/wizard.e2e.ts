@@ -407,18 +407,32 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	};
 	/** The quit: nothing is left under <root>/tools, Herdr's socket does not answer, and the stop sequence ran to its end and was ok (spec: step 8). */
 	const assertQuitClean = async (app: ElectronApplication, what: string): Promise<void> => {
+		// What runs under tools before the quit, by pid, so that a program the stop reports can be told from one that was already there and one that the quit itself started (task 15: the stop of
+		// the first quit found `node.exe` and `OpenConsole.exe` in about one `windows-2025` job in eight, and both were gone a second later).
+		const before = (await panes.underTools()).map((p) => ({ pid: p.pid, file: basename(p.executable ?? "?") }));
 		const began = Date.now();
 		await app.close();
 		const deadline = Date.now() + 180_000;
 		while (Date.now() < deadline && ((await panes.underTools()).length > 0 || (await panes.herdrAnswers()))) await sleep(1000);
-		assert.deepEqual((await panes.underTools()).map((p) => `${p.pid} ${basename(p.executable ?? "")}`), [], `${what}: a program is left under <root>/tools`);
-		assert.equal(await panes.herdrAnswers(), false, `${what}: Herdr's socket still answers`);
 		const quit = lineEventsSince(logEvents(), "quit-stop", began, CLOCK_SKEW_MS).at(-1);
 		const stop = lineEventsSince(logEvents(), "stop-end", began, CLOCK_SKEW_MS).at(-1);
-		assert.ok(quit !== undefined && stop !== undefined, `${what}: the quit ran the stop sequence to its end`);
-		assert.equal(stop.herdrAnswers, false, `${what}: the stop saw Herdr's socket go quiet`);
-		assert.equal(quit.ok, true, `${what}: the quit's stop was not ok: ${JSON.stringify(stop)}`);
-		assert.deepEqual(stop.leftovers ?? [], [], `${what}: the stop reported a program left under tools`);
+		const explain = (): string => {
+			const told = new Set(["stop-begin", "sb-server-stop", "sb-cli-stop-skipped", "herdr-server-stop", "kill", "stop-note", "stop-end", "quit-stop"]);
+			const log = logEvents().filter((e) => told.has(String(e.event)) && Date.parse(String(e.t)) >= began - CLOCK_SKEW_MS).map((e) => JSON.stringify(e).slice(0, 300));
+			const left = ((stop?.leftovers ?? []) as Array<{ pid: number; file: string }>).map((l) => `${l.pid} ${l.file} ${before.some((b) => b.pid === l.pid) ? "was there before the quit" : "was not there before the quit"}`);
+			return `\n${what}: under tools before the quit: ${before.map((b) => `${b.pid} ${b.file}`).join(", ") || "(none)"}\n${what}: the stop's leftovers: ${left.join("; ") || "(none)"}\n${what}: the quit's log since the quit began:\n${log.join("\n")}`;
+		};
+		try {
+			assert.deepEqual((await panes.underTools()).map((p) => `${p.pid} ${basename(p.executable ?? "")}`), [], `${what}: a program is left under <root>/tools`);
+			assert.equal(await panes.herdrAnswers(), false, `${what}: Herdr's socket still answers`);
+			assert.ok(quit !== undefined && stop !== undefined, `${what}: the quit ran the stop sequence to its end`);
+			assert.equal(stop.herdrAnswers, false, `${what}: the stop saw Herdr's socket go quiet`);
+			assert.equal(quit.ok, true, `${what}: the quit's stop was not ok: ${JSON.stringify(stop)}`);
+			assert.deepEqual(stop.leftovers ?? [], [], `${what}: the stop reported a program left under tools`);
+		} catch (error) {
+			console.log(`${what}: the quit's check failed.${explain()}`);
+			throw error;
+		}
 	};
 
 	it("opens on the welcome screen in zh-TW from an empty root, with no WSL line", async () => {
@@ -1177,6 +1191,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			await turn.dump();
 			throw error;
 		} finally {
+			// On Windows the pi's input is ended first (`RpcPi.close`): a pane closed under a pi that still reads from the feeder leaves that pi running (spec: Build note, task 15).
+			await turn.close().catch(() => undefined);
 			await panes.settlePanes(known, programsBefore);
 		}
 	});
@@ -1278,6 +1294,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 				if (world.userPathBefore) assert.equal(now?.kind, world.userPathBefore.kind, "the PATH value kept its registry type");
 			}
 		} finally {
+			await parent.close().catch(() => undefined);
 			await panes.settlePanes(known, programsBefore);
 		}
 	});
