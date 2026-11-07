@@ -187,7 +187,7 @@ export function buildEnv({ layout, current, appEnv, proxy, linearApiKey, optiona
 		NPM_CONFIG_FUND: "false",
 		NPM_CONFIG_AUDIT: "false",
 		STRAW_BOSS_DESK: "1",
-		// pi-straw-boss 0.59.4: the merge train is off, so no PM takes the integrator role or sends a car slip, and a main asks the boss before a merge or deploy. Explicit, though the desk default is already off; the app's own environment never reaches it (allow-list).
+		// pi-straw-boss 0.61.0: the merge train is off, so no PM takes the integrator role or sends a car slip, and a main asks the boss before a merge or deploy. Explicit, though the desk default is already off; the app's own environment never reaches it (allow-list).
 		STRAW_BOSS_INTEGRATION: "off",
 		STRAW_BOSS_DESK_ROOT: layout.root,
 		XDG_CONFIG_HOME: layout.configHome,

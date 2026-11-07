@@ -326,6 +326,10 @@ export const zhTW: Messages = {
 			reused: "{folder} 已經在這裡，位址相同，所以只做了更新並開啟。",
 			branch: "起始分支是 {branch}。",
 			headOnly: "起始分支現在是 {branch}。",
+			delivery: {
+				unknown: "Straw Boss 無法確定第一則訊息有沒有送到 {repository} 的 agent。要再送一次之前，請先在 Straw Boss 視窗裡看一下那個 agent。",
+				not_sent: "第一則訊息沒有送給 {repository} 的 agent。請在 Straw Boss 視窗裡自己送出。",
+			},
 		},
 		trust: "正在等你在 Straw Boss 視窗裡回答：這個專案詢問是否信任它自帶的設定。在你回答之前，視窗不會開啟其他東西。",
 		links: "在 {repository} 裡，下列是 Windows 在這裡無法建立的連結，所以 pi 看不到它們：{paths}。要修正得從專案本身下手：請它的負責人把每個連結換成實際的檔案。",

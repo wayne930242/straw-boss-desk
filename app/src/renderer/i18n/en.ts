@@ -324,6 +324,10 @@ export const en = {
 			reused: "{folder} was already here with the same address, so it was brought up to date and opened.",
 			branch: "Its starting branch is {branch}.",
 			headOnly: "Its starting branch is now {branch}.",
+			delivery: {
+				unknown: "Straw Boss cannot tell whether the first message reached the agent in {repository}. Check the agent in the Straw Boss window before you send it again.",
+				not_sent: "The first message was not sent to the agent in {repository}. Send it from the Straw Boss window.",
+			},
 		},
 		trust: "Waiting for your answer in the Straw Boss window: this project asks whether to trust the settings it comes with. Until you answer, the window opens nothing else.",
 		links: "In {repository}, these are links that Windows cannot create here, so pi does not see them: {paths}. The fix is in the repository: ask its owners to replace each link with the real files.",

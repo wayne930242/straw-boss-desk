@@ -40,6 +40,7 @@ function rowOf(value: unknown): StoredRow | null {
 		reused: value.reused === true,
 		// A base that was being opened may or may not exist: only a row that finished says it is open.
 		opened: value.opened === true && !interrupted,
+		...(value.delivery === "unknown" || value.delivery === "not_sent" ? { delivery: value.delivery } : {}),
 		links,
 		failure: interrupted ? { kind: "interrupted" } : failure,
 		detail: typeof value.detail === "string" ? value.detail.slice(0, 300) : "",

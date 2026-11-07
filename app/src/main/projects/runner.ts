@@ -7,7 +7,7 @@ import type { ProjectFailure, ProjectRow, ProjectsView } from "../../shared/proj
 import type { AppPlatform } from "../paths.ts";
 import { cloneCause, ProjectGit } from "./git.ts";
 import { linkPaths, summarizeLinks } from "./links.ts";
-import type { OpenOutcome } from "./open-base.ts";
+import { isJoinWaitMs, type OpenInput, type OpenOutcome } from "./open-base.ts";
 import type { HostProbe } from "./reach.ts";
 import { plainOrigin, sameOrigin } from "./origin.ts";
 import type { ProjectRecordStore, StoredRow } from "./record.ts";
@@ -34,7 +34,7 @@ export interface ProjectsDeps {
 	workFolder(): string;
 	git: ProjectGit;
 	/** Opens `dir` as a base. `onTrust` says when a project trust question holds the opening. */
-	openBase(input: { dir: string; label: string; deploy: string }, hooks: { onTrust(asking: boolean): void; signal: AbortSignal }): Promise<OpenOutcome>;
+	openBase(input: OpenInput, hooks: { onTrust(asking: boolean): void; signal: AbortSignal }): Promise<OpenOutcome>;
 	record: ProjectRecordStore;
 	/** Asks whether a repository's code host answers, before it is cloned or fetched (a host that is reachable only on the company network gets its own sentence). Default: not asked. */
 	probe?: HostProbe;
@@ -67,6 +67,18 @@ const isStagingOf = (folder: string, name: string): boolean => name.startsWith(`
 /** The file beside a staging folder that says Git finished in it: a clone whose rename failed is kept with it and renamed into place by the next run (R12B-F005). */
 const DONE_SUFFIX = ".done";
 const doneMarker = (staging: string): string => `${staging}${DONE_SUFFIX}`;
+
+/**
+ * How long the server waits for the new pi of an opened base to join the net, asked of it on Windows (pi-straw-boss 0.60.2 `joinWaitMs`; its own wait is 60 s). A cold runner right after the desk's own
+ * stack restart took about 65 s longer than that (CIN-F002), so the wait is three minutes: the first try is given the time that the desk's repeat of an open used to give the second. Elsewhere the
+ * server's own wait stands.
+ */
+export const WINDOWS_JOIN_WAIT_MS = 180_000;
+export const joinWaitFor = (platform: AppPlatform): number | undefined => {
+	const ms = platform === "win32" ? WINDOWS_JOIN_WAIT_MS : undefined;
+	if (ms !== undefined && !isJoinWaitMs(ms)) throw new RangeError("WINDOWS_JOIN_WAIT_MS is outside the bounds the server accepts");
+	return ms;
+};
 
 const fresh = (spec: RepoSpec): ProjectRow => ({
 	folder: spec.folder,
@@ -103,6 +115,8 @@ export class ProjectsRunner {
 	/** The work folder the stored rows were made for. */
 	#savedWorkFolder: string | null;
 	#chain: Promise<void> = Promise.resolve();
+	/** The opening id of a folder whose open has not ended well: a Retry of that row asks under it, so the server finds the workspace an earlier try made (CIN-F003). In memory only, as the server's matching also needs the folder and its pane. */
+	readonly #openIds = new Map<string, string>();
 
 	constructor(deps: ProjectsDeps) {
 		this.#d = deps;
@@ -502,11 +516,16 @@ export class ProjectsRunner {
 		const row = this.#rows.get(spec.folder);
 		// A base opened by an earlier run is not opened a second time (the GUI would hold two workspaces for one folder).
 		if (row?.opened === true) return;
+		this.#patch(spec.folder, { delivery: undefined });
 		this.#step(spec.folder, "opening");
-		const deploy = (this.#d.newId ?? (() => `sbd-${Math.random().toString(16).slice(2, 12)}${Date.now().toString(16)}`))();
+		// One id for every try of this open, and for a Retry of it while the app runs: the server records an opening by the id and the folder, so a repeat finds the workspace the first try made
+		// (CIN-F003), and a repeat while the first try is still joining is answered `busy` (the client waits and asks again under the same id).
+		const deploy = this.#openIds.get(spec.folder) ?? (this.#d.newId ?? (() => `sbd-${Math.random().toString(16).slice(2, 12)}${Date.now().toString(16)}`))();
+		this.#openIds.set(spec.folder, deploy);
+		const joinWaitMs = joinWaitFor(this.#d.platform);
 		const openOnce = (): Promise<OpenOutcome> =>
 			this.#d.openBase(
-				{ dir: target, label: spec.label, deploy },
+				{ dir: target, label: spec.label, deploy, ...(joinWaitMs !== undefined ? { joinWaitMs } : {}) },
 				{
 					signal: this.#abort.signal,
 					onTrust: (asking) => {
@@ -517,21 +536,20 @@ export class ProjectsRunner {
 				},
 			);
 		let outcome = await openOnce();
-		// The open is made once more, never twice (a second failure is the row's), after the queue has drained, under the same id. Two failures are worth it:
-		// - A job that was queued behind this row's Git (Apply, Repair, a stack update, the Linear restart) stops the stack as soon as the Git job ends, which can be just as the open starts. The
-		//   window then has nothing to answer; the stack runs again once the queue has drained (R12B-F002).
-		// - The server made the workspace and its pi did not start or join the net in time (the Windows runner's cold tools right after an Apply). The server closes the workspace it made when an
-		//   opening fails, so the repeat does not hold two; the pi is warm by then (CIN-F002).
-		const windowGone = !outcome.ok && outcome.cause === "gui-unavailable" && this.#d.gitJob !== undefined;
-		const piLate = !outcome.ok && outcome.cause === "refused" && (outcome.step === "start" || outcome.step === "join");
-		if (!outcome.ok && (windowGone || piLate) && !this.#abort.signal.aborted) {
+		// The open is made once more, never twice (a second failure is the row's), after the queue has drained, under the same id, when a job that was queued behind this row's Git (Apply, Repair, a stack
+		// update, the Linear restart) stopped the stack just as the open started: the window then has nothing to answer, and the stack runs again once the queue has drained (R12B-F002). The server
+		// matches the repeat to the workspace the first try made, if it made one (CIN-F003). A pi that did not start or join is not repeated: the wait for it is the server's, and Windows asks for a
+		// longer one (CIN-F002).
+		if (!outcome.ok && outcome.cause === "gui-unavailable" && this.#d.gitJob !== undefined && !this.#abort.signal.aborted) {
 			this.#d.log({ event: "project-open-repeat", folder: spec.folder, cause: outcome.cause, ...(outcome.step !== undefined ? { step: outcome.step } : {}), detail: this.#d.redact(outcome.reason).slice(0, 300) });
 			await this.#job(async () => undefined);
 			this.#step(spec.folder, "opening");
 			outcome = await openOnce();
 		}
 		if (outcome.ok) {
-			this.#patch(spec.folder, { opened: true });
+			this.#openIds.delete(spec.folder);
+			// The first message is in doubt only when the server says so; `sent` and no word at all leave the row as a plain done.
+			this.#patch(spec.folder, { opened: true, delivery: outcome.delivery === "unknown" || outcome.delivery === "not_sent" ? outcome.delivery : undefined });
 			return;
 		}
 		throw new RowFailed({ kind: "open", cause: outcome.cause }, outcome.reason, outcome.step);

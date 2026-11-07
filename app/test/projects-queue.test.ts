@@ -6,7 +6,8 @@ import { after, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { ProjectGit } from "../src/main/projects/git.ts";
 import { ProjectRecordStore } from "../src/main/projects/record.ts";
-import { ProjectsRunner, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
+import { isJoinWaitMs } from "../src/main/projects/open-base.ts";
+import { joinWaitFor, ProjectsRunner, WINDOWS_JOIN_WAIT_MS, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
 import { SerialQueue } from "../src/main/runtime/identity.ts";
 
 // R12-F002: a row's Git runs as a job of the supervisor's queue (`gitJob`), beside Repair, a stack update, Apply and the Linear restart. A `SerialQueue` stands in for the supervisor's queue, whose
@@ -151,78 +152,107 @@ describe("the projects runner and the supervisor's queue (R12-F002)", () => {
 		assert.equal(opened.length, 1);
 	});
 
-	describe("a pi that did not start or join in time (CIN-F002)", () => {
-		const lateJoin = { ok: false, cause: "refused", reason: "The pi in pane 3 did not join the net within 60 s", step: "join" } as const;
-
-		it("is opened once more after the queue has drained, under the same id, and the row ends done", async () => {
-			const r = rig();
-			const logs: Array<Record<string, unknown>> = [];
-			r.deps.log = (fields) => void logs.push(fields as Record<string, unknown>);
-			const ids: string[] = [];
-			let endJob: () => void = () => undefined;
-			let job: Promise<void> | undefined;
-			r.deps.openBase = async (input) => {
-				r.events.push("open");
-				ids.push(input.deploy);
-				if (ids.length > 1) return { ok: true };
-				// A job asked meanwhile (Apply, Repair) holds the queue when the first open fails.
-				job = r.queue.run(() => new Promise<void>((resolve) => (endJob = resolve)));
-				return lateJoin;
-			};
+	describe("a pi that is slow to join (CIN-F002): the server is asked to wait longer on Windows, and the desk does not repeat the open", () => {
+		const lateJoin = { ok: false, cause: "refused", reason: "The pi in pane 3 did not join the net within 180 s", step: "join" } as const;
+		const run = async (r: ReturnType<typeof rig>): Promise<void> => {
 			const done = r.runner.begin([spec("web")]);
 			await until(() => r.gates.has("clone:1"));
 			r.gates.get("clone:1")?.();
-			await until(() => r.events.includes("open"));
-			await tick(100);
-			assert.deepEqual(r.events, ["git clone", "open"], "the repeat waits for the queue");
-			endJob();
-			await job;
 			await done;
-			assert.equal(r.rows().web?.phase, "done", JSON.stringify(r.rows().web));
-			assert.equal(r.rows().web?.opened, true);
-			assert.deepEqual(r.events, ["git clone", "open", "open"]);
-			assert.equal(ids[0], ids[1], "the same id both times");
-			assert.deepEqual(logs.filter((l) => l.event === "project-open-repeat"), [{ event: "project-open-repeat", folder: "web", cause: "refused", step: "join", detail: lateJoin.reason }]);
-		});
+		};
 
-		it("is repeated for the start step too, and at most once: a second failure is the row's, with the server's reason in Details and in the log", async () => {
+		it("asks for joinWaitMs of three minutes on Windows, inside the bounds the server accepts, in every try of the open", async () => {
+			assert.equal(WINDOWS_JOIN_WAIT_MS, 180_000);
+			assert.ok(isJoinWaitMs(WINDOWS_JOIN_WAIT_MS));
+			assert.equal(joinWaitFor("win32"), 180_000);
+			assert.equal(joinWaitFor("darwin"), undefined);
 			const r = rig();
-			const logs: Array<Record<string, unknown>> = [];
-			r.deps.log = (fields) => void logs.push(fields as Record<string, unknown>);
-			r.deps.redact = (t) => t.replace("pane 3", "pane N");
+			r.deps.platform = "win32";
+			const waits: Array<number | undefined> = [];
 			let calls = 0;
-			r.deps.openBase = async () => (calls++, r.events.push("open"), { ok: false, cause: "refused", reason: "The pi in pane 3 did not start", step: calls === 1 ? "start" : "join" });
-			const done = r.runner.begin([spec("web")]);
-			await until(() => r.gates.has("clone:1"));
-			r.gates.get("clone:1")?.();
-			await done;
-			assert.deepEqual(r.events, ["git clone", "open", "open"]);
-			const row = r.rows().web;
-			assert.equal(row?.phase, "failed");
-			assert.deepEqual(row?.failure, { kind: "open", cause: "refused" });
-			assert.equal(row?.detail, "The pi in pane N did not start");
-			assert.deepEqual(logs.filter((l) => l.event === "project-failed"), [{ event: "project-failed", folder: "web", failure: "open", cause: "refused", step: "join", detail: "The pi in pane N did not start" }]);
+			r.deps.openBase = async (input) => {
+				waits.push(input.joinWaitMs);
+				return ++calls === 1 ? { ok: false, cause: "gui-unavailable", reason: "connection refused" } : { ok: true };
+			};
+			await run(r);
+			assert.deepEqual(waits, [180_000, 180_000], "the repeat after a window that was gone asks as the first try did");
+			assert.equal(r.rows().web?.phase, "done");
 		});
 
-		it("is not repeated for any other step, none named, or a quit", async () => {
-			for (const outcome of [{ ...lateJoin, step: "create" }, { ...lateJoin, step: "deliver" }, { ...lateJoin, step: "trust" }, { ok: false, cause: "refused", reason: "the GUI answered 502" }] as const) {
+		it("asks for no joinWaitMs on macOS: the server's own wait stands", async () => {
+			const r = rig();
+			let seen: Record<string, unknown> | undefined;
+			r.deps.openBase = async (input) => ((seen = { ...input }), { ok: true });
+			await run(r);
+			assert.ok(seen !== undefined && !("joinWaitMs" in seen), JSON.stringify(seen));
+		});
+
+		it("a pi that did not start or join is the row's failure at once, with the step in the log and the server's reason in Details: no second open", async () => {
+			for (const step of ["start", "join"]) {
 				const r = rig();
-				r.deps.openBase = async () => (r.events.push("open"), outcome);
+				r.deps.platform = "win32";
+				const logs: Array<Record<string, unknown>> = [];
+				r.deps.log = (fields) => void logs.push(fields as Record<string, unknown>);
+				r.deps.redact = (t) => t.replace("pane 3", "pane N");
+				r.deps.openBase = async () => (r.events.push("open"), { ...lateJoin, step });
+				await run(r);
+				assert.deepEqual(r.events.filter((e) => e === "open"), ["open"], step);
+				const row = r.rows().web;
+				assert.equal(row?.phase, "failed");
+				assert.deepEqual(row?.failure, { kind: "open", cause: "refused" });
+				assert.equal(row?.detail, "The pi in pane N did not join the net within 180 s");
+				assert.deepEqual(logs.filter((l) => l.event === "project-open-repeat"), []);
+				assert.deepEqual(logs.filter((l) => l.event === "project-failed"), [{ event: "project-failed", folder: "web", failure: "open", cause: "refused", step, detail: "The pi in pane N did not join the net within 180 s" }]);
+			}
+		});
+
+		it("a quit during the open ends the row as interrupted, and the open is not made again", async () => {
+			const r = rig();
+			r.deps.openBase = async () => (r.events.push("open"), r.runner.dispose(), { ok: false, cause: "gui-unavailable", reason: "x" });
+			await run(r);
+			assert.deepEqual(r.events, ["git clone", "open"]);
+			assert.deepEqual(r.rows().web?.failure, { kind: "interrupted" });
+		});
+	});
+
+	describe("the opening id (CIN-F003) and the server's answers about the first message", () => {
+		it("is made once per open and kept for a Retry of the row while the app runs, and a row that opened ends it", async () => {
+			const r = rig();
+			const ids: string[] = [];
+			let ok = false;
+			r.deps.openBase = async (input) => (ids.push(input.deploy), ok ? { ok: true } : { ok: false, cause: "timeout", reason: "the opening did not finish in time" });
+			const first = r.runner.begin([spec("web")]);
+			await until(() => r.gates.has("clone:1"));
+			r.gates.get("clone:1")?.();
+			await first;
+			assert.equal(r.rows().web?.phase, "failed");
+			ok = true;
+			const again = r.runner.retry(spec("web"));
+			for (let i = 0; i < 50 && ids.length < 2; i++) {
+				r.gates.get("clone:2")?.();
+				await tick(10);
+			}
+			await again;
+			assert.equal(r.rows().web?.phase, "done", JSON.stringify(r.rows().web));
+			assert.equal(ids.length, 2);
+			assert.equal(ids[0], ids[1], "a Retry asks under the id of the open that did not end well");
+		});
+
+		for (const [delivery, shows] of [["sent", false], ["unknown", true], ["not_sent", true], [undefined, false]] as const) {
+			it(`delivery ${String(delivery)}: the row is done and opened${shows ? ", and says so on the row" : ", with nothing added to it"}`, async () => {
+				const r = rig();
+				r.deps.openBase = async () => ({ ok: true, ...(delivery !== undefined ? { delivery } : {}) });
 				const done = r.runner.begin([spec("web")]);
 				await until(() => r.gates.has("clone:1"));
 				r.gates.get("clone:1")?.();
 				await done;
-				assert.deepEqual(r.events, ["git clone", "open"], JSON.stringify(outcome));
-			}
-			const r = rig();
-			r.deps.openBase = async () => (r.events.push("open"), r.runner.dispose(), lateJoin);
-			const done = r.runner.begin([spec("web")]);
-			await until(() => r.gates.has("clone:1"));
-			r.gates.get("clone:1")?.();
-			await done;
-			assert.deepEqual(r.events, ["git clone", "open"], "a quit ends the row, it does not open again");
-			assert.deepEqual(r.rows().web?.failure, { kind: "interrupted" });
-		});
+				const row = r.rows().web;
+				assert.equal(row?.phase, "done");
+				assert.equal(row?.opened, true);
+				assert.equal(row?.delivery, shows ? delivery : undefined);
+				assert.equal(r.deps.record.read()?.rows.find((x) => x.folder === "web")?.delivery, shows ? delivery : undefined, "the record keeps it for a relaunch");
+			});
+		}
 	});
 
 	it("an open that fails for any other reason is not made a second time", async () => {
