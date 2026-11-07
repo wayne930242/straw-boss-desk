@@ -69,16 +69,11 @@ const DONE_SUFFIX = ".done";
 const doneMarker = (staging: string): string => `${staging}${DONE_SUFFIX}`;
 
 /**
- * How long the server waits for the new pi of an opened base to join the net, asked of it on Windows (pi-straw-boss 0.60.2 `joinWaitMs`; its own wait is 60 s). A cold runner right after the desk's own
- * stack restart took about 65 s longer than that (CIN-F002), so the wait is three minutes: the first try is given the time that the desk's repeat of an open used to give the second. Elsewhere the
- * server's own wait stands.
+ * How long the server waits for the new pi of an opened base to join the net (pi-straw-boss 0.60.2 `joinWaitMs`; its own wait is 60 s), asked on every platform. A cold runner right after the desk's
+ * own stack restart took about 65 s longer than that (CIN-F002), so the wait is three minutes. It replaces the desk's own repeat of an open after a `start` or `join` refusal.
  */
-export const WINDOWS_JOIN_WAIT_MS = 180_000;
-export const joinWaitFor = (platform: AppPlatform): number | undefined => {
-	const ms = platform === "win32" ? WINDOWS_JOIN_WAIT_MS : undefined;
-	if (ms !== undefined && !isJoinWaitMs(ms)) throw new RangeError("WINDOWS_JOIN_WAIT_MS is outside the bounds the server accepts");
-	return ms;
-};
+export const OPEN_JOIN_WAIT_MS = 180_000;
+if (!isJoinWaitMs(OPEN_JOIN_WAIT_MS)) throw new RangeError("OPEN_JOIN_WAIT_MS is outside the bounds the server accepts");
 
 const fresh = (spec: RepoSpec): ProjectRow => ({
 	folder: spec.folder,
@@ -115,13 +110,17 @@ export class ProjectsRunner {
 	/** The work folder the stored rows were made for. */
 	#savedWorkFolder: string | null;
 	#chain: Promise<void> = Promise.resolve();
-	/** The opening id of a folder whose open has not ended well: a Retry of that row asks under it, so the server finds the workspace an earlier try made (CIN-F003). In memory only, as the server's matching also needs the folder and its pane. */
+	/** The opening id of a folder whose open has not ended well: a Retry of that row asks under it, so the server finds the workspace an earlier try made (CIN-F003). Kept in the record too, so a relaunch after an interrupted open asks under it (the server drops a stale one). */
 	readonly #openIds = new Map<string, string>();
 
 	constructor(deps: ProjectsDeps) {
 		this.#d = deps;
 		const saved = deps.record.read();
-		if (saved !== null) for (const row of saved.rows) this.#rows.set(row.folder, row);
+		if (saved !== null)
+			for (const row of saved.rows) {
+				this.#rows.set(row.folder, row);
+				if (row.openId !== undefined) this.#openIds.set(row.folder, row.openId);
+			}
 		this.#savedWorkFolder = saved?.workFolder ?? null;
 	}
 
@@ -131,7 +130,7 @@ export class ProjectsRunner {
 	}
 
 	view(): ProjectsView {
-		const rows = [...this.#rows.values()].map(({ url: _url, ...row }) => ({ ...row, links: row.links === null ? null : { ...row.links, paths: [...row.links.paths] } }));
+		const rows = [...this.#rows.values()].map(({ url: _url, openId: _openId, ...row }) => ({ ...row, links: row.links === null ? null : { ...row.links, paths: [...row.links.paths] } }));
 		return { rows, running: rows.some((r) => r.phase === "working"), held: rows.some((r) => r.phase === "trust") };
 	}
 
@@ -150,7 +149,7 @@ export class ProjectsRunner {
 
 	#save(): void {
 		try {
-			this.#d.record.write({ schema: 1, workFolder: this.#d.workFolder(), rows: [...this.#rows.values()] });
+			this.#d.record.write({ schema: 1, workFolder: this.#d.workFolder(), rows: [...this.#rows.values()].map((row) => { const openId = this.#openIds.get(row.folder); const { openId: _kept, ...rest } = row; return openId === undefined ? rest : { ...rest, openId }; }) });
 		} catch (error) {
 			this.#d.log({ event: "projects-record-failed", detail: (error as Error).message.slice(0, 200) });
 		}
@@ -522,10 +521,11 @@ export class ProjectsRunner {
 		// (CIN-F003), and a repeat while the first try is still joining is answered `busy` (the client waits and asks again under the same id).
 		const deploy = this.#openIds.get(spec.folder) ?? (this.#d.newId ?? (() => `sbd-${Math.random().toString(16).slice(2, 12)}${Date.now().toString(16)}`))();
 		this.#openIds.set(spec.folder, deploy);
-		const joinWaitMs = joinWaitFor(this.#d.platform);
+		this.#save();
+		const joinWaitMs = OPEN_JOIN_WAIT_MS;
 		const openOnce = (): Promise<OpenOutcome> =>
 			this.#d.openBase(
-				{ dir: target, label: spec.label, deploy, ...(joinWaitMs !== undefined ? { joinWaitMs } : {}) },
+				{ dir: target, label: spec.label, deploy, joinWaitMs },
 				{
 					signal: this.#abort.signal,
 					onTrust: (asking) => {
@@ -548,6 +548,7 @@ export class ProjectsRunner {
 		}
 		if (outcome.ok) {
 			this.#openIds.delete(spec.folder);
+			this.#save();
 			// The first message is in doubt only when the server says so; `sent` and no word at all leave the row as a plain done.
 			this.#patch(spec.folder, { opened: true, delivery: outcome.delivery === "unknown" || outcome.delivery === "not_sent" ? outcome.delivery : undefined });
 			return;

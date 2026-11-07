@@ -7,7 +7,7 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { ProjectGit } from "../src/main/projects/git.ts";
 import { ProjectRecordStore } from "../src/main/projects/record.ts";
 import { isJoinWaitMs } from "../src/main/projects/open-base.ts";
-import { joinWaitFor, ProjectsRunner, WINDOWS_JOIN_WAIT_MS, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
+import { OPEN_JOIN_WAIT_MS, ProjectsRunner, type ProjectsDeps, type RepoSpec } from "../src/main/projects/runner.ts";
 import { SerialQueue } from "../src/main/runtime/identity.ts";
 
 // R12-F002: a row's Git runs as a job of the supervisor's queue (`gitJob`), beside Repair, a stack update, Apply and the Linear restart. A `SerialQueue` stands in for the supervisor's queue, whose
@@ -161,30 +161,22 @@ describe("the projects runner and the supervisor's queue (R12-F002)", () => {
 			await done;
 		};
 
-		it("asks for joinWaitMs of three minutes on Windows, inside the bounds the server accepts, in every try of the open", async () => {
-			assert.equal(WINDOWS_JOIN_WAIT_MS, 180_000);
-			assert.ok(isJoinWaitMs(WINDOWS_JOIN_WAIT_MS));
-			assert.equal(joinWaitFor("win32"), 180_000);
-			assert.equal(joinWaitFor("darwin"), undefined);
-			const r = rig();
-			r.deps.platform = "win32";
-			const waits: Array<number | undefined> = [];
-			let calls = 0;
-			r.deps.openBase = async (input) => {
-				waits.push(input.joinWaitMs);
-				return ++calls === 1 ? { ok: false, cause: "gui-unavailable", reason: "connection refused" } : { ok: true };
-			};
-			await run(r);
-			assert.deepEqual(waits, [180_000, 180_000], "the repeat after a window that was gone asks as the first try did");
-			assert.equal(r.rows().web?.phase, "done");
-		});
-
-		it("asks for no joinWaitMs on macOS: the server's own wait stands", async () => {
-			const r = rig();
-			let seen: Record<string, unknown> | undefined;
-			r.deps.openBase = async (input) => ((seen = { ...input }), { ok: true });
-			await run(r);
-			assert.ok(seen !== undefined && !("joinWaitMs" in seen), JSON.stringify(seen));
+		it("asks for joinWaitMs of three minutes on every platform, inside the bounds the server accepts, in every try of the open", async () => {
+			assert.equal(OPEN_JOIN_WAIT_MS, 180_000);
+			assert.ok(isJoinWaitMs(OPEN_JOIN_WAIT_MS));
+			for (const platform of ["win32", "darwin"] as const) {
+				const r = rig();
+				r.deps.platform = platform;
+				const waits: Array<number | undefined> = [];
+				let calls = 0;
+				r.deps.openBase = async (input) => {
+					waits.push(input.joinWaitMs);
+					return ++calls === 1 ? { ok: false, cause: "gui-unavailable", reason: "connection refused" } : { ok: true };
+				};
+				await run(r);
+				assert.deepEqual(waits, [180_000, 180_000], `${platform}: the repeat after a window that was gone asks as the first try did`);
+				assert.equal(r.rows().web?.phase, "done");
+			}
 		});
 
 		it("a pi that did not start or join is the row's failure at once, with the step in the log and the server's reason in Details: no second open", async () => {
@@ -236,6 +228,30 @@ describe("the projects runner and the supervisor's queue (R12-F002)", () => {
 			assert.equal(r.rows().web?.phase, "done", JSON.stringify(r.rows().web));
 			assert.equal(ids.length, 2);
 			assert.equal(ids[0], ids[1], "a Retry asks under the id of the open that did not end well");
+		});
+
+		it("CIN-F003 across runs: the id of an open that was interrupted is stored on the row and a relaunch asks under it; an opened row stores none", async () => {
+			const r = rig();
+			const ids: string[] = [];
+			r.deps.openBase = async (input) => (ids.push(input.deploy), r.runner.dispose(), { ok: false, cause: "gui-unavailable", reason: "x" });
+			const first = r.runner.begin([spec("web")]);
+			await until(() => r.gates.has("clone:1"));
+			r.gates.get("clone:1")?.();
+			await first;
+			assert.deepEqual(r.rows().web?.failure, { kind: "interrupted" });
+			assert.equal(r.deps.record.read()?.rows.find((x) => x.folder === "web")?.openId, ids[0]);
+			assert.ok(!("openId" in (r.rows().web ?? {})), "not part of the view");
+			const second = new ProjectsRunner({ ...r.deps, openBase: async (input) => (ids.push(input.deploy), { ok: true }) });
+			const again = second.retry(spec("web"));
+			for (let i = 0; i < 50 && ids.length < 2; i++) {
+				r.gates.get("clone:2")?.();
+				await tick(10);
+			}
+			await again;
+			assert.equal(ids.length, 2);
+			assert.equal(ids[1], ids[0], "the relaunch reuses the id");
+			assert.equal(second.view().rows.find((x) => x.folder === "web")?.opened, true);
+			assert.equal(r.deps.record.read()?.rows.find((x) => x.folder === "web")?.openId, undefined, "an opened row clears it");
 		});
 
 		for (const [delivery, shows] of [["sent", false], ["unknown", true], ["not_sent", true], [undefined, false]] as const) {

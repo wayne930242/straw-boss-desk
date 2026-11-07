@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
-import { isJoinWaitMs, MAX_JOIN_WAIT_MS, MIN_JOIN_WAIT_MS, OpenBaseClient, readGuiRecord } from "../src/main/projects/open-base.ts";
+import { isJoinWaitMs, MAX_JOIN_WAIT_MS, MIN_JOIN_WAIT_MS, OpenBaseClient, readGuiRecord, totalMsFor } from "../src/main/projects/open-base.ts";
 
 // The open-base call, against a stand-in of the endpoints pi-straw-boss 0.61.2 serves (`src/spawn.ts`): the same path under the page token, the same headers the kit's `gui-client.mjs` sends
 // (Host, Origin, the CSRF value), the progress question while the opening is on its way, and the server's answers (409 settings_unsafe, 400 not_allowed, 429 busy). Nothing of the package runs.
@@ -217,12 +217,24 @@ describe("the opening id, busy, joinWaitMs and the first message (pi-straw-boss 
 		assert.deepEqual(await client().open(input, hooks()), { ok: true });
 	});
 
+	it("the client's total follows joinWaitMs: the server's join wait, its ten minutes on a trust question, and a margin", () => {
+		assert.equal(totalMsFor(undefined), 60_000 + 600_000 + 60_000);
+		assert.equal(totalMsFor(180_000), 180_000 + 600_000 + 60_000);
+		assert.ok(totalMsFor(180_000) > 13 * 60_000, "longer than the server's worst case on three minutes");
+		assert.ok(totalMsFor(MAX_JOIN_WAIT_MS) > totalMsFor(MIN_JOIN_WAIT_MS));
+	});
+
 	it("keeps the base when the first message did not arrive: 502 prompt_failed reads unknown, 503 unavailable reads not_sent, and neither is repeated", async () => {
-		onOpen = (respond) => respond(502, { error: "prompt_failed", reason: "The agent opened, but the first message did not arrive: timeout" });
+		onOpen = (respond) => respond(502, { error: "prompt_failed", reason: "The agent opened, but the first message did not arrive: timeout", step: "deliver" });
 		assert.deepEqual(await client().open(input, hooks()), { ok: true, delivery: "unknown" });
-		onOpen = (respond) => respond(503, { error: "unavailable", reason: "The agent opened, but this server cannot type into it; send the first message from its comms." });
+		onOpen = (respond) => respond(503, { error: "unavailable", reason: "The agent opened, but this server cannot type into it; send the first message from its comms.", step: "deliver" });
 		assert.deepEqual(await client().open(input, hooks()), { ok: true, delivery: "not_sent" });
 		assert.equal(opens().length, 2, "one request each");
+		// A 503 `unavailable` with no deliver step is a server that opens nothing: a failure, not an open base.
+		onOpen = (respond) => respond(503, { error: "unavailable", reason: "This server opens nothing." });
+		assert.equal((await client().open(input, hooks())).ok, false);
+		onOpen = (respond) => respond(502, { error: "prompt_failed", reason: "x" });
+		assert.equal((await client().open(input, hooks())).ok, false);
 		// Another 502, or a 503 with another error, is still a failure of the open.
 		onOpen = (respond) => respond(502, { error: "open_failed", reason: "x", step: "create" });
 		assert.equal((await client().open(input, hooks())).ok, false);

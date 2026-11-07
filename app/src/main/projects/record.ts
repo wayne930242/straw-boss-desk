@@ -10,6 +10,8 @@ import type { ProjectRow } from "../../shared/projects.ts";
 export interface StoredRow extends ProjectRow {
 	/** The address the recipe named when the row ran: a recipe that changes it runs the row again. */
 	url: string;
+	/** The opening id of an open that has not ended well: a run after a relaunch asks under it, so the server finds the workspace the first try made (CIN-F003). Never on an opened row. */
+	openId?: string;
 }
 
 export interface ProjectRecord {
@@ -40,6 +42,7 @@ function rowOf(value: unknown): StoredRow | null {
 		reused: value.reused === true,
 		// A base that was being opened may or may not exist: only a row that finished says it is open.
 		opened: value.opened === true && !interrupted,
+		...(typeof value.openId === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value.openId) && !(value.opened === true && !interrupted) ? { openId: value.openId } : {}),
 		...(value.delivery === "unknown" || value.delivery === "not_sent" ? { delivery: value.delivery } : {}),
 		links,
 		failure: interrupted ? { kind: "interrupted" } : failure,

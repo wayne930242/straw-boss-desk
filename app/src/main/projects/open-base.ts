@@ -112,7 +112,11 @@ export interface OpenBaseDeps {
 }
 
 const DEFAULT_POLL_MS = 1000;
-const DEFAULT_TOTAL_MS = 12 * 60_000;
+/** The server's own waits (pi-straw-boss `src/spawn.ts`, `src/trust/wait.ts`): a join wait of 60 s unless asked otherwise, and ten minutes on a trust question. The client's total follows them, plus a margin, so it never gives up before the server. */
+const DEFAULT_JOIN_WAIT_MS = 60_000;
+const TRUST_WAIT_MS = 10 * 60_000;
+const TOTAL_MARGIN_MS = 60_000;
+export const totalMsFor = (joinWaitMs: number | undefined): number => (joinWaitMs ?? DEFAULT_JOIN_WAIT_MS) + TRUST_WAIT_MS + TOTAL_MARGIN_MS;
 const DEFAULT_BUSY_MS = 5 * 60_000;
 const DEFAULT_BUSY_POLL_MS = 3000;
 
@@ -153,7 +157,7 @@ export class OpenBaseClient {
 			const record = readGuiRecord(this.#d.slotDir);
 			if (record === null) return { ok: false, cause: "gui-unavailable", reason: "gui.json is missing or unreadable" };
 			const total = new AbortController();
-			const timer = setTimeout(() => total.abort(), this.#d.totalMs ?? DEFAULT_TOTAL_MS);
+			const timer = setTimeout(() => total.abort(), this.#d.totalMs ?? totalMsFor(input.joinWaitMs));
 			const signal = AbortSignal.any([hooks.signal, total.signal]);
 			let asking = false;
 			let over = false;
@@ -197,8 +201,9 @@ export class OpenBaseClient {
 			if (answer.status === 200) return deliveryOf(body.delivery) === undefined ? { ok: true } : { ok: true, delivery: deliveryOf(body.delivery) };
 			const error = typeof body.error === "string" ? body.error : "";
 			// The workspace stands in both: the server keeps it, and a repeat of this id would find it. The base is open; only the first message is in doubt.
-			if (answer.status === 502 && error === "prompt_failed") return { ok: true, delivery: "unknown" };
-			if (answer.status === 503 && error === "unavailable") return { ok: true, delivery: "not_sent" };
+			// Only when the server says the failure was at the deliver step: a 503 `unavailable` of a server that opens nothing carries no step and is a refusal.
+			if (body.step === "deliver" && answer.status === 502 && error === "prompt_failed") return { ok: true, delivery: "unknown" };
+			if (body.step === "deliver" && answer.status === 503 && error === "unavailable") return { ok: true, delivery: "not_sent" };
 			if (answer.status === 429 || error === "busy") {
 				if (Date.now() >= busyUntil) return { ok: false, cause: "busy", reason: firstLine(body.reason) };
 				await sleep(this.#d.busyPollMs ?? DEFAULT_BUSY_POLL_MS, hooks.signal);
