@@ -39,6 +39,7 @@ import { statusSummary } from "../harness/status-summary.ts";
 import { relaunchNotice } from "../harness/relaunch-time.ts";
 import { CLOCK_SKEW_MS, eventsSince as lineEventsSince } from "../harness/log-events.ts";
 import { busySentenceShown } from "../harness/busy-card.ts";
+import { firstFailure, installFailing, startFailing, sleep, until, type FailWhen } from "../harness/fail-fast.ts";
 import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
@@ -64,23 +65,6 @@ if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
 	it("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 400): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(every);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const exampleDir = fileURLToPath(new URL("../../../recipe/examples/invalid/", import.meta.url));
@@ -162,7 +146,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		return page;
 	};
 	const stepOf = (page: Page): Promise<string> => page.evaluate(() => document.body.dataset.step ?? "");
-	const waitStep = (page: Page, step: string, ms = 60_000) => until(`the ${step} step`, ms, async () => (await stepOf(page)) === step, 200);
+	/** `failWhen` ends the wait at once when the app has reported a failure that the case does not expect (see `harness/fail-fast.ts`). */
+	const waitStep = (page: Page, step: string, ms = 60_000, failWhen?: FailWhen) => until(`the ${step} step`, ms, async () => (await stepOf(page)) === step, { every: 200, ...(failWhen ? { failWhen } : {}) });
 	const guiUrl = (app: ElectronApplication): Promise<string | undefined> => app.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => w.getURL()).find((u) => /^http:\/\/127\.0\.0\.1:\d+\//.test(u)));
 	const inGui = (app: ElectronApplication, source: string): Promise<unknown> =>
 		app.evaluate(({ webContents }, code) => webContents.getAllWebContents().find((w) => /^http:\/\/127\.0\.0\.1:\d+\//.test(w.getURL()))?.executeJavaScript(code, true), source);
@@ -330,6 +315,9 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 
 	let first: ElectronApplication;
 	let page: Page;
+	/** When the install began (Next on the folder step) and when the relaunch after the quit in the middle of it began: failures older than these are not the run's (the quit leaves cancelled stages `failed`). */
+	let installBegan = 0;
+	let resumedAt = 0;
 
 	// ---- steps 3 and 5 to 9 of the spec's list (task 15) ---------------------------------------------------------------------------------------------------------------------------
 	let panes: RpcPanes;
@@ -500,13 +488,16 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.ok(readdirSync(world.layout.recipe).length === 1, "Apply saved the recipe");
 		assert.equal(await page.locator("#folder-path").innerText(), join(world.home, "StrawBoss"));
 		await shotBoth(page, "wizard-folder");
+		installBegan = Date.now();
 		await page.locator("#folder-next").click();
 		await waitStep(page, "install", 30_000);
 	});
 
 	it("runs a spinner on the install step and none under reduced motion", async () => {
 		const infinite = () => page.evaluate(() => document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations === Infinity).length);
-		await until("a working stage with its spinner", 120_000, async () => (await page.locator("#install-stages li[data-badge='working']").count()) > 0 || undefined, 200);
+		// A fresh install: no stage is expected to fail, so the app's failure (a preflight that could not reach github.com, 8 s) ends the wait at once instead of after 120, 120 and 600 s.
+		const failing = installFailing(world.layout, installBegan, page);
+		await until("a working stage with its spinner", 120_000, async () => (await page.locator("#install-stages li[data-badge='working']").count()) > 0 || undefined, { every: 200, failWhen: failing });
 		assert.ok((await infinite()) >= 1, "the working spinner animates");
 		await page.emulateMedia({ reducedMotion: "reduce" });
 		assert.equal(await infinite(), 0, "no infinite animation runs under reduced motion");
@@ -515,13 +506,13 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await page.locator("#step").getAttribute("aria-live"), null);
 		await page.locator('.language-button[data-locale="zh-TW"]').focus();
 		const before = await page.locator("#install-stages li[data-badge='done']").count();
-		await until("another stage to finish", 120_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) > before || undefined, 200);
+		await until("another stage to finish", 120_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) > before || undefined, { every: 200, failWhen: failing });
 		assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-locale") ?? ""), "zh-TW", "focus survived the redraw");
 		await shotBoth(page, "wizard-install");
 	});
 
 	it("quit in the middle of the install: the relaunch opens on the install step", async () => {
-		await until("two stages done", 600_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) >= 2 || undefined, 200);
+		await until("two stages done", 600_000, async () => (await page.locator("#install-stages li[data-badge='done']").count()) >= 2 || undefined, { every: 200, failWhen: installFailing(world.layout, installBegan, page) });
 		await close(first);
 		assert.equal(readWizard().step, "install", "wizard.json holds the install step");
 		// The quit cancelled the engine: nothing it started is left under <root>/tools, and no second engine was forked to carry on (T9-F002).
@@ -530,6 +521,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.ok(left);
 		assert.equal(logText().includes('"event":"engine-crashed"'), false, "the quit is not a crash of the engine");
 		// The stub is set at launch: a process started now would otherwise start the stack before a test could set it.
+		resumedAt = Date.now();
 		const second = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		const again = await pageOf(second, "wizard.html");
 		await until("the install step on the relaunch", 60_000, async () => ["install", "start", "claude"].includes(await stepOf(again)) || undefined, 200);
@@ -551,7 +543,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		/** The `pi install` and `pi remove` calls of the package stages, as the stage logs recorded them. */
 		const piCalls = () => events().filter((e) => e.event === "exec" && Array.isArray(e.args) && (e.args.includes("install") || e.args.includes("remove")) && typeof e.stage === "string" && /^(profile|pkg:|team-pkg:)/.test(e.stage));
 		const before = piCalls().length;
-		await until("a package stage's pi install to start", 20 * 60_000, () => piCalls().length > before || undefined, 100);
+		// The relaunch resumed the install the quit cut short; a stage of it that fails (not the cancelled ones the quit left, which are older than `resumedAt`) ends the wait at once.
+		await until("a package stage's pi install to start", 20 * 60_000, () => piCalls().length > before || undefined, { every: 100, failWhen: installFailing(world.layout, resumedAt, page) });
 		await close(first);
 		assert.equal(readWizard().step, "install", "wizard.json holds the install step");
 		assert.equal(logText().includes('"event":"engine-crashed"'), false, "the quit is not a crash of the engine");
@@ -571,24 +564,24 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		const exited = new Promise<number>((resolve) => standIn.once("exit", () => resolve(Date.now())));
 		const processes = createPlatform().processes;
 		await until("the stand-in to be visible under tools", 30_000, async () => (await processes.listUnder(world.layout.tools.root)).some((p) => p.pid === standInPid) || undefined, 250);
-		const relaunchedAt = new Date().toISOString();
+		const relaunchedAtMs = Date.now();
+		const relaunchedAt = new Date(relaunchedAtMs).toISOString();
 		const third = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		const again = await pageOf(third, "wizard.html");
 		// The relaunch resumes: it ends on the first sign-in step with the stack started. A passing run takes 5 to 6 minutes; three `windows-2025` jobs in about thirty sat here the whole 25 minutes with
-		// nothing printed (task 15: runs 42217940816, 42230310295, 42368188880), so the wait also stops at an install that ended on a failure, and either way says what the app did and what ran.
+		// nothing printed (task 15: runs 42217940816, 42230310295, 42368188880). The app had said why within 70 s: the engine finished, then the single `cli.mjs up` failed (class `start`, the PowerShell
+		// launch missing its 60 s) and the wizard stayed on the start step with Try again. Neither a failed install nor a failed start is what this case expects, so either ends the wait at once;
+		// the failure is the app's own sentence, its data-kind and details, and the reasons of the last `reach`, `up-attempt-failed` and `sb-log-tail` events, and the diagnostics below say what ran.
 		const relaunchTrouble = async (): Promise<string> => {
 			const text = await again.evaluate(() => ({ step: document.body.dataset.step ?? "", status: document.querySelector("[data-step='install']")?.getAttribute("data-status") ?? "", body: (document.querySelector("[data-step]")?.textContent ?? "").replace(/\s+/g, " ").slice(0, 900) })).catch(() => ({ step: "(page gone)", status: "", body: "" }));
 			const mine = events().filter((e) => typeof e.t === "string" && e.t >= relaunchedAt).slice(-60).map((e) => JSON.stringify(e).slice(0, 260));
 			const recordedNow = existsSync(join(world.layout.state, "bootstrap.json")) ? (JSON.parse(readFileSync(join(world.layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> }).stages : {};
 			return `page: step ${text.step}, install status ${text.status || "(none)"}: ${text.body} ;; stage records: ${Object.entries(recordedNow).filter(([, r]) => r.status !== "ok").map(([n, r]) => `${n}=${r.status}`).join(", ") || "(all ok)"} ;; events since the relaunch: ${mine.join(" | ")} ;; ${await startTrouble(world, { app: third, max: 5000 })}`;
 		};
-		const arrived = await until("the claude step, or an install that ended on a failure", 25 * 60_000, async () => {
-			if ((await stepOf(again)) === "claude") return "claude";
-			return (await again.locator("[data-step='install'][data-status='failed']").count()) > 0 ? "failed" : undefined;
-		}, 200).catch(async (error: Error) => {
+		const installOrStartFailing = firstFailure(installFailing(world.layout, relaunchedAtMs, again), startFailing(world.layout, relaunchedAtMs, again));
+		await until("the claude step", 25 * 60_000, async () => (await stepOf(again)) === "claude" || undefined, { every: 200, failWhen: installOrStartFailing }).catch(async (error: Error) => {
 			throw new Error(`${error.message}\n--- diagnostics --- ${await relaunchTrouble()}`, { cause: error });
 		});
-		if (arrived === "failed") throw new Error(`the relaunch's install ended on a failure\n--- diagnostics --- ${await relaunchTrouble()}`);
 		page = again;
 		first = third;
 		const exitedAt = await exited;
@@ -794,9 +787,11 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await stepOf(page), "linear");
 		// The OS can encrypt here; a development build is told it cannot (SBD_TEST_NO_ENCRYPTION=1), as it is told the WSL bash.
 		await close(first);
+		// The relaunch of a finished install resumes on step 9 with the stack starting; a start that fails (step 9 draws the sentence, `#start-failure`) is not what this case expects, and ends the wait at once.
+		let launchedAt = Date.now();
 		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH, SBD_TEST_NO_ENCRYPTION: "1" });
 		page = await pageOf(first, "wizard.html");
-		await waitStep(page, "linear", 25 * 60_000);
+		await waitStep(page, "linear", 25 * 60_000, startFailing(world.layout, launchedAt, page));
 		await page.locator("#linear-refusal").waitFor({ timeout: 30_000 });
 		assert.equal((await page.locator("#linear-refusal p").innerText()).trim(), t("zh-TW", "linear.refused"));
 		assert.equal(await page.locator("#linear-key").count(), 0, "there is no field to type a key into");
@@ -807,9 +802,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(eventsNamed("linear-key-saved").length, 0);
 		// Back to a normal launch for the rest of the run.
 		await close(first);
+		launchedAt = Date.now();
 		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		page = await pageOf(first, "wizard.html");
-		await waitStep(page, "linear", 25 * 60_000);
+		await waitStep(page, "linear", 25 * 60_000, startFailing(world.layout, launchedAt, page));
 	});
 
 	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", { timeout: 1_200_000 }, async () => {
@@ -1378,8 +1374,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 			}
 			return lowest;
 		};
+		const liveAt = Date.now();
 		const live = await launch("en-US", { SBD_TEST_WSL_BASH: WSL_BASH });
-		await until("the GUI view to load the server's address", 240_000, () => guiUrl(live));
+		// A start that failed (the supervisor's `start-failed`, which nothing retries) is not what this case expects: it ends the wait at once with the app's reason.
+		await until("the GUI view to load the server's address", 240_000, () => guiUrl(live), { failWhen: startFailing(world.layout, liveAt) });
 		const record = await until("both start times in start.json", 120_000, () => {
 			const r = startRecord();
 			return r?.herdr?.startTime && r.sb?.startTime ? r : undefined;

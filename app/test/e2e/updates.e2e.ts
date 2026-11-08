@@ -21,6 +21,7 @@ import { ALT_NODE_VERSION, altStack } from "../harness/alt-pins.ts";
 import { createWorld, disposeWorld, noteUserPath, realStack, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
+import { startFailing, until } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { FeedServer, latestYml, makeTestKey, type TestKey } from "../fixtures/feed/feed-server.ts";
@@ -38,8 +39,6 @@ if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
 	});
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
 function logTails(dir: string, lines = 14, width = 360): string[] {
 	if (!existsSync(dir)) return [];
@@ -50,21 +49,6 @@ function logTails(dir: string, lines = 14, width = 360): string[] {
 			return [];
 		}
 	});
-}
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 400): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(every);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const shot = async (page: Page, name: string): Promise<void> => {
@@ -198,10 +182,12 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		// The app has no wizard record for this root, so it knows no code host: the update changes Node, which every stack has. The stack in force is the shipped one (the app's bundled file has the same generation), so nothing is applied at the start.
 		mkdirSync(world.layout.stack, { recursive: true });
 		writeFileSync(stackFiles(world.layout).active, `${JSON.stringify(realStack, null, "\t")}\n`);
+		const launchedAt = Date.now();
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
 		appVersion = await app.evaluate(({ app: electronApp }) => electronApp.getVersion());
 		// A start that never reaches the GUI (task 15: a Windows runner) carries what the app logged and what ran.
-		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, 500).catch(async (error: Error) => {
+		// A start the supervisor gave up on (`start-failed`; nothing retries it) is not what this case expects: it ends the wait at once with the app's reason.
+		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, launchedAt) }).catch(async (error: Error) => {
 			throw new Error(`${error.message}\n--- diagnostics --- ${await startTrouble(world, { app })}`, { cause: error });
 		});
 		assert.equal(await guiStatus(url), 200);
@@ -343,6 +329,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 
 		// Applied in zh-TW: the page is left in that language while the apply runs, so the applying shot is a Chinese one.
 		await updatesIn("zh-TW");
+		const appliedAt = Date.now();
 		await settings.locator("#update-apply").click();
 		await stackCard().and(settings.locator('[data-state="applying"]')).waitFor({ timeout: 120_000 });
 		assert.equal(await settings.locator("#update-apply").isDisabled(), true);
@@ -357,7 +344,8 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		assert.equal(active.generation, generation + 1);
 		const current = JSON.parse(readFileSync(join(world.layout.state, "current.json"), "utf8")) as { versions: Record<string, string> };
 		assert.equal(current.versions.node, ALT_NODE_VERSION);
-		const url = await until("the GUI view to load again", 240_000, guiUrl, 500);
+		// The apply stops the stack and starts it again; the latest start since the click that ended in `start-failed` is a failure, which this case (the update itself succeeds) does not expect.
+		const url = await until("the GUI view to load again", 240_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, appliedAt) });
 		assert.equal(await guiStatus(url), 200, "the stack is back");
 	});
 
@@ -369,6 +357,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		await checkedStack({ ...bad, generation: generation + 2 });
 		assert.equal(await stackState(), "available");
 		await updatesIn("en");
+		const appliedAt = Date.now();
 		await settings.locator("#update-apply").click();
 		await stackCard().and(settings.locator('[data-state="applying"]')).waitFor({ timeout: 120_000 });
 		await shot(settings, "updates-applying-en");
@@ -380,7 +369,7 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		assert.equal(await settings.locator("#stack-generation").textContent(), `Generation ${generation + 1}`);
 		const current = JSON.parse(readFileSync(join(world.layout.state, "current.json"), "utf8")) as { versions: Record<string, string> };
 		assert.equal(current.versions.node, ALT_NODE_VERSION, "the Node of the old stack is in force");
-		const url = await until("the GUI view to load again", 240_000, guiUrl, 500);
+		const url = await until("the GUI view to load again", 240_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, appliedAt) });
 		assert.equal(await guiStatus(url), 200, "the stack is back on the old generation");
 	});
 
@@ -389,8 +378,9 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		assert.ok(active.generation > generation, "the stack in force is newer than the bundled one");
 		const text = activeText();
 		await app.close();
+		const relaunchedAt = Date.now();
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
-		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, 500);
+		const url = await until("the GUI view to load the server's address", 240_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, relaunchedAt) });
 		assert.equal(await guiStatus(url), 200);
 		assert.equal(activeText(), text, "stack/active.json is the downloaded one still");
 	});

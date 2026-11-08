@@ -18,6 +18,7 @@ import { createPlatform } from "../../src/main/platform/index.ts";
 import { stackFiles } from "../../src/main/update/stack.ts";
 import { childEnvOf, createWorld, disposeWorld, noteUserPath, realStack, run, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
+import { sleep, startFailing, until } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, readAsarFile } from "../harness/packaged.ts";
@@ -42,23 +43,6 @@ if (enabled && process.platform === "win32" && !hosted.run && hosted.fail) {
 	nodeIt("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 500): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(every);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const shot = async (page: Page, name: string): Promise<void> => {
@@ -191,8 +175,10 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		assert.equal(r.status, 0, `the installer exited ${r.status}: ${r.stderr?.toString()}`);
 		await until("the installed program", 120_000, () => existsSync(exe));
 		assert.equal(installedVersion(), "0.0.1");
+		const launchedAt = Date.now();
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
-		await until("the stack", 600_000, guiUp);
+		// The first start of the installed root. Task 15's Windows jobs sat here 10 minutes after `up` had failed within 70 s; a start the supervisor gave up on (`start-failed`) is not what this case expects.
+		await until("the stack", 600_000, guiUp, { failWhen: startFailing(world.layout, launchedAt) });
 		assert.equal(await app.evaluate(({ app: electronApp }) => electronApp.getVersion()), "0.0.1");
 	});
 
@@ -226,8 +212,9 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		signWithScript(join(installers, SETUP_2), "0.0.2");
 		// 0.0.2 is the version that was refused for the first file: a new file for the same version is checked again only by a new start, so this case restarts the app first.
 		await (app as ElectronApplication).close();
+		const restartedAt = Date.now();
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
-		await until("the stack", 600_000, guiUp);
+		await until("the stack", 600_000, guiUp, { failWhen: startFailing(world.layout, restartedAt) });
 		const before = startRecord();
 		await (app as ElectronApplication).evaluate(({ Menu }) => void Menu.getApplicationMenu()?.getMenuItemById("settings-updates")?.click());
 		settings = await until("the settings page", 60_000, () => (app as ElectronApplication).windows().find((w) => w.url().endsWith("settings.html")), 250);
@@ -246,8 +233,9 @@ describe("the Windows install and update, 0.0.1 to 0.0.2 (e2e, task 13)", { skip
 		const autostarted = await platform.processes.listUnder(installDir);
 		for (const p of autostarted) platform.processes.kill(p.pid);
 		await until("the autostarted 0.0.2 to be gone", 120_000, async () => (await platform.processes.listUnder(installDir)).length === 0);
+		const relaunchedAt = Date.now();
 		app = await electron.launch({ executablePath: exe, args: ["--lang=en-US"], env: env(), timeout: 90_000 });
-		await until("the stack back under 0.0.2", 300_000, async () => (await guiUp()) && startRecord().sb?.pid !== before.sb?.pid);
+		await until("the stack back under 0.0.2", 300_000, async () => (await guiUp()) && startRecord().sb?.pid !== before.sb?.pid, { failWhen: startFailing(world.layout, relaunchedAt) });
 		assert.equal(await (app as ElectronApplication).evaluate(({ app: electronApp }) => electronApp.getVersion()), "0.0.2");
 		assert.equal(existsSync(world.layout.state), true, "the data root is kept");
 		const log = readFileSync(join(world.layout.logs, "start.jsonl"), "utf8");

@@ -19,6 +19,7 @@ import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
+import { sleep, startFailing, until } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { readZip } from "../harness/unzip.ts";
 
@@ -35,8 +36,6 @@ if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
 	});
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
 function logTails(dir: string, lines = 14, width = 360): string[] {
 	if (!existsSync(dir)) return [];
@@ -47,21 +46,6 @@ function logTails(dir: string, lines = 14, width = 360): string[] {
 			return [];
 		}
 	});
-}
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 400): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(every);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const shot = async (page: Page, name: string): Promise<void> => {
@@ -147,9 +131,11 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		const installed = await runWorld(world, { profile: true, recipe: RECIPE });
 		assert.ok(installed.ok, `the install failed: ${JSON.stringify(installed.error ?? Object.values(installed.outcomes).filter((o) => o.failure).map((o) => o.failure))}`);
 		writeWizardFile(world.layout, { schema: 1, step: "done", done: true, later: [], hostsIndex: 0, locale: "en" });
+		const launchedAt = Date.now();
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
 		// A start that never reaches the GUI (task 15: a Windows runner, 300 s, nothing else said) carries what the app logged and what ran.
-		const url = await until("the GUI view to load the server's address", 300_000, guiUrl, 500).catch(async (error: Error) => {
+		// A start the supervisor gave up on (`start-failed`) is not what this case expects: it ends the wait at once with the app's reason.
+		const url = await until("the GUI view to load the server's address", 300_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, launchedAt) }).catch(async (error: Error) => {
 			throw new Error(`${error.message}\n--- diagnostics --- ${await startTrouble(world, { app })}`, { cause: error });
 		});
 		assert.equal(await guiStatus(url), 200);
@@ -233,13 +219,15 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 			await world.userPath.remove(world.layout.tools.shims);
 			assert.equal(await pathHasEntry(), false);
 		}
+		const repairedAt = Date.now();
 		await page.locator("#diag-repair").click();
 		await page.locator('li.update-card[data-role="repair"][data-state="working"]').waitFor({ timeout: 30_000 });
 		await shot(page, "diagnostics-repair-working-en");
 		await page.locator('li.update-card[data-role="repair"][data-state="done"]').waitFor({ timeout: 900_000 });
 		assert.equal(existsSync(join(dir, "package.json")), true, `${PACKAGE} is installed again`);
 		if (isWin) assert.equal(await pathHasEntry(), true, "the PATH entry is back");
-		const url = await until("the stack to run again", 300_000, guiUrl, 500);
+		// The repair stops the stack and starts it again after the work; the latest start since the click that ended in `start-failed` is the repair's failure, not an expected state of this case.
+		const url = await until("the stack to run again", 300_000, guiUrl, { every: 500, failWhen: startFailing(world.layout, repairedAt) });
 		assert.equal(await guiStatus(url), 200, "the GUI answers");
 		await shotBoth("repair-done");
 	});

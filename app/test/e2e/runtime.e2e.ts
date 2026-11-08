@@ -12,6 +12,7 @@ import { _electron as electron, type ElectronApplication } from "playwright-core
 import { createPlatform } from "../../src/main/platform/index.ts";
 import { childEnvOf, createWorld, disposeWorld, noteUserPath, run, runWorld, type World } from "../harness/e2e-light.ts";
 import { hostedCase } from "../harness/hosted.ts";
+import { sleep, until } from "../harness/fail-fast.ts";
 import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 
@@ -26,23 +27,6 @@ if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
 	it("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(500);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 describe("the packaged app's lifecycle against the real stack (e2e, task 8a)", { skip }, () => {

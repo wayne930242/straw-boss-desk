@@ -26,6 +26,7 @@ import { writeWizardFile } from "../../src/main/wizard/state-file.ts";
 import { createWorld, disposeWorld, noteUserPath, runWorld, stopProcessesUnder, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase, realIO, type FixtureIO } from "../harness/hosted.ts";
+import { sleep, startFailing, until } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
@@ -46,8 +47,6 @@ if (enabled && kind === "dev" && !hosted.run && hosted.fail) {
 	});
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** The tail of every file in a folder, for a failure message: a CI annotation is all there is to read when a case fails on a runner. */
 function logTails(dir: string, lines = 14, width = 360): string[] {
 	if (!existsSync(dir)) return [];
@@ -58,21 +57,6 @@ function logTails(dir: string, lines = 14, width = 360): string[] {
 			return [];
 		}
 	});
-}
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>, every = 400): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(every);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const shot = async (page: Page, name: string): Promise<void> => {
@@ -216,10 +200,12 @@ describe("Remove all data against a real store and a real folder (e2e, task 14)"
 			await seeder.write(claudeName(), "pm", SECRET);
 			await seeder.write(DEFAULT_CLAUDE.name, DEFAULT_CLAUDE.account, SECRET);
 		}
+		const launchedAt = Date.now();
 		app = await electron.launch({ executablePath: packaged?.executable, args: ["--lang=en-US"], env: env(), timeout: 60_000 });
 		let url: string;
 		try {
-			url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), 500);
+			// A start the supervisor gave up on (`start-failed`) is not what this case expects: it ends the wait at once with the app's reason.
+			url = await until("the GUI view to load the server's address", 300_000, () => guiUrl(app as ElectronApplication), { every: 500, failWhen: startFailing(world.layout, launchedAt) });
 		} catch (error) {
 			// What the shell page says (a start failure has its own screen) and what the logs end with, the app's own first: the only things to read when a runner's start does not come up.
 			throw new Error(`${(error as Error).message}\n--- diagnostics --- ${await startTrouble(world, { app, max: 6000 })}`, { cause: error });
