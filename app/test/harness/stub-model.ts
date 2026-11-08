@@ -3,7 +3,9 @@
 // dispatches one pi-herdr-agents subagent and the child runs `command -v` in its bash tool. It is configured by the harness (a `models.json` and the default model in the agent
 // folder), never by the app.
 //
-//   [[stub:subagent]]   in the last message  -> a `subagent` tool call: a child named `e2e-child` whose task carries [[stub:child-bash]]
+//   [[stub:subagent]]   in the last message  -> a `tool_search` call for `subagent` (pi-herdr-agents 3.8.0 registers its routine tools deferred, so pi's tool_search must declare
+//                                               them first; a call to a tool that is not declared is "not found"), then, on its result, a `subagent` tool call: a child named
+//                                               `e2e-child` whose task carries [[stub:child-bash]]
 //   [[stub:child-bash]] in the last message  -> a `bash` tool call that prints where gh, git, pi and bash resolve
 //   a tool result       as the last message  -> the final text `STUB-RESULT` and the tool's output, so the parent's steer message holds what the child saw
 //   anything else                            -> "Stub model: ready."
@@ -20,6 +22,8 @@ export const LOOKUP_COMMAND = 'for n in gh git pi bash; do p=$(command -v $n); p
 interface ChatMessage {
 	role?: string;
 	content?: unknown;
+	tool_call_id?: string;
+	tool_calls?: Array<{ id?: string; function?: { name?: string } }>;
 }
 
 export type StubReply = { kind: "text"; text: string } | { kind: "tool"; name: string; args: Record<string, unknown> };
@@ -31,15 +35,21 @@ export function textOf(content: unknown): string {
 	return "";
 }
 
+const subagentCall = (): StubReply => ({ kind: "tool", name: "subagent", args: { name: CHILD_NAME, task: `${CHILD_MARKER} Print where gh, git, pi and bash resolve, then say what you saw.`, model: "stub/stub-1" } });
+
+/** True when the tool message `last` answers a `tool_search` call (matched by `tool_call_id` in the assistant message that made it). */
+function answersToolSearch(messages: readonly ChatMessage[], last: ChatMessage): boolean {
+	if (last.tool_call_id === undefined) return false;
+	return messages.some((m) => m.role === "assistant" && (m.tool_calls ?? []).some((c) => c.id === last.tool_call_id && c.function?.name === "tool_search"));
+}
+
 /** What the stub answers to a conversation: only the last message decides, so a marker earlier in the history never repeats a tool call. */
 export function reply(messages: readonly ChatMessage[]): StubReply {
 	const last = messages[messages.length - 1];
 	const text = textOf(last?.content);
-	if (last?.role === "tool") return { kind: "text", text: `${RESULT_PREFIX}\n${text}` };
+	if (last?.role === "tool") return answersToolSearch(messages, last) ? subagentCall() : { kind: "text", text: `${RESULT_PREFIX}\n${text}` };
 	if (text.includes(CHILD_MARKER)) return { kind: "tool", name: "bash", args: { command: LOOKUP_COMMAND } };
-	if (text.includes(SUBAGENT_MARKER)) {
-		return { kind: "tool", name: "subagent", args: { name: CHILD_NAME, task: `${CHILD_MARKER} Print where gh, git, pi and bash resolve, then say what you saw.`, model: "stub/stub-1" } };
-	}
+	if (text.includes(SUBAGENT_MARKER)) return { kind: "tool", name: "tool_search", args: { query: "subagent" } };
 	return { kind: "text", text: "Stub model: ready." };
 }
 

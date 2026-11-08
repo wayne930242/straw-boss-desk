@@ -9,8 +9,10 @@ after(async () => {
 });
 
 describe("the scripted answers", () => {
-	it("answers the subagent marker with one subagent call whose task carries the child's marker", () => {
-		const r = reply([{ role: "user", content: `please ${SUBAGENT_MARKER}` }]);
+	it("answers the subagent marker with a tool_search for subagent, and its result with one subagent call whose task carries the child's marker", () => {
+		const first = reply([{ role: "user", content: `please ${SUBAGENT_MARKER}` }]);
+		assert.deepEqual(first, { kind: "tool", name: "tool_search", args: { query: "subagent" } });
+		const r = reply([{ role: "user", content: `please ${SUBAGENT_MARKER}` }, { role: "assistant", content: "", tool_calls: [{ id: "call_1", function: { name: "tool_search" } }] }, { role: "tool", tool_call_id: "call_1", content: "subagent" }]);
 		assert.equal(r.kind, "tool");
 		if (r.kind !== "tool") return;
 		assert.equal(r.name, "subagent");
@@ -22,6 +24,8 @@ describe("the scripted answers", () => {
 	it("answers the child's marker with the bash lookup, and a tool result with the final text that echoes it", () => {
 		assert.deepEqual(reply([{ role: "user", content: [{ type: "text", text: `@file ${CHILD_MARKER}` }] }]), { kind: "tool", name: "bash", args: { command: LOOKUP_COMMAND } });
 		assert.deepEqual(reply([{ role: "user", content: CHILD_MARKER }, { role: "assistant", content: "" }, { role: "tool", content: "gh=/x/gh" }]), { kind: "text", text: `${RESULT_PREFIX}\ngh=/x/gh` });
+		const answered = [{ role: "assistant", content: "", tool_calls: [{ id: "call_2", function: { name: "subagent" } }] }, { role: "tool", tool_call_id: "call_2", content: "launched" }];
+		assert.deepEqual(reply([{ role: "user", content: SUBAGENT_MARKER }, ...answered]), { kind: "text", text: `${RESULT_PREFIX}\nlaunched` }, "the result of the subagent call itself ends the turn");
 	});
 
 	it("looks only at the last message, so an old marker never repeats a call, and anything else is plain", () => {
@@ -46,13 +50,13 @@ describe("the server", () => {
 		assert.match(text, /Stub model: ready\./);
 		assert.match(text, /"finish_reason":"stop"/);
 		assert.ok(text.trimEnd().endsWith("data: [DONE]"));
-		const tool = await ask([{ role: "user", content: SUBAGENT_MARKER }]);
+		const tool = await ask([{ role: "user", content: SUBAGENT_MARKER }, { role: "assistant", content: "", tool_calls: [{ id: "call_1", function: { name: "tool_search" } }] }, { role: "tool", tool_call_id: "call_1", content: "subagent" }]);
 		const deltas = [...tool.matchAll(/^data: (\{.*\})$/gm)].map((m) => JSON.parse(m[1] ?? "{}") as { choices: Array<{ delta?: { tool_calls?: Array<{ function: { name: string; arguments: string } }> }; finish_reason?: string | null }> });
 		const call = deltas.flatMap((d) => d.choices.flatMap((c) => c.delta?.tool_calls ?? []))[0];
 		assert.equal(call?.function.name, "subagent");
 		assert.equal(JSON.parse(call?.function.arguments ?? "{}").name, CHILD_NAME);
 		assert.ok(deltas.some((d) => d.choices.some((c) => c.finish_reason === "tool_calls")));
-		assert.deepEqual(stub.requests.map((r) => r.role), ["user", "user"]);
+		assert.deepEqual(stub.requests.map((r) => r.role), ["user", "tool"]);
 		assert.equal((await fetch(`${stub.baseUrl}/models`)).status, 404);
 	});
 });

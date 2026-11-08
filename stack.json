@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 11,
+  "generation": 12,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -91,9 +91,9 @@
     { "name": "pi-intercom", "version": "0.18.1", "integrity": "sha512-hY3y+vF6CrkpV0N/55pEsl3DSVjGerlTCQDY2mt37o0jQj8SLW+GmQoKyAEgCyfcxrqJb+Tx4hp4eXqM2hLYgg==" },
     {
       "name": "pi-herdr-agents",
-      "version": "3.6.1",
-      "integrity": "sha512-66uBavTDkfRbg8BLyhkecuqzgKOd7KxuuPOUG/llDJxTBQFNeVLwzL8gK1FkJf2P8C2ccYkG5ORztWDZa99Vkg==",
-      "note": "PMs run the newest npm release by the PM's decision (the author runs a git fork: upstream 3.3.1 + PRs #84, #95, #99, the solutionSpace change of closed PR #87, and the fork-only exit hold). Checked against 3.6.1 on 2026-10-30. Still missing: PR #84 is open upstream, so Escape in a running auto-exit child still closes it and the parent reports a failed run instead of leaving the pane open for the person; the exit-hold event channel (pi-herdr-agents:exit-hold, closed PR #89) does not exist, which matters only to an extension that waits out a quota reset (the author's quota-resume), not to a PM; there is no solutionSpace parameter on subagent (closed PR #87). Now carried upstream: #99 (a child without auto-exit is asked once whether it is done), #94 (an auto-exit child waits for the children it launched), and the /reload stale-context fix of #95 (session_shutdown clears the parent context)."
+      "version": "3.8.0",
+      "integrity": "sha512-c76phDYWcwDj0hy9fCxKWZJXabEjv+wwbS6/1Guvx+V2yIXvkCaViDZ+xtxIA9AOMriKuhM/a8n3eoEpASbTXQ==",
+      "note": "PMs run the newest npm release by the PM's decision (the author runs a git fork: upstream 3.3.1 + PRs #84, #95, #99, the solutionSpace change of closed PR #87, and the fork-only exit hold). Checked against 3.8.0 on 2026-11-08. Still missing: the exit-hold event channel (pi-herdr-agents:exit-hold, closed PR #89) does not exist, which matters only to an extension that waits out a quota reset (the author's quota-resume), not to a PM; there is no solutionSpace parameter on subagent (closed PR #87). Now carried upstream: #99 (a child without auto-exit is asked once whether it is done), #94 (an auto-exit child waits for the children it launched), the /reload stale-context fix of #95, #84 (3.7.2: an auto-exit child stays open when pi reports an aborted run), and #112 (3.8.0: on Windows a launch script runs through an absolute bash from pi's shellPath, seam U10). 3.8.0 registers its nine routine tools (subagent and the rest) with pi's deferred exposure, so a model loads them through pi's tool_search first."
     },
     { "name": "pi-herdr-roles", "version": "0.1.0", "integrity": "sha512-6pJqj6wiph06mpn6hvRFoAd4tyc/RmvAnZA7+E9GLcILY9zKsaTZH59wEOhTqgnCQkzbg2l4SoH+HGjAp8efMg==" },
     { "name": "@juicesharp/rpiv-ask-user-question", "version": "2.15.0", "integrity": "sha512-Gm6de5IZF52BaSeh9dnDqJBn821Z5XfJkCmhkCmqTzvNv3SCpSv1mA4Gj5VBcfrSe+xTtWSVQzJwIqJFQHH3Lg==" },
