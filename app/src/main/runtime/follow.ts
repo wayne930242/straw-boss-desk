@@ -23,7 +23,7 @@ export interface GuiTarget {
 }
 
 /** The server's default view (`/boss gui view`), as `gui.json` carries it; absent when none is set. */
-export type GuiView = "standard" | "geek" | "zen";
+export type GuiView = "standard" | "geek" | "zen" | "raven";
 
 export type Screen = { kind: "gui-stopped" } | { kind: "server-stopped" } | { kind: "failed"; failure: StartFailure };
 
@@ -102,7 +102,7 @@ function readJson<T>(file: string): T | undefined {
 
 const isTarget = (port: unknown, token: unknown): boolean => Number.isInteger(port) && typeof token === "string" && token.length > 0;
 
-const VIEWS: readonly string[] = ["standard", "geek", "zen"];
+const VIEWS: readonly string[] = ["standard", "geek", "zen", "raven"];
 const viewOf = (value: unknown): GuiView | undefined => (typeof value === "string" && VIEWS.includes(value) ? (value as GuiView) : undefined);
 
 /** The default view `gui.json` in `slotDir` carries, or undefined (no default set, a missing file, or a value this build does not know). */
@@ -110,11 +110,13 @@ export const readGuiView = (slotDir: string): GuiView | undefined => viewOf(read
 
 /**
  * The window's background for a view, set before the page loads and whenever the view changes: `geek` is black and `zen` is the Zen page's own ground (`html[data-view=zen] body`
- * in pi-straw-boss 0.52.0's stylesheet, `#14110e`); anything else is the page's `--bg` (`#16161e`). The shell's own screens use the same dark palette.
+ * in pi-straw-boss 0.52.0's stylesheet, `#14110e`), `raven` is Raven Keep's `--bg` (`gui/themes/raven/raven.css` of 0.64.0, `#0d0a10`); anything else is the page's `--bg` (`#16161e`).
+ * The shell's own screens use the same dark palette.
  */
 export function backgroundOf(view: GuiView | undefined): string {
 	if (view === "geek") return "#000000";
 	if (view === "zen") return "#14110e";
+	if (view === "raven") return "#0d0a10";
 	return "#16161e";
 }
 

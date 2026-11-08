@@ -474,15 +474,18 @@ describe("the view (spec: Following the GUI, The view)", () => {
 		assert.deepEqual(h.views(), []);
 	});
 
-	it("reads the view from gui.json and colours the window: geek black, zen the Zen page's own ground, anything else the page's --bg", () => {
+	it("reads the view from gui.json and colours the window: geek black, zen the Zen page's own ground, raven Raven Keep's --bg, anything else the page's --bg", () => {
 		const { dir, write } = folder();
 		assert.equal(readGuiView(dir), undefined);
 		write("gui.json", { port: 1, token: "x", view: "zen" });
 		assert.equal(readGuiView(dir), "zen");
+		write("gui.json", { port: 1, token: "x", view: "raven" });
+		assert.equal(readGuiView(dir), "raven");
 		write("gui.json", { port: 1, token: "x", view: "nope" });
 		assert.equal(readGuiView(dir), undefined);
 		assert.equal(backgroundOf("geek"), "#000000");
 		assert.equal(backgroundOf("zen"), "#14110e");
+		assert.equal(backgroundOf("raven"), "#0d0a10");
 		assert.equal(backgroundOf("standard"), "#16161e");
 		assert.equal(backgroundOf(undefined), "#16161e");
 	});
