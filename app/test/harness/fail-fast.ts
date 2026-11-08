@@ -4,13 +4,12 @@
 // What counts as the app's failure, and where it is written:
 //   - an install that failed: the wizard's install step, `[data-step="install"][data-status="failed"]` (renderer/wizard/install.ts:81, with a `.problem` sentence per failure and `#install-details`),
 //     or a stage record `failed` in `state/bootstrap.json` (bootstrap/stage.ts:616; `lastFailure.at` dates it);
-//   - a start that failed: the wizard's start step, `[data-step="start"][data-status="failed"]` (renderer/wizard/start.ts:34), or `#start-failure` with its `data-kind` (start.ts:18; steps 6 and 9 draw it),
+//   - a start that failed: the wizard's start step, `[data-step="start"][data-status="failed"]` (renderer/wizard/start.ts:34), or `#start-failure` with its `data-kind` (start.ts:18; steps 6, 9 and projects draw it),
 //     or a `start-failed` line in `logs/start.jsonl` (runtime/supervisor.ts:241, 245) that no later `begin` or `sb-server-up` follows (a start the PM or the app tried again is not a failure).
 // A wait uses a probe only where the failure is not what the case expects: the cases that fail on purpose (a refused code, Try again, the failure screen) never get one.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "playwright-core";
-import { CLOCK_SKEW_MS } from "./log-events.ts";
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -97,8 +96,8 @@ const readLines = (file: string): LogLine[] => {
 	}
 };
 
-/** Whether a line was written at or after `sinceMs` (the test's `Date.now()` mark), counting a line stamped up to the clock skew before it. */
-const since = (line: LogLine, sinceMs: number): boolean => Date.parse(String(line.t)) >= sinceMs - CLOCK_SKEW_MS;
+/** Whether a line was written at or after `sinceMs` (the test's `Date.now()` mark). No clock-skew allowance: a failure written just before the mark belongs to the previous launch, and a failure that is missed only falls back to the wait's own timeout. */
+const since = (line: LogLine, sinceMs: number): boolean => Date.parse(String(line.t)) >= sinceMs;
 
 // ---- the logs ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -137,7 +136,7 @@ export function failedStages(folders: AppFolders, sinceMs: number): FailedStage[
 	}
 	return Object.entries(stages).flatMap(([stage, record]) => {
 		const note = record.lastFailure;
-		if (record.status !== "failed" || note === undefined || note.message === "cancelled" || !(Date.parse(String(note.at)) >= sinceMs - CLOCK_SKEW_MS)) return [];
+		if (record.status !== "failed" || note === undefined || note.message === "cancelled" || !(Date.parse(String(note.at)) >= sinceMs)) return [];
 		return [{ stage, category: String(note.category ?? ""), message: String(note.message ?? "") }];
 	});
 }
@@ -180,7 +179,7 @@ export interface PageFailure {
 
 /**
  * Runs in the page (`page.evaluate`), so it uses nothing but `document`: the failure the wizard shows, or null. The install step shows its failures as `.problem` lines and Details; the start's failure
- * is `#start-failure` with Details in its `.refusal` block, and steps 6 and 9 both draw it.
+ * is `#start-failure` with Details in its `.refusal` block, and steps 6, 9 and projects draw it.
  */
 export function readPageFailure(): PageFailure | null {
 	const text = (el: { textContent: string | null } | null): string => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -200,15 +199,21 @@ const pageFailureOf = (page: Pick<Page, "evaluate">): Promise<PageFailure | null
 
 /** At most this many characters of a failure sentence: the callers add their own diagnostics, and a CI annotation is cut. */
 const BUDGET = 2400;
+/** The room kept for the events when the headline and the page text are long. */
+const EVENTS_MIN = 800;
 
 function report(shown: PageFailure | null, headline: string, folders: AppFolders, sinceMs: number): string {
 	const parts: string[] = [headline];
 	if (shown !== null) {
 		parts.push(`the page says ${JSON.stringify(shown.sentences.join(" / "))} (${shown.where} step${shown.kind === "" ? "" : `, data-kind=${shown.kind}`}) details: ${JSON.stringify(shown.details.slice(0, 600))}`);
 	}
+	// The newest events are the most useful (`start-failed`, the end of the sb log): when the text is too long the oldest events are cut, not the newest.
+	const head = parts.join(" ;; ").slice(0, BUDGET - EVENTS_MIN);
 	const events = failureEvents(folders, sinceMs);
-	if (events.length > 0) parts.push(`events: ${events.join(" | ")}`);
-	return parts.join(" ;; ").slice(0, BUDGET);
+	if (events.length === 0) return head;
+	const room = BUDGET - head.length - " ;; events: ".length;
+	const text = events.join(" | ");
+	return `${head} ;; events: ${text.length > room ? `...${text.slice(text.length - (room - 3))}` : text}`;
 }
 
 /**
@@ -234,6 +239,6 @@ export const startFailing =
 		const shown = page === undefined ? null : await pageFailureOf(page);
 		const logged = terminalStartFailure(readLines(join(folders.logs, "start.jsonl")), sinceMs);
 		if ((shown === null || shown.where !== "start") && logged === undefined) return undefined;
-		const headline = `the start failed: ${logged === undefined ? "(the log has no start-failed yet)" : `start-failed kind=${cut(logged.kind, 80)} step=${cut(logged.step ?? "", 80)} reason=${cut(logged.reason ?? logged.detail ?? "", 400)}`}`;
+		const headline = `the start failed: ${logged === undefined ? "(the log has no start-failed yet)" : `start-failed kind=${cut(logged.kind ?? "", 80)} step=${cut(logged.step ?? "", 80)} reason=${cut(logged.reason ?? logged.detail ?? "", 400)}`}`;
 		return report(shown?.where === "start" ? shown : null, headline, folders, sinceMs);
 	};

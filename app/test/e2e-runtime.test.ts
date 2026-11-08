@@ -16,6 +16,7 @@ import { secretPatterns } from "./harness/engine-fixture.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, run, runWorld, type RunSummary, type World } from "./harness/e2e-light.ts";
 import { redactedServerLogTail } from "./harness/server-log-tail.ts";
 import { hostedCase } from "./harness/hosted.ts";
+import { until } from "./harness/fail-fast.ts";
 import { assertElevatedRunner } from "./harness/elevation.ts";
 
 // The task 8a anchor, supervisor half (spec: Tasks 8a): from a root tasks 5 to 7 filled, a real Herdr, a real sb server and a real pi are started, restarted and stopped
@@ -31,23 +32,6 @@ if (ON && !hosted.run && hosted.fail) {
 	it("runs on a hosted runner", () => {
 		assert.fail(`${hosted.reason} (SBD_REQUIRE_HOSTED_FIXTURES=1)`);
 	});
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(500);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
 }
 
 const statusOf = (url: string): Promise<number> =>

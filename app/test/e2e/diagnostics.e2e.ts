@@ -19,7 +19,7 @@ import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
-import { sleep, startFailing, until } from "../harness/fail-fast.ts";
+import { firstFailure, sleep, startFailing, until, type FailWhen } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { readZip } from "../harness/unzip.ts";
 
@@ -223,7 +223,9 @@ describe("Diagnostics against an installed root (e2e, task 14)", { skip }, () =>
 		await page.locator("#diag-repair").click();
 		await page.locator('li.update-card[data-role="repair"][data-state="working"]').waitFor({ timeout: 30_000 });
 		await shot(page, "diagnostics-repair-working-en");
-		await page.locator('li.update-card[data-role="repair"][data-state="done"]').waitFor({ timeout: 900_000 });
+		// Repair that ends `failed` draws `#diag-repair-failed` (renderer/settings/diagnostics.ts:97; services.ts repair() sets phase failed when the repair is not ok); this case expects `done`, so the card or the start failing ends the wait.
+		const repairFailed: FailWhen = async () => ((await page.locator("#diag-repair-failed").count()) > 0 ? `the repair failed: ${(await page.locator('li.update-card[data-role="repair"]').innerText()).replace(/\s+/g, " ").slice(0, 400)}` : undefined);
+		await until("the repair card to be done", 900_000, async () => (await page.locator('li.update-card[data-role="repair"][data-state="done"]').count()) > 0 || undefined, { every: 500, failWhen: firstFailure(repairFailed, startFailing(world.layout, repairedAt)) });
 		assert.equal(existsSync(join(dir, "package.json")), true, `${PACKAGE} is installed again`);
 		if (isWin) assert.equal(await pathHasEntry(), true, "the PATH entry is back");
 		// The repair stops the stack and starts it again after the work; the latest start since the click that ended in `start-failed` is the repair's failure, not an expected state of this case.

@@ -314,6 +314,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	});
 
 	let first: ElectronApplication;
+	/** When the launch that the Linear step's waits sit on began (a start that fails after it is the app's failure). */
+	let stackLaunchedAt = 0;
 	let page: Page;
 	/** When the install began (Next on the folder step) and when the relaunch after the quit in the middle of it began: failures older than these are not the run's (the quit leaves cancelled stages `failed`). */
 	let installBegan = 0;
@@ -787,11 +789,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(await stepOf(page), "linear");
 		// The OS can encrypt here; a development build is told it cannot (SBD_TEST_NO_ENCRYPTION=1), as it is told the WSL bash.
 		await close(first);
-		// The relaunch of a finished install resumes on step 9 with the stack starting; a start that fails (step 9 draws the sentence, `#start-failure`) is not what this case expects, and ends the wait at once.
-		let launchedAt = Date.now();
+		// The relaunch of a finished install resumes on step 9 while the stack is still starting, so this wait returns at first draw and a start failure is not seen here; the waits that sit on that start (the restart offer and the restart below) carry the probe.
 		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH, SBD_TEST_NO_ENCRYPTION: "1" });
 		page = await pageOf(first, "wizard.html");
-		await waitStep(page, "linear", 25 * 60_000, startFailing(world.layout, launchedAt, page));
+		await waitStep(page, "linear", 25 * 60_000);
 		await page.locator("#linear-refusal").waitFor({ timeout: 30_000 });
 		assert.equal((await page.locator("#linear-refusal p").innerText()).trim(), t("zh-TW", "linear.refused"));
 		assert.equal(await page.locator("#linear-key").count(), 0, "there is no field to type a key into");
@@ -802,10 +803,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(eventsNamed("linear-key-saved").length, 0);
 		// Back to a normal launch for the rest of the run.
 		await close(first);
-		launchedAt = Date.now();
+		stackLaunchedAt = Date.now();
 		first = await launch("zh-TW", { SBD_TEST_WSL_BASH: WSL_BASH });
 		page = await pageOf(first, "wizard.html");
-		await waitStep(page, "linear", 25 * 60_000, startFailing(world.layout, launchedAt, page));
+		await waitStep(page, "linear", 25 * 60_000);
 	});
 
 	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", { timeout: 1_200_000 }, async () => {
@@ -828,7 +829,8 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		await page.locator("#linear-key").fill(LINEAR_KEY);
 		assert.equal(await pageHolds(page, LINEAR_KEY), false, "a typed key is not in the markup, storage or cookies");
 		await page.locator("#linear-save").click();
-		await page.locator('[data-role="restart-offer"]').waitFor({ timeout: 300_000 });
+		// The save sits on the stack the relaunch above started: a start that failed (nothing in this case expects it) ends the wait with the app's words.
+		await until("the restart offer", 300_000, async () => (await page.locator('[data-role="restart-offer"]').count()) > 0 || undefined, { every: 200, failWhen: startFailing(world.layout, stackLaunchedAt, page) });
 		assert.equal(await fieldsEmpty(page), true, "the field was cleared when the key was sent");
 		const primary = await page.locator('#linear-restart').evaluate((el) => el.classList.contains("primary"));
 		if (!primary) {
@@ -859,7 +861,7 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		// Herdr's environment is fixed for its lifetime: a pane opened now does not have the key; after Restart now it does.
 		assert.equal(await paneLinearKey(), "[]", "a pane opened before the restart has no key");
 		await page.locator("#linear-restart").click();
-		await page.locator('#linear-restarted, [data-restart="restarted"]').first().waitFor({ timeout: 300_000 });
+		await until("the stack to restart", 300_000, async () => (await page.locator('#linear-restarted, [data-restart="restarted"]').count()) > 0 || undefined, { every: 200, failWhen: startFailing(world.layout, stackLaunchedAt, page) });
 		await shotBoth(page, "linear-restarted");
 		assert.equal(await paneLinearKey(), `[${LINEAR_KEY}]`, "a pane opened after the restart has LINEAR_API_KEY");
 		const found = scan(searchRoots(), LINEAR_KEY, { skipDirs: [join(world.home, "Library", "Keychains")] });

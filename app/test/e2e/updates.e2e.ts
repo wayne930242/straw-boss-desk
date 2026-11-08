@@ -21,7 +21,7 @@ import { ALT_NODE_VERSION, altStack } from "../harness/alt-pins.ts";
 import { createWorld, disposeWorld, noteUserPath, realStack, runWorld, type World } from "../harness/e2e-light.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { hostedCase } from "../harness/hosted.ts";
-import { startFailing, until } from "../harness/fail-fast.ts";
+import { firstFailure, startFailing, until, type FailWhen } from "../harness/fail-fast.ts";
 import { startTrouble } from "../harness/start-trouble.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { FeedServer, latestYml, makeTestKey, type TestKey } from "../fixtures/feed/feed-server.ts";
@@ -147,6 +147,13 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		await checkNow();
 	};
 	const stackState = (): Promise<string | null> => stackCard().getAttribute("data-state");
+	/** Ends a wait when the stack card is in one of `states`, which the case does not expect, with the card's own words. */
+	const stackNot =
+		(states: readonly string[]): FailWhen =>
+		async () => {
+			const state = await stackState();
+			return state !== null && states.includes(state) ? `the stack card is ${state}: ${(await stackCard().innerText()).replace(/\s+/g, " ").slice(0, 400)}` : undefined;
+		};
 	const stackReason = (): Promise<string | null> => noteOf("stack").getAttribute("data-reason");
 	const activeText = (): string => readFileSync(stackFiles(world.layout).active, "utf8");
 	/** The feed offers the app itself (nothing newer), so the shell channel is quiet. */
@@ -335,7 +342,8 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		assert.equal(await settings.locator("#update-apply").isDisabled(), true);
 		assert.equal(await settings.locator("#update-check").isDisabled(), true, "Check now waits while an update applies");
 		await shot(settings, "updates-applying-zh-TW");
-		await stackCard().and(settings.locator('[data-state="applied"]')).waitFor({ timeout: 600_000 });
+		// A stack update that this case expects to apply ends in `error` (update/stack.ts:424-431, the stack could not be stopped or the work broke) or `rolled-back` (:392-421) when it does not.
+		await until("the stack card to be applied", 600_000, async () => (await stackState()) === "applied" || undefined, { every: 1000, failWhen: firstFailure(stackNot(["error", "rolled-back"]), startFailing(world.layout, appliedAt)) });
 		await shot(settings, "updates-applied-zh-TW");
 		await updatesIn("en");
 		await shot(settings, "updates-applied-en");
@@ -362,7 +370,8 @@ describe("the updaters against a local feed (e2e, task 13)", { skip }, () => {
 		await stackCard().and(settings.locator('[data-state="applying"]')).waitFor({ timeout: 120_000 });
 		await shot(settings, "updates-applying-en");
 		// Not a Playwright wait: a timeout there carries none of the diagnostics below (the cards, the records, the logs).
-		await until("the stack card to be rolled back", 480_000, async () => (await stackState()) === "rolled-back", 1000);
+		// `error` (update/stack.ts:424-431) is not the rollback this case expects; `rolled-back` is, so only `error` ends the wait early.
+		await until("the stack card to be rolled back", 480_000, async () => (await stackState()) === "rolled-back", { every: 1000, failWhen: stackNot(["error"]) });
 		assert.equal(await stackReason(), "pi", "the report names the stage");
 		await shotBoth("rolled-back");
 		assert.equal(activeText(), before, "the stack in force is the old one");

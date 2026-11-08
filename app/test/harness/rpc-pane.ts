@@ -6,23 +6,9 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join } from "node:path";
 import type { createPlatform } from "../../src/main/platform/index.ts";
 import { childEnvOf, isWindows, run, WorldHerdr, type World } from "./e2e-light.ts";
+import { until } from "./fail-fast.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, ms: number, probe: () => T | Promise<T>): Promise<NonNullable<T>> {
-	const deadline = Date.now() + ms;
-	let last: unknown;
-	while (Date.now() < deadline) {
-		try {
-			const value = await probe();
-			if (value) return value as NonNullable<T>;
-		} catch (error) {
-			last = error;
-		}
-		await sleep(400);
-	}
-	throw new Error(`timed out after ${ms / 1000} s waiting for ${what}${last ? `: ${(last as Error).message}` : ""}`);
-}
 
 /** The text of every string anywhere in a JSON value. */
 function strings(value: unknown, out: string[] = []): string[] {

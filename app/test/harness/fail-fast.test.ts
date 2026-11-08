@@ -79,6 +79,8 @@ describe("the logs", () => {
 		assert.equal(terminalStartFailure(retried, T0), undefined, "a start that was begun again is running, not failed");
 		const up = parseLines([line(0, "begin"), line(2, "start-failed", { kind: "start" }), line(30, "begin"), line(40, "sb-server-up")].join("\n"));
 		assert.equal(terminalStartFailure(up, T0), undefined);
+		const justBefore = parseLines([line(-0.5, "begin"), line(-0.4, "start-failed", { kind: "start" })].join("\n"));
+		assert.equal(terminalStartFailure(justBefore, T0), undefined, "a failure written just before the mark is the previous launch's (no clock-skew allowance)");
 		assert.equal(terminalStartFailure([], T0), undefined);
 		assert.equal(terminalStartFailure(parseLines(line(0, "begin")), T0), undefined);
 	});
@@ -139,6 +141,8 @@ describe("the stage records", () => {
 		});
 		assert.deepEqual(failedStages({ state: dir, logs: dir }, T0).map((s) => [s.stage, s.message]), [["herdr", "cannot reach github.com"]]);
 		assert.deepEqual(failedStages({ state: dir, logs: dir }, T0 + 20_000), []);
+		write({ herdr: { status: "failed", lastFailure: note(-0.5, "failed just before the mark") } });
+		assert.deepEqual(failedStages({ state: dir, logs: dir }, T0), [], "no clock-skew allowance");
 	});
 
 	it("is empty with no record, or a record that is not JSON", () => {
@@ -197,7 +201,7 @@ describe("readPageFailure reads the pages the wizard draws", () => {
 		assert.match(found?.details ?? "", /cannot reach github\.com \(path: no answer within 8 s\)/);
 	});
 
-	it("a failed start: the sentence, its data-kind and the details, on step 6 and on step 9", () => {
+	it("a failed start: the sentence, its data-kind and the details, on the start step", () => {
 		const failure = { kind: "start", reason: "the server did not answer hello within 60 s", offerRepair: false };
 		const view = wizardView({ step: "start", start: { status: "failed", failure } } as Partial<WizardView>);
 		const found = read(start(ctxOf(view)) as unknown as MiniElement);
@@ -248,6 +252,14 @@ describe("installFailing and startFailing", () => {
 		assert.match(said ?? "", /up-attempt-failed .*reason=PowerShell did not answer within 60 s/);
 		assert.match(said ?? "", /sb-log-tail .*via=failed pid=0/);
 		assert.ok((said ?? "").length <= 2400);
+		// Too long: the oldest events are cut and the newest stay.
+		const many = [{ t: at(70), event: "begin" }, ...Array.from({ length: 5 }, (_, i) => ({ t: at(100 + i), event: "reach", results: [`old-${i}: ${"y".repeat(230)}`] })), { t: at(131), event: "sb-log-tail", text: `${"z".repeat(900)}newest-log-end` }, { t: at(132), event: "start-failed", kind: "start", reason: "newest-reason" }];
+		writeFileSync(join(folders.logs, "start.jsonl"), many.map((l) => JSON.stringify(l)).join("\n"));
+		const long = (await startFailing(folders, T0, pageWith({ where: "start", sentences: ["s".repeat(900)], kind: "start", details: "d".repeat(900) }))()) ?? "";
+		assert.ok(long.length <= 2400, `${long.length}`);
+		assert.match(long, /newest-log-end/);
+		assert.match(long, /start-failed .*newest-reason/);
+		assert.doesNotMatch(long, /old-0/);
 		assert.equal(await startFailing(folders, T0 + 600_000)(), undefined, "no start since the mark");
 		writeFileSync(join(folders.logs, "start.jsonl"), `${JSON.stringify({ t: at(70), event: "begin" })}\n`);
 		assert.equal(await startFailing(folders, T0)(), undefined, "a start under way");
