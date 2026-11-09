@@ -6,6 +6,8 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { binEntry, binScript, binShim, installedFiles, npmGlobalPin, npmGlobalStage, piStage, readManifest } from "../src/main/bootstrap/stages/pi.ts";
 import { npmFailure, npmFailureKind } from "../src/main/bootstrap/npm.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
+import { execRunner } from "../src/main/platform/exec.ts";
+import type { CommandRunner } from "../src/main/platform/types.ts";
 import { readStartGate } from "../src/main/runtime/readiness.ts";
 import type { Stack } from "../src/main/bootstrap/stack.ts";
 import { connectProxy } from "./harness/connect-proxy.ts";
@@ -163,6 +165,22 @@ describe("the pi stage against a local registry", () => {
 // T6-F001: the default root holds the profile folder's name, which can carry `&`, `^`, `!`, or `%`. The stage runs the package's bin script with the
 // private Node (what the `pi.cmd` shim runs), never npm's `pi.cmd` wrapper, whose `SET dp0=%~dp0` breaks under `&` and `^`.
 const HOSTILE_ROOTS = ["a^b!c%d&e 測試", "R&D", "a^b", "100%", "x!y!", "(1) b"];
+
+const INSTALL_LIMIT_MS = 3_500;
+/**
+ * The stage hands its `timeoutMs` to both npm programs it runs: the integrity lookup (`npm view`) and the install. Here it is meant for the install, which the registry never lets finish. A loaded machine can
+ * need more than 3.5 s just to start npm and read the packument; then the lookup is what the limit cuts off, the stage fails as `registry` before it marks the prefix, and the record is `failed` (or the old
+ * `ok`), a path these tests do not mean to take. So the lookup runs under the limit the stage gives it when none is set, and only the install keeps the short one.
+ */
+const limitInstallOnly: CommandRunner = (() => {
+	const run = execRunner(process.env);
+	return (file, args, options) => (args[1] === "view" ? run(file, args, { ...options, timeoutMs: 120_000 }) : run(file, args, options));
+})();
+
+/** The engine of a `pi` stage whose npm install hangs on the tarball and is cut off after `INSTALL_LIMIT_MS`. */
+const cutOffEngine = (f: Fixture) =>
+	testEngine(f.root, () => [{ ...piStage(isWindows ? "win32" : "darwin", { env: { NPM_CONFIG_REGISTRY: registry.url, NPM_CONFIG_FETCH_RETRIES: "0" }, timeoutMs: INSTALL_LIMIT_MS }), needs: [] as string[] }], { appEnv: f.appEnv, layout: f.layout, run: limitInstallOnly });
+
 describe("R9B-F002 and R13-F009: an install of pi that is cut off keeps the start refused", () => {
 	const published = registry.publish(PI, "1.5.0");
 
@@ -170,7 +188,7 @@ describe("R9B-F002 and R13-F009: an install of pi that is cut off keeps the star
 		const f = await fixture();
 		registry.mode = { kind: "hang-tarball" };
 		try {
-			const engine = testEngine(f.root, () => [{ ...piStage(isWindows ? "win32" : "darwin", { env: { NPM_CONFIG_REGISTRY: registry.url, NPM_CONFIG_FETCH_RETRIES: "0" }, timeoutMs: 3_500 }), needs: [] as string[] }], { appEnv: f.appEnv, layout: f.layout });
+			const engine = cutOffEngine(f);
 			await engine.engine.handle({ type: "run", config: { root: f.root, stack: stackFor(published), secretPatterns: (await import("./harness/engine-fixture.ts")).secretPatterns } });
 			const done = engine.events.find((e) => e.type === "done");
 			assert.ok(done?.type === "done", JSON.stringify(engine.events.find((e) => e.type === "error")));
@@ -192,7 +210,7 @@ describe("R9B-F002 and R13-F009: an install of pi that is cut off keeps the star
 		assert.equal(new StateStore(f.layout).record("pi")?.status, "ok");
 		registry.mode = { kind: "hang-tarball" };
 		try {
-			const engine = testEngine(f.root, () => [{ ...piStage(isWindows ? "win32" : "darwin", { env: { NPM_CONFIG_REGISTRY: registry.url, NPM_CONFIG_FETCH_RETRIES: "0" }, timeoutMs: 3_500 }), needs: [] as string[] }], { appEnv: f.appEnv, layout: f.layout });
+			const engine = cutOffEngine(f);
 			await engine.engine.handle({ type: "run", config: { root: f.root, stack: stackFor(registry.publish(PI, "1.7.1")), secretPatterns: (await import("./harness/engine-fixture.ts")).secretPatterns } });
 		} finally {
 			registry.mode = { kind: "ok" };
