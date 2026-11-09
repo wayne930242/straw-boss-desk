@@ -13,6 +13,7 @@ import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import type { ComputerView, DiagnosticsView, LeftEntry, RemoveState, RemoveStep } from "../../src/shared/computer.ts";
 import type { Locale } from "../../src/shared/locale.ts";
+import { loadGalleryFile } from "../harness/gallery-load.ts";
 import { appRoot, locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { shotWhole } from "../harness/shot-whole.ts";
 import { settingsView } from "../harness/views.ts";
@@ -121,16 +122,7 @@ describe("every state of Remove all data and of Diagnostics (gallery)", { skip }
 		const computer: ComputerView = { platform: isWin ? "win32" : "darwin", keepAwake: true, remove };
 		return settingsView({ locale, section: "computer", computer });
 	};
-	const load = (view: unknown): Promise<unknown> =>
-		app.evaluate(
-			async (_, input: { view: unknown }) => {
-				const g = globalThis as unknown as { __gallery: { state: Record<string, unknown>; win: { loadFile(p: string): Promise<void> }; dist: string } };
-				g.__gallery.state.settings = input.view;
-				g.__gallery.state.locale = (input.view as { locale: string }).locale;
-				await g.__gallery.win.loadFile(`${g.__gallery.dist}/renderer/settings.html`);
-			},
-			{ view },
-		);
+	const load = (view: unknown): Promise<void> => loadGalleryFile(app, page, "settings", view);
 	const push = (view: unknown): Promise<unknown> =>
 		app.evaluate(
 			(_, input: { view: unknown }) => {
