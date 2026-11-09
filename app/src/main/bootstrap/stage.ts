@@ -616,8 +616,9 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 			// A package left loadable by this failure, or by an earlier one that no run has cleared yet, keeps the start blocked.
 			const startBlock = error.startBlock ?? record?.startBlock;
 			// A cancel (a quit, a Repair that is stopped) after the stage changed a place with no staging copy leaves an install nobody finished, which is what `running` says to the
-			// start gate (R7-F001): `failed` would let a start go on over a half-installed package (R9-F002). The same holds when the last program the stage ran was cut off by its time
-			// limit: the program it started (npm under pi) may still be writing (R9B-F002). The next run of the stage rewrites the record.
+			// start gate (R7-F001): `failed` would let a start go on over a half-installed package (R9-F002). The same holds when a program the stage ran after changing that place was cut off
+			// by its time limit and no later program after a new `markInPlace` finished within its limit: the program it started (npm under pi) may still be writing (R9B-F002,
+			// desk-flake-rev-F004). The next run of the stage rewrites the record.
 			const interrupted = inPlace.touched && (deps.signal.aborted || inPlace.cutOff);
 			await deps.state.setRecord(
 				stage.name,

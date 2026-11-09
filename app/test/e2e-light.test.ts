@@ -75,6 +75,14 @@ const NO_BUN_RECIPE = { forges: [{ kind: "github", host: "github.com" }, { kind:
 
 const stagesOf = (summary: RunSummary): string[] => Object.keys(summary.outcomes).sort();
 const statusOf = (summary: RunSummary): Record<string, string> => Object.fromEntries(Object.entries(summary.outcomes).map(([name, o]) => [name, o.status]));
+/** Why a run is not ok: the engine's error and every stage that did not end `skipped-verified`, with its failure, so a red run names the stage. */
+const whyNotOk = (summary: RunSummary): string =>
+	JSON.stringify({
+		error: summary.error,
+		stages: Object.values(summary.outcomes)
+			.filter((o) => o.status !== "skipped-verified")
+			.map((o) => ({ stage: o.stage, status: o.status, attempts: o.attempts, failure: o.failure, blockedBy: o.blockedBy, fsErrors: o.fsErrors })),
+	}).slice(0, 4000);
 /** A request that is a download and not the preflight's `HEAD https://host/`. */
 const isDownload = (url: string): boolean => new URL(url).pathname !== "/";
 const read = (path: string): string => readFileSync(path, "utf8");
@@ -444,7 +452,7 @@ describe("tool stages from an empty root (e2e-light)", { skip: off }, () => {
 	describe("a second run and a pin change", () => {
 		it("is all skipped-verified in under 30 s", async () => {
 			const second = await runWorld(world, { recipe: GITHUB_RECIPE });
-			assert.ok(second.ok, JSON.stringify(second.error));
+			assert.ok(second.ok, whyNotOk(second));
 			for (const [name, status] of Object.entries(statusOf(second))) assert.equal(status, "skipped-verified", name);
 			assert.ok(second.ms < 30_000, `took ${second.ms} ms`);
 			assert.deepEqual(second.requests.filter(isDownload), []);

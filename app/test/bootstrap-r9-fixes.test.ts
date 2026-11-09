@@ -179,8 +179,9 @@ describe("R9B-F002: a program the time limit ended after the stage changed its p
 });
 
 describe("desk-flake-rev-F004: a cut-off stays until an attempt finishes the install", () => {
+	type Second = "lookup-fails" | "installs" | "installs-then-fails";
 	/** Attempt 1 changes the prefix and is cut off (a registry failure, retried once). Attempt 2 looks something up first, then `second` decides what happens. */
-	function twoAttempts(second: "lookup-fails" | "installs"): { stage: Stage; run: NonNullable<Parameters<typeof testEngine>[2]>["run"] } {
+	function twoAttempts(second: Second): { stage: Stage; run: NonNullable<Parameters<typeof testEngine>[2]>["run"] } {
 		let attempt = 0;
 		return {
 			run: async (_file, args) => (args[0] === "slow" ? { code: null, stdout: "", stderr: "", timedOut: true } : { code: 0, stdout: "", stderr: "" }),
@@ -201,13 +202,14 @@ describe("desk-flake-rev-F004: a cut-off stays until an attempt finishes the ins
 					if (second === "lookup-fails") throw new StageError("other", { stage: "pkg:sticky" }, "lookup failed");
 					ctx.markInPlace();
 					await ctx.exec("/bin/npm", ["install"], { timeoutMs: 1 });
+					if (second === "installs-then-fails") throw new StageError("other", { stage: "pkg:sticky" }, "failed after the install");
 				},
 				verify: async () => ({ text: "x", version: "1.0.0", files: [] }),
 				activate: async () => undefined,
 			},
 		};
 	}
-	const recordAfter = async (second: "lookup-fails" | "installs") => {
+	const recordAfter = async (second: Second) => {
 		const { stage, run } = twoAttempts(second);
 		const made = scratchRoot("sbd-f004-");
 		scratch.push(made.base);
@@ -229,6 +231,14 @@ describe("desk-flake-rev-F004: a cut-off stays until an attempt finishes the ins
 		const out = await recordAfter("installs");
 		assert.equal(out.result.ok, true);
 		assert.equal(out.record?.status, "ok");
+		assert.deepEqual(out.gate.interrupted, []);
+	});
+
+	// The install that ended without the limit after attempt 2's markInPlace clears the cut-off, so a later failure is a plain one (review phase2-cutoff-sticky F001).
+	it("ends `failed` and clear of the gate when attempt 2 finishes its install and then fails", async () => {
+		const out = await recordAfter("installs-then-fails");
+		assert.equal(out.result.ok, false);
+		assert.equal(out.record?.status, "failed");
 		assert.deepEqual(out.gate.interrupted, []);
 	});
 });
