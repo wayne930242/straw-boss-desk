@@ -171,10 +171,20 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 		});
 		assert.deepEqual(bad, [], `${name}: a path broke mid-name`);
 	};
+	/** The document's language, or undefined while the page is between two documents: a navigation destroys the execution context a read was sent to, and that read has no answer yet (not a failure). */
+	const langNow = (): Promise<string | undefined> =>
+		page.evaluate(() => document.documentElement.lang).catch((error: unknown) => {
+			if (error instanceof Error && error.message.includes("Execution context was destroyed")) return undefined;
+			throw error;
+		});
 	const settled = async (locale: Locale): Promise<void> => {
 		const deadline = Date.now() + 10_000;
-		while (Date.now() < deadline && (await page.evaluate(() => document.documentElement.lang)) !== locale) await new Promise((r) => setTimeout(r, 50));
-		assert.equal(await page.evaluate(() => document.documentElement.lang), locale);
+		let lang = await langNow();
+		while (lang !== locale && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 50));
+			lang = await langNow();
+		}
+		assert.equal(lang, locale);
 		// The page redraws as soon as a view arrives; a short pause lets the layout settle before the picture.
 		await new Promise((r) => setTimeout(r, 150));
 	};
@@ -189,9 +199,16 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 		assert.equal(facts.overflow, false, `${what}: the page scrolls sideways`);
 		assert.deepEqual(facts.duplicates, [], `${what}: an id repeats`);
 	};
-	/** Loads a page in the gallery window with `view`, and returns once it has loaded. */
-	const load = (file: "wizard" | "settings", view: unknown): Promise<unknown> =>
-		app.evaluate(
+	/**
+	 * Loads a page in the gallery window with `view`, and returns once the test's `page` is on the new document. The main process answers when `loadFile` has finished; Playwright hears of the navigation a
+	 * moment later through its own channel, and until then a read through `page` goes to the old document, which is being destroyed. The old document is marked, and the page is the new one when it no longer
+	 * carries the mark.
+	 */
+	const load = async (file: "wizard" | "settings", view: unknown): Promise<void> => {
+		await page.evaluate(() => {
+			(window as unknown as { __galleryOld?: boolean }).__galleryOld = true;
+		});
+		await app.evaluate(
 			async (_, input: { file: string; view: unknown }) => {
 				const g = globalThis as unknown as { __gallery: { state: Record<string, unknown>; win: { loadFile(p: string): Promise<void> }; dist: string } };
 				g.__gallery.state[input.file] = input.view;
@@ -200,6 +217,8 @@ describe("every state of the projects step and the Team recipe card (gallery)", 
 			},
 			{ file, view },
 		);
+		await page.waitForFunction(() => (window as unknown as { __galleryOld?: boolean }).__galleryOld !== true, undefined, { polling: 50, timeout: 30_000 });
+	};
 	const push = (file: "wizard" | "settings", view: unknown): Promise<unknown> =>
 		app.evaluate(
 			(_, input: { file: string; view: unknown }) => {
