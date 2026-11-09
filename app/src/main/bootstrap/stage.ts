@@ -365,10 +365,15 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 
-/** What a stage did to a place with no staging copy: it changed it (`touched`), and the last program it ran after that was cut off by its time limit (`cutOff`, R9B-F002). */
+/**
+ * What a stage did to a place with no staging copy: it changed it (`touched`), and a program it ran after that was cut off by its time limit (`cutOff`, R9B-F002).
+ * `cutOff` is sticky across attempts: only a program that ends without a time limit after a new `markInPlace` (`armed`) clears it, so a retry that fails before
+ * its install (a lookup, a `locked` wait) leaves the record `running`.
+ */
 interface InPlaceMark {
 	touched: boolean;
 	cutOff: boolean;
+	armed: boolean;
 }
 
 function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, staging: Set<string>, fsErrors: string[], inPlace: InPlaceMark): StageContext {
@@ -406,6 +411,7 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 		fsErrors,
 		markInPlace() {
 			inPlace.touched = true;
+			inPlace.armed = true;
 		},
 		waitForQuietTools() {
 			return quiet.ensure({ layout: deps.layout, processes: deps.platform.processes, signal: deps.signal, stage: stage.name, log });
@@ -418,7 +424,13 @@ function makeContext(stage: Stage, deps: RunDeps, record: StageRecord | null, st
 			// A child ended by the time limit or the abort was ended alone: whatever it had started may still run (R9-F001), so the next package stage lists again.
 			if (result.timedOut === true || deps.signal.aborted) quiet.markDirty();
 			// A program the time limit ended was ended alone, and what it had started may still write the place the stage changed in place (R9B-F002): the record must say so.
-			if (inPlace.touched) inPlace.cutOff = result.timedOut === true;
+			// Only an exec after a (new) markInPlace that ends without the limit shows the prefix was written to the end; a lookup before it says nothing about the earlier cut-off.
+			if (inPlace.touched) {
+				if (result.timedOut === true) {
+					inPlace.cutOff = true;
+					inPlace.armed = false;
+				} else if (inPlace.armed) inPlace.cutOff = false;
+			}
 			log.raw(`$ ${file} ${args.join(" ")}\n${result.stdout}${result.stdout.endsWith("\n") || result.stdout === "" ? "" : "\n"}${result.stderr}\n`);
 			log.flush();
 			log.event({ event: "exec-result", file, code: result.code, timedOut: result.timedOut === true, ms: Date.now() - started });
@@ -503,7 +515,7 @@ export async function runStage(stage: Stage, deps: RunDeps): Promise<StageOutcom
 	const record = deps.state.record(stage.name);
 	const staging = new Set<string>();
 	const fsErrors: string[] = [];
-	const inPlace: InPlaceMark = { touched: false, cutOff: false };
+	const inPlace: InPlaceMark = { touched: false, cutOff: false, armed: false };
 	const ctx = makeContext(stage, deps, record, staging, fsErrors, inPlace);
 	const log = ctx.log;
 	const done = (outcome: Omit<StageOutcome, "stage" | "ms" | "fsErrors">): StageOutcome => {

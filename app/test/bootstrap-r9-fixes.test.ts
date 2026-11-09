@@ -178,6 +178,61 @@ describe("R9B-F002: a program the time limit ended after the stage changed its p
 	});
 });
 
+describe("desk-flake-rev-F004: a cut-off stays until an attempt finishes the install", () => {
+	/** Attempt 1 changes the prefix and is cut off (a registry failure, retried once). Attempt 2 looks something up first, then `second` decides what happens. */
+	function twoAttempts(second: "lookup-fails" | "installs"): { stage: Stage; run: NonNullable<Parameters<typeof testEngine>[2]>["run"] } {
+		let attempt = 0;
+		return {
+			run: async (_file, args) => (args[0] === "slow" ? { code: null, stdout: "", stderr: "", timedOut: true } : { code: 0, stdout: "", stderr: "" }),
+			stage: {
+				name: "pkg:sticky",
+				needs: [],
+				lane: "npm",
+				plannedVersion: () => "1.0.0",
+				detect: async () => null,
+				async install(ctx: StageContext) {
+					attempt++;
+					if (attempt === 1) {
+						ctx.markInPlace();
+						await ctx.exec("/bin/npm", ["slow"], { timeoutMs: 1 });
+						throw new StageError("registry", { what: "x@1" }, "npm install did not finish in time");
+					}
+					await ctx.exec("/bin/npm", ["view"], { timeoutMs: 1 });
+					if (second === "lookup-fails") throw new StageError("other", { stage: "pkg:sticky" }, "lookup failed");
+					ctx.markInPlace();
+					await ctx.exec("/bin/npm", ["install"], { timeoutMs: 1 });
+				},
+				verify: async () => ({ text: "x", version: "1.0.0", files: [] }),
+				activate: async () => undefined,
+			},
+		};
+	}
+	const recordAfter = async (second: "lookup-fails" | "installs") => {
+		const { stage, run } = twoAttempts(second);
+		const made = scratchRoot("sbd-f004-");
+		scratch.push(made.base);
+		const t = testEngine(made.root, () => [stage], { run });
+		const result = await t.run(makeStack({}));
+		const layout = testLayout(made.root);
+		const record = (JSON.parse(readFileSync(join(layout.state, "bootstrap.json"), "utf8")) as { stages: Record<string, { status: string }> }).stages[stage.name];
+		return { result, record, gate: readStartGate(layout) };
+	};
+
+	it("keeps the record `running` and the gate reading it when attempt 2 fails before its install", async () => {
+		const out = await recordAfter("lookup-fails");
+		assert.equal(out.result.ok, false);
+		assert.equal(out.record?.status, "running");
+		assert.deepEqual(out.gate.interrupted, ["pkg:sticky"]);
+	});
+
+	it("ends `ok` and clear of the gate when attempt 2 finishes the install", async () => {
+		const out = await recordAfter("installs");
+		assert.equal(out.result.ok, true);
+		assert.equal(out.record?.status, "ok");
+		assert.deepEqual(out.gate.interrupted, []);
+	});
+});
+
 describe("R9-F004 b: a cancel that arrives while the engine lock is being taken is not lost", () => {
 	it("ends the run without installing anything", async () => {
 		const made = scratchRoot("sbd-r9-lock-");
