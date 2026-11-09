@@ -126,6 +126,14 @@ describe("stop sequence", () => {
 		assert.match(gate, /async stopForRemoval[^]*if \(this\.#stopping\) return \{ ok: false, busy: true/, "another stop under way answers busy and starts nothing");
 	});
 
+	// The three calls removal-wiring.test.ts and pre-launch.test.ts run against fakes: here only that index.ts wires them to the real removal, gate, window and Electron lock (CI3-F001).
+	it("wires the removal's result window, the macOS close rule after a removal, and the real single-instance lock (comments ignored)", () => {
+		const source = code("../src/main/index.ts");
+		assert.match(source, /removal\.onChange\(\(\) => \{[^]*?afterRemovalChange\(\{\s*phase: removal\.state\.phase,\s*gate: quitGate,\s*openWindow,/, "a removal change goes to afterRemovalChange with the real phase, gate and window");
+		assert.match(source, /app\.on\("window-all-closed", \(\) => \{\s*if \(quitsWhenWindowsClose\(process\.platform, removal\.state\.phase\)\) app\.quit\(\);/, "closing the windows quits by quitsWhenWindowsClose on the real platform and phase");
+		assert.match(source, /earlyLaunch\(\{[^]*?instanceLock: \{[^}]*lock: \(\) => app\.requestSingleInstanceLock\(\),\s*release: \(\) => app\.releaseSingleInstanceLock\(\)/, "earlyLaunch gets Electron's own lock");
+	});
+
 	it("resuming after a failed installer or a refused removal resumes every sign-in, and finishes an interrupted apply before the stack starts (comments ignored)", () => {
 		const source = code("../src/main/index.ts");
 		assert.match(source, /resume: \(event\) => resumeStack\(event\)/);
