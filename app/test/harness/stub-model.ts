@@ -38,7 +38,9 @@ export function reply(messages: readonly ChatMessage[]): StubReply {
 	if (last?.role === "tool") return { kind: "text", text: `${RESULT_PREFIX}\n${text}` };
 	if (text.includes(CHILD_MARKER)) return { kind: "tool", name: "bash", args: { command: LOOKUP_COMMAND } };
 	if (text.includes(SUBAGENT_MARKER)) {
-		return { kind: "tool", name: "subagent", args: { name: CHILD_NAME, task: `${CHILD_MARKER} Print where gh, git, pi and bash resolve, then say what you saw.`, model: "stub/stub-1" } };
+		// pi-herdr-roles' `scout` (tools read and bash): since pi-straw-boss 0.69.0 a coordinator main's worker, or a spawn with no role, waits for a plan whose todos name a graph
+		// (`src/session.ts`, "sb: plan first"), and a scout never does. The child only runs `command -v`.
+		return { kind: "tool", name: "subagent", args: { name: CHILD_NAME, agent: "scout", task: `${CHILD_MARKER} Print where gh, git, pi and bash resolve, then say what you saw.`, model: "stub/stub-1" } };
 	}
 	return { kind: "text", text: "Stub model: ready." };
 }

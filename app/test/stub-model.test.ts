@@ -17,6 +17,7 @@ describe("the scripted answers", () => {
 		assert.equal(r.args.name, CHILD_NAME);
 		assert.ok(String(r.args.task).includes(CHILD_MARKER));
 		assert.equal(r.args.model, "stub/stub-1", "the child does not take the profile's default model");
+		assert.equal(r.args.agent, "scout", "a scout, which pi-straw-boss's plan gate never holds");
 	});
 
 	it("answers the child's marker with the bash lookup, and a tool result with the final text that echoes it", () => {
