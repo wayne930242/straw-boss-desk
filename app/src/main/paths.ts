@@ -81,7 +81,7 @@ export interface LayoutRecord {
 	fallbackDir: string | null;
 	herdrSocket: string;
 	herdrSocketBytes: number;
-	/** `<agent>/straw-boss/agents/<16 hex>.sock` on macOS (seam U11 has no short-path fallback yet); null on Windows. */
+	/** `<agent>/straw-boss/agents/<16 hex>.sock` on macOS; null on Windows. Information only since pi-straw-boss 0.68.0 removed the agent sidecar (seam U11 closed). */
 	sidecarSocketBytes: number | null;
 	reasons: string[];
 }
