@@ -29,7 +29,7 @@ test("the real stack.json holds what task 2 lists", () => {
   const stack = fresh();
   assert.equal(stack.schema, 1);
   assert.ok(Number.isInteger(stack.generation) && stack.generation >= 1);
-  assert.equal(stack.generation, 12, "generation 12: pi-straw-boss 0.71.1 and the profile 0.1.2");
+  assert.equal(stack.generation, 13, "generation 13: pi-anchorloop 2.13.0, pi-straw-boss 0.71.1 and the profile 0.1.2");
   assert.equal(stack.piPackages.find((p) => p.name === "pi-straw-boss")?.version, "0.71.1");
   assert.deepEqual(Object.keys(stack.tools).sort(), ["fd", "gh", "git", "glab", "herdr", "node", "rg"]);
   for (const [tool, entry] of Object.entries(stack.tools)) {

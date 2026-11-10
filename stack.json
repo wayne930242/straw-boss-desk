@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 12,
+  "generation": 13,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -106,7 +106,7 @@
     },
     { "name": "cc-safety-net", "version": "2.7.0", "integrity": "sha512-c1ZkyjbpTmiMIXBYNU07kk1Pd4SHoFtOeViVrscz1T5uFOL8t+Sz9RvvfTDbjhreRlIabe7cCRt41Ua+BHLccg==" },
     { "name": "@pify/memory", "version": "0.14.0", "integrity": "sha512-TtrdIYpJpA5+5ONzBibmmcHWRftpUMIRz9WpdyLHPRmxKWYIa8AHTZY0SpbfYLNDGUWD2MRrk7nXN0seJal0jw==" },
-    { "name": "pi-anchorloop", "version": "2.2.3", "integrity": "sha512-YkEUBo0JgtDdHMt3jpS9cbosVBiXJRneewSCSQtGUOkZKPtDyRlbYHASC6BHkGwlfSRKVO+UtVmFvcv2VEy3/Q==" },
+    { "name": "pi-anchorloop", "version": "2.13.0", "integrity": "sha512-iSs6fROwNMCriv5elD6ngelNcnR0bKPAIj5HG1KWzFCPncf6UBHPZUH5zVGxJTeaRg5aZVvxhh3SWOWk7VXBOw==" },
     {
       "name": "@anthropic-ai/claude-agent-sdk",
       "version": "0.3.309",

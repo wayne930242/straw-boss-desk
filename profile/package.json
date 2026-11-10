@@ -22,6 +22,6 @@
     "test": "node --test \"test/*.test.mjs\""
   },
   "devDependencies": {
-    "pi-anchorloop": "2.2.3"
+    "pi-anchorloop": "2.13.0"
   }
 }

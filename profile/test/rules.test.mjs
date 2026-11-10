@@ -126,7 +126,8 @@ describe("guard rules", () => {
     });
 
     it(`${name}: the rule text is one readable message`, () => {
-      // pi-anchorloop's render() expands a dollar sign followed by a backtick through String.replaceAll, so such a pair corrupts the text at runtime.
+      // pi-anchorloop before 2.2.3 expanded a dollar sign followed by a backtick through String.replaceAll, which corrupted the text at runtime; 2.13.0's render()
+      // puts the body in its <rule> wrapper as it is. The rules stay free of replace patterns all the same.
       assert.ok(!rule.content.includes("$`"), "the body contains a dollar sign followed by a backtick");
       assert.ok(!rule.content.includes("$'") && !rule.content.includes("$&") && !rule.content.includes("$$"), "the body contains another replace pattern");
       const paragraphs = rule.content.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
@@ -136,7 +137,7 @@ describe("guard rules", () => {
   }
 });
 
-// The rules run through pi-anchorloop's own ttsr.ts, loaded from the pinned devDependency (2.2.3).
+// The rules run through pi-anchorloop's own ttsr.ts, loaded from the pinned devDependency (2.13.0).
 // Node does not strip types under node_modules, so the file is copied to a temp folder and
 // the folder is removed after the run. Nothing here is skipped: a missing install fails the suite.
 describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
@@ -147,7 +148,7 @@ describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
   before(async () => {
     assert.ok(existsSync(source), `no ${source}: run npm install in profile/`);
     const pkg = JSON.parse(readFileSync(join(profileDir, "node_modules", "pi-anchorloop", "package.json"), "utf8"));
-    assert.equal(pkg.version, "2.2.3", "the pinned pi-anchorloop is what runs");
+    assert.equal(pkg.version, "2.13.0", "the pinned pi-anchorloop is what runs");
     dir = mkdtempSync(join(tmpdir(), "ttsr-"));
     copyFileSync(source, join(dir, "ttsr.ts"));
     ttsr = await import(pathToFileURL(join(dir, "ttsr.ts")).href);
@@ -189,7 +190,7 @@ describe("guard rules against pi-anchorloop's own ttsr.ts", () => {
   }
 
   // Every matching call is blocked: a blocking tool-call match skips the repeat policy
-  // (pi-anchorloop 2.2.3), within a turn and in the first turn after a resume.
+  // (pi-anchorloop 2.2.3 and later), within a turn and in the first turn after a resume.
   it("blocks a second matching call in the same turn", () => {
     const { rule } = load("forge-login-hands-off");
     const manager = new ttsr.TtsrManager([rule]);
