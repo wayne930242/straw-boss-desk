@@ -110,7 +110,7 @@ export const readGuiView = (slotDir: string): GuiView | undefined => viewOf(read
 
 /**
  * The window's background for a view, set before the page loads and whenever the view changes: `geek` is black and `zen` is the Zen page's own ground (`html[data-view=zen] body`
- * in pi-straw-boss 0.52.0's stylesheet, `#14110e`), `raven` is Raven Keep's `--bg` (`gui/themes/raven/raven.css` of 0.71.1, `#0d0a10`); anything else is the page's `--bg` (`#16161e`).
+ * in pi-straw-boss 0.52.0's stylesheet, `#14110e`), `raven` is Raven Keep's `--bg` (`gui/themes/raven/raven.css` of 0.75.2, `#0d0a10`); anything else is the page's `--bg` (`#16161e`).
  * The shell's own screens use the same dark palette.
  */
 export function backgroundOf(view: GuiView | undefined): string {
