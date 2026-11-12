@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 14,
+  "generation": 15,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -120,6 +120,6 @@
       "note": "PMs run the newest npm release by the PM's decision. Checked 2026-10-30: npm latest is still 0.9.3. The author's git fork (wayne930242/pi-claude-bridge@9822631) is that plus 33 unreleased upstream main commits and its own fixes, so what the fork has and 0.9.3 lacks includes: no Claude Code setting sources on the provider path (0.9.3 loads every source there), a pi 1.2.0+ requirement (0.9.3 accepts pi 0.86.1+), parallel tool calls lost after a non-streaming fallback (PR 225, open upstream), and a tool call pi never received keeping an MCP handler waiting (PR 226, open upstream)."
     },
     { "name": "pi-robot-hand", "version": "0.3.2", "integrity": "sha512-pyDozYcL9EGug1nbguVAOgEk96YUmmfisHmQRrZFdxlZV+7Dov5FVuSJNnMiiRBnrmxE0pGIZveArc7ar2DnPw==" },
-    { "name": "pi-herdr-doc-review", "version": "0.11.2", "integrity": "sha512-u+7uq079+W+e41nmcgIi1rnFGpsUvHfs7bWiuhzyVyEgM52Fv2yxWyUDwLRVqfZBos1mQ/h7dEr863rjHWw0gQ==" }
+    { "name": "pi-better-show", "version": "0.6.1", "integrity": "sha512-C7z4wJZl7QDwXPvK4g8RzODc/eoIAAMYpJdkTe4ByB5wvV3Vyhi4bS1lZKkC3wK47VimVPG4VQSY1t28oL/RBA==" }
   ]
 }

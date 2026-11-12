@@ -163,6 +163,20 @@ describe("changeList", () => {
 		assert.equal(by("git").length + by("gh").length + by("herdr").length, 0, "what stays is not listed");
 	});
 
+	it("generation 15's swap from a generation 14 machine: pi-herdr-doc-review is removed, pi-better-show is new, and the rollback's list is the mirror", () => {
+		const show = ACTIVE.piPackages.find((p) => p.name === "pi-better-show");
+		assert.ok(show, "the real stack lists pi-better-show");
+		const gen14 = to((s) => {
+			s.generation = ACTIVE.generation - 1;
+			s.piPackages = [...s.piPackages.filter((p: { name: string }) => p.name !== "pi-better-show"), { name: "pi-herdr-doc-review", version: "0.11.2", integrity: "sha512-x" }];
+		});
+		assert.deepEqual(changeList(gen14, ACTIVE, key), [
+			{ kind: "package", name: "pi-herdr-doc-review", stage: "pkg:pi-herdr-doc-review", from: "0.11.2", to: null },
+			{ kind: "package", name: "pi-better-show", stage: "pkg:pi-better-show", from: null, to: show.version },
+		]);
+		assert.deepEqual(changeList(ACTIVE, gen14, key).map((l) => [l.name, l.from, l.to]), [["pi-better-show", show.version, null], ["pi-herdr-doc-review", null, "0.11.2"]]);
+	});
+
 	it("shows the update fixture's Node as a rising version, not a downgrade (SA-T13-1)", () => {
 		const node = changeList(ACTIVE, parseStack(altStack(real as { tools: Record<string, any>; optionalTools: Record<string, any> }, { node: true })), key).find((l) => l.stage === "node");
 		assert.equal(node?.to, ALT_NODE_VERSION);
