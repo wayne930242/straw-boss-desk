@@ -6,15 +6,16 @@ import { removeTree } from "../src/main/bootstrap/fsutil.ts";
 import { agentPackageDir, checkLockedIntegrity, installedVersion, piInvocation, piSource } from "../src/main/bootstrap/pi-cli.ts";
 import { engineRecipeOf } from "../src/main/bootstrap/recipe-config.ts";
 import type { EngineDeps } from "../src/main/bootstrap/engine.ts";
-import { packageMayLoadSentence } from "../src/main/bootstrap/errors.ts";
+import { packageDroppedSentence, packageMayLoadSentence } from "../src/main/bootstrap/errors.ts";
 import { assertRegistryIntegrity } from "../src/main/bootstrap/npm.ts";
 import { StackError, type NpmPin, type Stack } from "../src/main/bootstrap/stack.ts";
 import type { Stage, StageContext, StageOutcome } from "../src/main/bootstrap/stage.ts";
 import { allStages } from "../src/main/bootstrap/stages/index.ts";
 import { profilePin, profileStages, warningsOf } from "../src/main/bootstrap/stages/profile.ts";
+import { PRUNE_STAGE } from "../src/main/bootstrap/stages/prune.ts";
 import { StateStore } from "../src/main/bootstrap/state.ts";
 import { makeStack, scratchRoot, secretPatterns, testEngine, testLayout, testPlatform } from "./harness/engine-fixture.ts";
-import { readStartGate } from "../src/main/runtime/readiness.ts";
+import { isPackageStage, readStartGate } from "../src/main/runtime/readiness.ts";
 import { installFakeNode } from "./harness/fake-node.ts";
 import { installFakePi } from "./harness/fake-pi.ts";
 import { NpmRegistryFixture } from "./harness/npm-registry.ts";
@@ -46,6 +47,9 @@ const published = {
 	two: registry.publish("@scope/pkg-two", "2.0.0"),
 	team: registry.publish("team-skills", "0.1.3"),
 	team2: registry.publish("@scope/team-more", "1.2.0"),
+	// The swap of generation 15 in small: `show-old` is the package a stack drops, `show-new` the one that takes its place.
+	old: registry.publish("show-old", "0.11.2"),
+	neu: registry.publish("show-new", "0.6.1"),
 };
 const pin = (p: { name: string; version: string; integrity: string }): NpmPin => ({ name: p.name, version: p.version, integrity: p.integrity });
 
@@ -312,6 +316,8 @@ describe("the pkg:<name> stages", () => {
 			profile: "installed",
 			"pkg:pkg-one": "installed",
 			"pkg:@scope/pkg-two": "installed",
+			// Nothing of an earlier stack is there to remove: the stage records that and installs nothing.
+			"pkg-prune": "skipped-verified",
 			"team-pkg:team-skills": "installed",
 		}, JSON.stringify(Object.values(first.outcomes).map((o) => o.failure)));
 		assert.deepEqual(calls(f).slice(0, 3), [`install npm:${PROFILE}@0.1.0`, "install npm:pkg-one@1.0.0", "install npm:@scope/pkg-two@2.0.0"]);
@@ -630,43 +636,216 @@ describe("T7-F010: npm's configuration files cannot turn the lock off", () => {
 	});
 });
 
+describe("pkg-prune: a package an earlier stack installed and this one no longer lists is removed", () => {
+	const gen14 = (): Stack => stackFor(pin(published.profile), [pin(published.one), pin(published.old)]);
+	const gen15 = (): Stack => stackFor(pin(published.profile), [pin(published.one), pin(published.neu)]);
+	const NO_TEAM = { ...RECIPE, packages: [] };
+	const lock = (): Record<string, string> => lockOf(pin(published.profile), pin(published.one), pin(published.old), pin(published.neu), pin(published.team));
+	const sources = (f: Fixture): unknown[] => (settings(f).packages as unknown[]).map((e) => (typeof e === "string" ? e : (e as { source: string }).source));
+	const statuses = (out: RunOut): Record<string, string> => Object.fromEntries(Object.entries(out.outcomes).map(([k, v]) => [k, v.status]));
+	const OLD = "npm:show-old@0.11.2";
+	const NEW = "npm:show-new@0.6.1";
+
+	/** A root on the old stack, as a machine that installed generation 14 is. */
+	async function onOldStack(recipe: unknown = NO_TEAM): Promise<Fixture> {
+		const f = await fixture();
+		f.lock = lock();
+		const first = await go(f, gen14(), recipe);
+		assert.equal(first.outcomes["pkg:show-old"]?.status, "installed", JSON.stringify(first.outcomes["pkg:show-old"]));
+		assert.ok(sources(f).includes(OLD));
+		return f;
+	}
+
+	it("an update installs the new package first, then removes the dropped one through pi and forgets its record; the next run finds nothing to remove", async () => {
+		const f = await onOldStack();
+		const out = await go(f, gen15(), NO_TEAM);
+		assert.deepEqual(statuses(out), { profile: "skipped-verified", "pkg:pkg-one": "skipped-verified", "pkg:show-new": "installed", "pkg-prune": "installed" }, JSON.stringify(Object.values(out.outcomes).map((o) => o.failure)));
+		assert.deepEqual(calls(f).slice(-2), [`install ${NEW}`, `remove ${OLD}`], "the replacement is installed and checked before the old package goes");
+		assert.equal(out.outcomes[PRUNE_STAGE]?.evidence, "removed show-old@0.11.2");
+		assert.ok(sources(f).includes(NEW) && !sources(f).includes(OLD), JSON.stringify(sources(f)));
+		assert.equal(installedVersion(f.layout, "show-old"), null);
+		const store = new StateStore(f.layout);
+		assert.equal(store.record("pkg:show-old"), null, "the record of the dropped package is gone");
+		assert.equal(store.record(PRUNE_STAGE)?.status, "ok");
+		assert.match(readFileSync(join(f.layout.logs, "bootstrap.jsonl"), "utf8"), /"event":"pruned"[^\n]*"package":"show-old"[^\n]*"how":"removed"/);
+		const again = await go(f, gen15(), NO_TEAM);
+		assert.equal(again.outcomes[PRUNE_STAGE]?.status, "skipped-verified");
+		assert.equal(again.outcomes[PRUNE_STAGE]?.evidence, "nothing to remove");
+		assert.equal(calls(f).filter((c) => c.startsWith("remove")).length, 1, "nothing is removed twice");
+	});
+
+	it("a rollback is the same run the other way: the new package is removed and the old one installed again", async () => {
+		const f = await onOldStack();
+		await go(f, gen15(), NO_TEAM);
+		const back = await go(f, gen14(), NO_TEAM);
+		assert.deepEqual(statuses(back), { profile: "skipped-verified", "pkg:pkg-one": "skipped-verified", "pkg:show-old": "installed", "pkg-prune": "installed" }, JSON.stringify(Object.values(back.outcomes).map((o) => o.failure)));
+		assert.deepEqual(calls(f).slice(-2), [`install ${OLD}`, `remove ${NEW}`]);
+		assert.ok(sources(f).includes(OLD) && !sources(f).includes(NEW), JSON.stringify(sources(f)));
+		assert.equal(installedVersion(f.layout, "show-new"), null);
+		assert.equal(installedVersion(f.layout, "show-old"), "0.11.2");
+		assert.equal(new StateStore(f.layout).record("pkg:show-new"), null);
+	});
+
+	it("a Repair (force) of the new stack removes the dropped package too", async () => {
+		const f = await onOldStack();
+		const options = { npm: { env: envOf(f) } };
+		const stages = (): Stage[] => standalone(profileStages(gen15(), engineRecipeOf(NO_TEAM, gen15()), platform, options).filter((s) => s.name !== "pi-settings").map((s) => ({ ...s, needs: s.needs.map((n) => (n === "pi-settings" ? "profile" : n)) })));
+		const engine = testEngine(f.root, stages, { appEnv: f.appEnv, layout: f.layout });
+		await engine.engine.handle({ type: "run", config: { root: f.root, stack: gen15(), secretPatterns, recipe: NO_TEAM, force: true } });
+		const done = engine.events.find((e) => e.type === "done");
+		assert.ok(done?.type === "done" && done.ok, JSON.stringify(engine.events.filter((e) => e.type === "error" || (e.type === "stage" && e.outcome.status === "failed"))));
+		assert.ok(!sources(f).includes(OLD) && sources(f).includes(NEW));
+	});
+
+	it("touches nothing the desk did not install: a recipe package, a package the PM listed, and the PM's own version of the dropped package all stay", async () => {
+		const f = await onOldStack(RECIPE);
+		// The PM (or another tool) listed a package of their own, and one more that is on disk too.
+		const before = settings(f);
+		writeFileSync(join(f.layout.agent, "settings.json"), JSON.stringify({ ...before, packages: [...(before.packages ?? []), "npm:pm-own@1.0.0", { source: "npm:pm-skills@2.0.0", extensions: [] }] }, null, 2));
+		const out = await go(f, gen15(), RECIPE);
+		assert.equal(out.outcomes[PRUNE_STAGE]?.status, "installed", JSON.stringify(out.outcomes[PRUNE_STAGE]));
+		assert.deepEqual(calls(f).filter((c) => c.startsWith("remove")), [`remove ${OLD}`], "one removal, of the one package the desk installed for the old stack");
+		const now = settings(f).packages as unknown[];
+		assert.ok(now.includes("npm:pm-own@1.0.0"), "the PM's package is still listed");
+		assert.ok(now.some((e) => typeof e === "object" && (e as { source: string }).source === "npm:pm-skills@2.0.0"));
+		assert.ok(now.some((e) => typeof e === "object" && (e as { source: string }).source === "npm:team-skills@0.1.3"), "the recipe's package is still listed");
+		assert.equal(installedVersion(f.layout, "team-skills"), "0.1.3");
+		assert.equal(new StateStore(f.layout).record("team-pkg:team-skills")?.status, "ok");
+
+		// The PM moved the dropped package to a version of their own: pi replaced the desk's listing, so the desk's is absent and theirs is not touched.
+		const g = await onOldStack();
+		const listed = settings(g);
+		writeFileSync(join(g.layout.agent, "settings.json"), JSON.stringify({ ...listed, packages: (listed.packages ?? []).map((e) => (e === OLD ? "npm:show-old@0.12.0" : e)) }, null, 2));
+		const kept = await go(g, gen15(), NO_TEAM);
+		assert.equal(kept.outcomes[PRUNE_STAGE]?.status, "installed", JSON.stringify(kept.outcomes[PRUNE_STAGE]));
+		assert.equal(kept.outcomes[PRUNE_STAGE]?.evidence, "nothing to remove");
+		assert.deepEqual(calls(g).filter((c) => c.startsWith("remove")), [], "pi remove matches by name, so it is not run for a listing that is not the desk's");
+		assert.ok(sources(g).includes("npm:show-old@0.12.0"));
+		assert.equal(new StateStore(g.layout).record("pkg:show-old"), null, "the desk no longer answers for it");
+	});
+
+	it("leaves a dropped package alone when the recipe lists it now: the team stage owns it", async () => {
+		const f = await onOldStack();
+		const recipe = { ...RECIPE, packages: [pin(published.old)] };
+		const out = await go(f, gen15(), recipe);
+		assert.equal(out.outcomes["team-pkg:show-old"]?.status, "installed", JSON.stringify(out.outcomes["team-pkg:show-old"]));
+		assert.equal(out.outcomes[PRUNE_STAGE]?.status, "skipped-verified", JSON.stringify(out.outcomes[PRUNE_STAGE]));
+		assert.deepEqual(calls(f).filter((c) => c.startsWith("remove")), []);
+		assert.deepEqual((settings(f).packages as unknown[]).find((e) => typeof e === "object" && (e as { source: string }).source === OLD), { source: OLD, extensions: [] });
+	});
+
+	it("when pi remove fails, the listing is taken out of settings.json instead: pi loads none of it, its files stay, and the start is not blocked", async () => {
+		const f = await onOldStack();
+		f.fail = { install: [], remove: ["show-old"] };
+		const out = await go(f, gen15(), NO_TEAM);
+		const outcome = out.outcomes[PRUNE_STAGE];
+		assert.equal(outcome?.status, "installed", JSON.stringify(outcome));
+		assert.match(outcome?.evidence ?? "", /^removed show-old@0\.11\.2 \(off pi's package list; its files stay under /);
+		assert.ok(!sources(f).includes(OLD) && sources(f).includes(NEW), JSON.stringify(sources(f)));
+		assert.equal(installedVersion(f.layout, "show-old"), "0.11.2", "the files are still there, and the evidence says so");
+		const log = readFileSync(join(f.layout.logs, "bootstrap.jsonl"), "utf8");
+		assert.match(log, /"event":"prune-remove-failed"[^\n]*pi remove exit 1/);
+		assert.match(log, /"event":"unlisted"[^\n]*"listing":"absent"/);
+		const store = new StateStore(f.layout);
+		assert.deepEqual(store.startBlocks(), []);
+		assert.equal(store.record("pkg:show-old"), null);
+	});
+
+	it("when the listing cannot be taken out either, the stage fails with a sentence of its own and a start block, and a later run that removes the package clears it", async () => {
+		const f = await onOldStack();
+		f.fail = { install: [], remove: ["show-old"] };
+		const out = await go(f, gen15(), NO_TEAM, { FAKE_PI_BREAK: JSON.stringify(["show-old"]) });
+		const outcome = out.outcomes[PRUNE_STAGE];
+		assert.equal(outcome?.status, "failed", JSON.stringify(outcome));
+		assert.equal(outcome?.attempts, 1, "not retried: the bytes of settings.json will not change by waiting");
+		assert.equal(outcome?.failure?.sentence, packageDroppedSentence("show-old"));
+		assert.deepEqual(outcome?.failure?.params, { stage: PRUNE_STAGE, reason: "package-dropped", name: "show-old" });
+		assert.match(outcome?.failure?.detail ?? "", /show-old@0\.11\.2: pi remove failed \(exit 1\), and its listing in settings\.json is not readable, so what pi loads is unknown/);
+		assert.match(outcome?.failure?.detail ?? "", /the app does not start pi until a later run of pkg-prune has removed it/);
+		assert.doesNotMatch(`${outcome?.failure?.sentence}\n${outcome?.failure?.detail}`, /edit|remove it from settings\.json/i, "neither asks a PM to edit a file");
+		const expected = { stage: PRUNE_STAGE, kind: "package-may-load", package: "show-old", sentence: packageDroppedSentence("show-old") };
+		assert.deepEqual(new StateStore(f.layout).startBlocks(), [expected]);
+		assert.deepEqual(readStartGate(f.layout).blocks, [{ stage: PRUNE_STAGE, package: "show-old", sentence: packageDroppedSentence("show-old") }], "the supervisor's own read refuses the start");
+		assert.equal(new StateStore(f.layout).record("pkg:show-old")?.version, "0.11.2", "the record stays, so the next run tries again");
+		// The next run: the profile and the packages write settings.json again (it was unreadable), and the dropped package is no longer listed.
+		f.fail = { install: [], remove: [] };
+		const ok = await go(f, gen15(), NO_TEAM);
+		assert.equal(ok.outcomes[PRUNE_STAGE]?.status, "installed", JSON.stringify(ok.outcomes[PRUNE_STAGE]));
+		assert.deepEqual(new StateStore(f.layout).startBlocks(), []);
+		assert.deepEqual(readStartGate(f.layout).blocks, []);
+		assert.ok(!sources(f).includes(OLD));
+		assert.equal(new StateStore(f.layout).record("pkg:show-old"), null);
+	});
+
+	it("a start block ends when a stack lists the package again (a rollback), without the prune removing anything", async () => {
+		const f = await onOldStack();
+		const block = { kind: "package-may-load" as const, package: "show-old", sentence: packageDroppedSentence("show-old") };
+		await new StateStore(f.layout).setRecord(PRUNE_STAGE, { status: "failed", version: "format 1", evidence: "", at: "2026-11-12T00:00:00.000Z", hashes: {}, dependsOn: {}, startBlock: block });
+		const back = await go(f, gen14(), NO_TEAM);
+		assert.equal(back.outcomes[PRUNE_STAGE]?.status, "skipped-verified", JSON.stringify(back.outcomes[PRUNE_STAGE]));
+		assert.deepEqual(new StateStore(f.layout).startBlocks(), [], "the stage's record is written again without the block");
+		assert.deepEqual(calls(f).filter((c) => c.startsWith("remove")), []);
+		assert.ok(sources(f).includes(OLD));
+	});
+
+	it("forgets the record a cut install left for a package the stack then dropped, so the start gate no longer reads an interrupted install", async () => {
+		const f = await onOldStack();
+		// An update to the new stack was cut while `pkg:show-new` ran pi: its record says `running`, and nothing of it is listed.
+		await new StateStore(f.layout).setRecord("pkg:show-new", { status: "running", version: "0.6.1", evidence: "", at: "2026-11-12T00:00:00.000Z", hashes: {}, dependsOn: {} });
+		assert.deepEqual(readStartGate(f.layout).interrupted, ["pkg:show-new"]);
+		const back = await go(f, gen14(), NO_TEAM);
+		assert.equal(back.outcomes[PRUNE_STAGE]?.status, "installed", JSON.stringify(back.outcomes[PRUNE_STAGE]));
+		assert.deepEqual(calls(f).filter((c) => c.startsWith("remove")), [], "nothing of it was listed, so pi was not asked");
+		assert.deepEqual(readStartGate(f.layout).interrupted, []);
+		assert.equal(new StateStore(f.layout).record("pkg:show-new"), null);
+	});
+
+	it("a prune cut after pi remove began is an interrupted install to the start gate, like any package stage", () => {
+		assert.equal(isPackageStage(PRUNE_STAGE), true);
+	});
+});
+
 describe("the stage list", () => {
 	const pins = (names: string[]): NpmPin[] => names.map((name) => ({ name, version: "1.0.0", integrity: published.one.integrity }));
 	const s = (names: string[]): Stack => stackFor(pin(published.profile), pins(names));
 
-	it("orders profile, pi-settings (Windows), pkg:*, team-pkg:*, and claude as the spec's table does", () => {
+	it("orders profile, pi-settings (Windows), pkg:*, pkg-prune, team-pkg:*, and claude as the spec's table does", () => {
 		const stack = s(["pi-claude-bridge", "pkg-one"]);
 		const recipe = engineRecipeOf(RECIPE, stack);
 		const win = profileStages(stack, recipe, "win32");
 		const mac = profileStages(stack, recipe, "darwin");
-		assert.deepEqual(win.map((x) => x.name), ["profile", "pi-settings", "pkg:pi-claude-bridge", "pkg:pkg-one", "team-pkg:team-skills", "claude"]);
-		assert.deepEqual(mac.map((x) => x.name), ["profile", "pkg:pi-claude-bridge", "pkg:pkg-one", "team-pkg:team-skills", "claude"]);
+		assert.deepEqual(win.map((x) => x.name), ["profile", "pi-settings", "pkg:pi-claude-bridge", "pkg:pkg-one", "pkg-prune", "team-pkg:team-skills", "claude"]);
+		assert.deepEqual(mac.map((x) => x.name), ["profile", "pkg:pi-claude-bridge", "pkg:pkg-one", "pkg-prune", "team-pkg:team-skills", "claude"]);
 		const needs = (stages: Stage[]): Record<string, readonly string[]> => Object.fromEntries(stages.map((x) => [x.name, x.needs]));
 		assert.deepEqual(needs(win), {
 			profile: ["pi"],
 			"pi-settings": ["profile", "git"],
 			"pkg:pi-claude-bridge": ["pi-settings"],
 			"pkg:pkg-one": ["pi-settings"],
+			// After every package of the stack: the new one is installed and checked before the one it replaces goes.
+			"pkg-prune": ["pi-settings", "pkg:pi-claude-bridge", "pkg:pkg-one"],
 			"team-pkg:team-skills": ["pi-settings", "pkg:pi-claude-bridge", "pkg:pkg-one"],
 			claude: ["pkg:pi-claude-bridge"],
 		});
 		assert.deepEqual(needs(mac)["pkg:pkg-one"], ["profile"]);
 		assert.deepEqual(needs(mac)["team-pkg:team-skills"], ["profile", "pkg:pi-claude-bridge", "pkg:pkg-one"]);
+		assert.deepEqual(needs(mac)["pkg-prune"], ["profile", "pkg:pi-claude-bridge", "pkg:pkg-one"]);
 		assert.deepEqual(needs(profileStages(s([]), recipe, "darwin"))["team-pkg:team-skills"], ["profile"], "a stack with no package still keeps the team package behind the profile");
+		assert.deepEqual(needs(profileStages(s([]), recipe, "darwin"))["pkg-prune"], ["profile"], "and the prune behind the stage that wrote settings.json");
 	});
 
 	it("makes pi-claude-bridge wait for the pinned Agent SDK, which is listed first, and the claude stage checks that pin", () => {
 		const stack = s(["@anthropic-ai/claude-agent-sdk", "pi-claude-bridge"]);
 		const stages = profileStages(stack, engineRecipeOf(undefined, stack), "darwin");
-		assert.deepEqual(stages.map((x) => x.name), ["profile", "pkg:@anthropic-ai/claude-agent-sdk", "pkg:pi-claude-bridge", "claude"]);
+		assert.deepEqual(stages.map((x) => x.name), ["profile", "pkg:@anthropic-ai/claude-agent-sdk", "pkg:pi-claude-bridge", "pkg-prune", "claude"]);
 		assert.deepEqual(stages.find((x) => x.name === "pkg:pi-claude-bridge")?.needs, ["profile", "pkg:@anthropic-ai/claude-agent-sdk"]);
 		assert.deepEqual(stages.find((x) => x.name === "pkg:@anthropic-ai/claude-agent-sdk")?.needs, ["profile"]);
 	});
 
 	it("has no claude stage when the stack does not list pi-claude-bridge, and no team-pkg stage for a recipe without packages", () => {
 		const stack = s(["pkg-one"]);
-		assert.deepEqual(profileStages(stack, engineRecipeOf({ ...RECIPE, packages: [] }, stack), "darwin").map((x) => x.name), ["profile", "pkg:pkg-one"]);
-		assert.deepEqual(profileStages(stack, engineRecipeOf(undefined, stack), "darwin").map((x) => x.name), ["profile", "pkg:pkg-one"]);
+		assert.deepEqual(profileStages(stack, engineRecipeOf({ ...RECIPE, packages: [] }, stack), "darwin").map((x) => x.name), ["profile", "pkg:pkg-one", "pkg-prune"]);
+		assert.deepEqual(profileStages(stack, engineRecipeOf(undefined, stack), "darwin").map((x) => x.name), ["profile", "pkg:pkg-one", "pkg-prune"]);
 	});
 
 	it("allStages joins the tool stages and the profile stages, and every stage that needs one leads to a stage in the list", () => {
@@ -675,7 +854,7 @@ describe("the stage list", () => {
 		const names = new Set(stages.map((x) => x.name));
 		assert.equal(names.size, stages.length, "no stage name twice");
 		for (const stage of stages) for (const need of stage.needs) assert.ok(names.has(need), `${stage.name} needs ${need}, which is not a stage`);
-		for (const name of ["pi", "profile", "pkg:pkg-one", "team-pkg:team-skills", "claude"]) assert.ok(names.has(name), name);
+		for (const name of ["pi", "profile", "pkg:pkg-one", "pkg-prune", "team-pkg:team-skills", "claude"]) assert.ok(names.has(name), name);
 	});
 
 	it("every package stage runs on the npm lane, one at a time", () => {

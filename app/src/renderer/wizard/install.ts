@@ -28,6 +28,7 @@ export function stageLabel(ctx: Pick<Ctx, "tr">, name: string): string {
 		case "pi-shim":
 		case "profile":
 		case "pi-settings":
+		case "pkg-prune":
 		case "claude":
 			return ctx.tr(`install.stage.${head}`);
 		default:
@@ -54,6 +55,7 @@ export function failureSentence(ctx: Ctx, f: InstallFailure): string {
 			return ctx.tr("install.failure.locked");
 		case "other":
 			if (p.reason === "package-may-load") return ctx.tr("install.failure.packageMayLoad", { name: p.name ?? "" });
+			if (p.reason === "package-dropped") return ctx.tr("install.failure.packageDropped", { name: p.name ?? "" });
 			if (p.reason === "short-names") return ctx.tr("install.failure.shortNames", { name: p.name ?? "" });
 			if (f.stage === "") return ctx.tr("install.failure.engine");
 			return ctx.tr("install.failure.other", { stage: stageLabel(ctx, p.stage ?? f.stage) });

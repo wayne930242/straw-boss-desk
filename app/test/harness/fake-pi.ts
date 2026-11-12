@@ -15,6 +15,7 @@ import type { Layout } from "../../src/main/paths.ts";
 //   FAKE_PI_UNLISTED    JSON ["name", ...]: pi installs those but writes no entry for them in settings.json (so the skills-only listing cannot find them)
 //   FAKE_PI_FAIL        JSON {"install": ["name", ...], "remove": ["name", ...]}: those fail with a network error and a held-file error
 //   FAKE_PI_CORRUPT     JSON ["name", ...]: after installing those, pi leaves a settings.json that is not JSON (the next install writes a valid one again)
+//   FAKE_PI_BREAK       JSON ["name", ...]: a `remove` of those that fails (FAKE_PI_FAIL) also leaves a settings.json that is not JSON, as a removal cut in the middle of its write would
 //   FAKE_PI_SNAPSHOT    a file that gets one JSON line per `remove` call: the package's entry in settings.json as it was when the call began (before any failure)
 //   FAKE_PI_ENV         a file that gets one JSON line per call: the two npm variables the app sets for pi (NPM_CONFIG_PACKAGE_LOCK, NPM_CONFIG_SAVE)
 export const FAKE_PI_SCRIPT = `
@@ -39,6 +40,7 @@ const fail = JSON.parse(process.env.FAKE_PI_FAIL || "{}");
 if ((fail[command] || []).includes(name)) {
   if (command === "install") console.error("npm error code ETIMEDOUT\\nnpm error network request failed");
   else console.error("npm error code EBUSY\\nnpm error resource busy or locked");
+  if (command === "remove" && JSON.parse(process.env.FAKE_PI_BREAK || "[]").includes(name)) fs.writeFileSync(path.join(agent, "settings.json"), "{ not json");
   process.exit(1);
 }
 const settingsFile = path.join(agent, "settings.json");

@@ -41,7 +41,7 @@ describe("the wizard and settings pages", () => {
 		for (const locale of ["en", "zh-TW"] as const) {
 			const c = catalogs[locale];
 			for (const badge of ["waiting", "working", "done", "skipped", "failed", "blocked"]) assert.ok(c.install.badge[badge as keyof typeof c.install.badge], `${locale} badge ${badge}`);
-			for (const stage of ["preflight", "node", "git", "herdr", "fd-rg", "gh", "glab", "opt", "tool-paths", "launchers", "git-helpers", "pi", "pi-shim", "profile", "pi-settings", "pkg", "team-pkg", "claude", "ttt", "other"]) {
+			for (const stage of ["preflight", "node", "git", "herdr", "fd-rg", "gh", "glab", "opt", "tool-paths", "launchers", "git-helpers", "pi", "pi-shim", "profile", "pi-settings", "pkg", "pkg-prune", "team-pkg", "claude", "ttt", "other"]) {
 				assert.ok((c.install.stage as Record<string, string>)[stage], `${locale} stage ${stage}`);
 			}
 			for (const problem of ["not-absolute", "outside-home", "is-home", "inside-app-data", "not-a-folder"]) assert.ok((c.folder.problems as Record<string, string>)[problem], `${locale} folder problem ${problem}`);

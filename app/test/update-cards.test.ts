@@ -80,6 +80,13 @@ describe("Updates: three cards, one action row each", () => {
 		const available = card(draw(view({ stack: { phase: "available", generation: 6, changes: [{ kind: "tool", name: "node", stage: "node", from: "24.22.1", to: "24.99.0" }, { kind: "package", name: "pi-new", stage: "pkg:pi-new", from: null, to: "0.1.0" }, { kind: "package", name: "pi-old", stage: "pkg:pi-old", from: "1.0.0", to: null }] } })), "stack");
 		assert.deepEqual(buttons(available).map((b) => [b.id, b.className, b.disabled]), [["update-apply", "primary", false]]);
 		assert.deepEqual(available.querySelectorAll("#update-changes li").map((l) => l.textContent), ["Programming runtime: 24.22.1 to 24.99.0", "Agent add-on pi-new: new, 0.1.0", "Agent add-on pi-old: removed"]);
+		// Generation 15's swap as the card words it in zh-TW: the package that takes over is new, the dropped one is removed.
+		const swap = card(draw(view({ stack: { phase: "available", generation: 15, changes: [{ kind: "package", name: "pi-herdr-doc-review", stage: "pkg:pi-herdr-doc-review", from: "0.11.2", to: null }, { kind: "package", name: "pi-better-show", stage: "pkg:pi-better-show", from: null, to: "0.6.1" }] } }), "zh-TW"), "stack");
+		assert.deepEqual(swap.querySelectorAll("#update-changes li").map((l) => l.textContent), ["代理程式附加元件 pi-herdr-doc-review：移除", "代理程式附加元件 pi-better-show：新增，0.6.1"]);
+		assert.deepEqual(swap.querySelectorAll("#update-changes li").map((l) => l.getAttribute("data-stage")), ["pkg:pi-herdr-doc-review", "pkg:pi-better-show"]);
+		const pruning = (locale: "en" | "zh-TW") => card(draw(view({ stack: { phase: "applying", generation: 15, stage: "pkg-prune", done: 9 } }), locale), "stack").querySelector("#update-stack-note")?.textContent;
+		assert.equal(pruning("en"), "Updating to generation 15. Now: Clean up add-ons no longer used");
+		assert.equal(pruning("zh-TW"), "正在更新到第 15 代。目前：清理不再使用的附加元件");
 		const applying = card(draw(view({ stack: { phase: "applying", generation: 6, stage: "pkg:pi-lens", done: 3 } })), "stack");
 		assert.deepEqual(buttons(applying).map((b) => [b.id, b.disabled]), [["update-apply", true]]);
 		assert.equal(applying.querySelector("#update-stack-note")?.textContent, "Updating to generation 6. Now: Agent add-on pi-lens");

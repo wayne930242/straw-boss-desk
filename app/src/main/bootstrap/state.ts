@@ -196,6 +196,11 @@ export class StateStore {
 		return this.bootstrap().stages[stage] ?? null;
 	}
 
+	/** Every stage record, by stage name, as this store last read or wrote them: a record outlives the stack that planned its stage, which is how the `pkg-prune` stage finds a package an earlier stack installed. */
+	records(): Readonly<Record<string, StageRecord>> {
+		return this.bootstrap().stages;
+	}
+
 	/** The stages whose last failure left a package that may still load code. The supervisor refuses to start pi while this is not empty (T7-F002); read it from a fresh store. */
 	startBlocks(): Array<{ stage: string } & StartBlock> {
 		return Object.entries(this.bootstrap().stages).flatMap(([stage, record]) => (record.startBlock ? [{ stage, ...record.startBlock }] : []));
@@ -233,6 +238,16 @@ export class StateStore {
 		return this.#serial(() => {
 			const state = this.bootstrap();
 			state.stages[stage] = record;
+			writeFileAtomic(this.bootstrapFile, `${JSON.stringify(state, null, "\t")}\n`);
+		});
+	}
+
+	/** Forgets a stage's record: for a stage no stack plans any more, once what it installed is gone (`pkg-prune`). A record that is not there is not an error. */
+	dropRecord(stage: string): Promise<void> {
+		return this.#serial(() => {
+			const state = this.bootstrap();
+			if (!(stage in state.stages)) return;
+			delete state.stages[stage];
 			writeFileAtomic(this.bootstrapFile, `${JSON.stringify(state, null, "\t")}\n`);
 		});
 	}

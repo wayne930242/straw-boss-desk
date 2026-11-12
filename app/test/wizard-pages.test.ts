@@ -4,9 +4,9 @@ import { describe, it } from "node:test";
 import { listOf } from "../src/shared/locale.ts";
 import type { WizardView } from "../src/shared/wizard.ts";
 import { catalogs } from "../src/renderer/i18n/index.ts";
-import { TOOLS_RUNNING_SENTENCE } from "../src/main/bootstrap/errors.ts";
+import { packageDroppedSentence, TOOLS_RUNNING_SENTENCE } from "../src/main/bootstrap/errors.ts";
 import { announcementParts, newParts } from "../src/renderer/wizard/announce.ts";
-import { failureSentence, nowLine } from "../src/renderer/wizard/install.ts";
+import { failureSentence, nowLine, stageLabel } from "../src/renderer/wizard/install.ts";
 import { makeCtx } from "../src/renderer/wizard/common.ts";
 import { flattenKeys, readText, sourceFiles, valueAt } from "./harness/ui-rules.ts";
 
@@ -117,6 +117,17 @@ describe("what a screen reader hears (T9-F004)", () => {
 		assert.equal(TOOLS_RUNNING_SENTENCE, catalogs.en.install.failure.toolsRunning);
 		assert.doesNotMatch(catalogs.en.install.failure.toolsRunning, /\b(npm|pi|node|Herdr)\b/, "no tool is named where the PM reads");
 		assert.match(catalogs["zh-TW"].install.failure.toolsRunning, /再試一次/, "it names the button the catalog has");
+	});
+
+	it("words the prune stage and its failure in both catalogs: a package the stack dropped that could not be removed (generation 15)", () => {
+		const failure = { stage: "pkg-prune", category: "other" as const, params: { stage: "pkg-prune", reason: "package-dropped", name: "pi-old" }, detail: "d" };
+		const ctxOf = (locale: "en" | "zh-TW") => makeCtx(view({ locale }), locale, () => undefined);
+		assert.equal(failureSentence(ctxOf("en"), failure), packageDroppedSentence("pi-old"), "the engine's English sentence is the catalog's");
+		assert.equal(failureSentence(ctxOf("zh-TW"), failure), catalogs["zh-TW"].install.failure.packageDropped.replace("{name}", "pi-old"));
+		assert.match(catalogs["zh-TW"].install.failure.packageDropped, /再試一次/, "it names the button the catalog has");
+		assert.doesNotMatch(`${catalogs.en.install.failure.packageDropped}${catalogs["zh-TW"].install.failure.packageDropped}`, /settings\.json|npm|\bpi\b/, "no file or tool is named where the PM reads");
+		assert.equal(stageLabel(ctxOf("en"), "pkg-prune"), "Clean up add-ons no longer used");
+		assert.equal(stageLabel(ctxOf("zh-TW"), "pkg-prune"), "清理不再使用的附加元件");
 	});
 
 	it("speaks a refusal, a folder problem and a failure once, in the page's language", () => {

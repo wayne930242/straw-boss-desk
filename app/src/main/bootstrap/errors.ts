@@ -14,9 +14,9 @@ export interface FailureParams {
 	what?: string;
 	/** other: the stage that failed. */
 	stage?: string;
-	/** other: a failure with a sentence of its own. `short-names`: a tool cannot read the app's folder and short folder names are off (T5-F002). `package-may-load`: a package failed its check and could not be taken out of pi's package list (T7-F002). locked: `tools-running`: a program of the data root from an earlier run was still running after the wait, so a package install did not start (R9-F001). */
-	reason?: "short-names" | "package-may-load" | "tools-running";
-	/** other, `short-names`: the tool. other, `package-may-load`: the package. */
+	/** other: a failure with a sentence of its own. `short-names`: a tool cannot read the app's folder and short folder names are off (T5-F002). `package-may-load`: a package failed its check and could not be taken out of pi's package list (T7-F002). `package-dropped`: a package the stack no longer lists could not be taken out of it either (`pkg-prune`). locked: `tools-running`: a program of the data root from an earlier run was still running after the wait, so a package install did not start (R9-F001). */
+	reason?: "short-names" | "package-may-load" | "package-dropped" | "tools-running";
+	/** other, `short-names`: the tool. other, `package-may-load` and `package-dropped`: the package. */
 	name?: string;
 	/** network: why the host cannot be reached, when the check could tell: `path` (a VPN, a proxy, a firewall on the way) or `tls` (a certificate this computer does not trust: a proxy or certificate inspection). */
 	cause?: "path" | "tls";
@@ -39,6 +39,10 @@ export const TOOLS_RUNNING_SENTENCE = "A program from an earlier setup is still 
 export const packageMayLoadSentence = (name: string | undefined): string =>
 	`${name ?? "A package"} did not pass its check and could not be taken out again, so Straw Boss will not start your agents until it has been. Choose Retry; if that fails again, give the Details to whoever sets up your team's agents.`;
 
+/** The sentence for a package the stack no longer lists that is still on pi's package list after `pi remove` and the direct edit both failed (`pkg-prune`): the app does not start meanwhile. */
+export const packageDroppedSentence = (name: string | undefined): string =>
+	`${name ?? "An add-on"} is no longer part of your tools and could not be removed, so Straw Boss will not start your agents until it has been. Choose Try again; if that fails again, give the Details to whoever sets up your team's agents.`;
+
 export function failureSentence(category: FailureCategory, params: FailureParams): string {
 	switch (category) {
 		case "network":
@@ -56,6 +60,7 @@ export function failureSentence(category: FailureCategory, params: FailureParams
 			return "A file was in use (often antivirus scanning it).";
 		case "other":
 			if (params.reason === "package-may-load") return packageMayLoadSentence(params.name);
+			if (params.reason === "package-dropped") return packageDroppedSentence(params.name);
 			if (params.reason === "short-names") return `${params.name ?? "A tool"} cannot keep its files in the app's folder on this computer: the folder's name has characters it cannot read, and short folder names are turned off for this drive, so it would put them inside each project instead. Ask whoever manages this computer to turn short names on for the drive, then try again.`;
 			return `${params.stage ?? "A step"} failed.`;
 	}

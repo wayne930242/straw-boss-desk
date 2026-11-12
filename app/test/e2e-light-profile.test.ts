@@ -80,11 +80,13 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 			...(isWindows ? ["pi-shim", "pi-settings"] : []),
 			"profile",
 			...PACKAGES.map((n) => `pkg:${n}`),
+			"pkg-prune",
 			`team-pkg:${TEAM_PACKAGE.name}`,
 			"claude",
 		].sort();
 		assert.deepEqual(Object.keys(first.outcomes).sort(), expected);
-		for (const [name, status] of Object.entries(statusOf(first))) assert.equal(status, name === "preflight" ? "skipped-verified" : "installed", `${name} is ${status}`);
+		// The preflight only checks, and `pkg-prune` finds no package of an earlier stack on an empty root: both record their result without installing anything.
+		for (const [name, status] of Object.entries(statusOf(first))) assert.equal(status, name === "preflight" || name === "pkg-prune" ? "skipped-verified" : "installed", `${name} is ${status}`);
 		const bootstrap = stateOf(world, "bootstrap").stages as Record<string, { status: string }>;
 		for (const name of expected) assert.equal(bootstrap[name]?.status, "ok", `${name} in state/bootstrap.json`);
 	});

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nodeBinaryPath } from "../bootstrap/npm.ts";
 import { agentPackageDir } from "../bootstrap/pi-cli.ts";
+import { PRUNE_STAGE } from "../bootstrap/stages/prune.ts";
 import type { CurrentTools, Layout } from "../paths.ts";
 import { herdrBinary } from "../paths.ts";
 
@@ -39,8 +40,11 @@ export const STACK_STAGE = `pkg:${STACK_PACKAGE}`;
  */
 export const DIRECT_PACKAGES: readonly string[] = [STACK_PACKAGE, "pi-intercom"];
 
-/** The stages that write the npm prefix or pi's package list in place (`pi` is `npm install -g` into `tools/npm`); a `running` record on one of them, with the engine lock free, is an interrupted install (R7-F001, R13-F009). */
-export const isPackageStage = (stage: string): boolean => stage === "pi" || stage === "profile" || stage.startsWith("pkg:") || stage.startsWith("team-pkg:");
+/**
+ * The stages that write the npm prefix or pi's package list in place (`pi` is `npm install -g` into `tools/npm`; `pkg-prune` runs `pi remove`); a `running` record on one of them, with the
+ * engine lock free, is an interrupted install (R7-F001, R13-F009).
+ */
+export const isPackageStage = (stage: string): boolean => stage === "pi" || stage === "profile" || stage === PRUNE_STAGE || stage.startsWith("pkg:") || stage.startsWith("team-pkg:");
 
 export interface StartGate {
 	/** `bootstrap.json` is there but cannot be read, or has no `stages` object: nothing in it can be trusted (R7-F007). */
