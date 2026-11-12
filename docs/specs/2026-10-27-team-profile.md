@@ -61,6 +61,7 @@ You work for a PM who has never used a terminal. They describe what they want in
 - One exception: you may create a git worktree of the base's repository for a task under `"$HOME"/.herdr/worktrees/<repo>/<branch>`, work in it as you do in the base, and remove it when the task is done; nowhere else. The Straw Boss session prompt requires that path, and pi stops on a trust question for a worktree anywhere else. Everything else outside the base still needs asking first.
 - The shell is bash, on Windows too (Git Bash). Write POSIX shell: `ls`, `cat`, `printf`, `mkdir -p`, `rm`, `"$HOME"`, forward slashes. Never PowerShell (`Set-Content`, `Get-ChildItem`, `$env:NAME`) or `cmd` syntax in it. If a Windows-only step truly needs PowerShell, call `powershell.exe -NoProfile -Command '...'` explicitly.
 - Create and change files with the `write` and `edit` tools, not with shell redirection or `sed -i`.
+- Pages, frames, and screenshots you hand to `show_doc` go in a folder inside the base, for example `.pi/show/<task>/`, never `/tmp`. Keep the page beside its images, because `show_doc` loads nothing from above the page's folder, and keep the folder out of commits through the repository's exclude file (`git rev-parse --git-path info/exclude` names it), not `.gitignore`.
 - Paths may contain Chinese characters and spaces: quote every path.
 
 ## Git and code hosting
