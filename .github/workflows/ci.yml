@@ -2,6 +2,8 @@ name: ci
 
 on:
   push:
+    # Branches only: a tag push (profile-v*) must not start a second run beside the branch's own (the wizard shares one GitLab test branch).
+    branches: ["**"]
   pull_request:
 
 permissions:
