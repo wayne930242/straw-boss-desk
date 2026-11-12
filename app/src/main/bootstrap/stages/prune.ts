@@ -1,6 +1,7 @@
 import { packageListing, unlistPackages } from "../../profile/team-profile.ts";
 import { packageDroppedSentence, StageError } from "../errors.ts";
 import type { NpmRun } from "../npm.ts";
+import type { RunResult } from "../../platform/index.ts";
 import { agentPackageDir, piRemove, piSource } from "../pi-cli.ts";
 import { isPackageName } from "../stack.ts";
 import type { Stage, StageContext } from "../stage.ts";
@@ -54,9 +55,17 @@ async function removeDropped(ctx: StageContext, pkg: DroppedPackage, npm?: NpmRu
 	// A record whose name or version could not have come from a pin names nothing pi can be asked about; it is forgotten.
 	if (!isPackageName(pkg.name) || pkg.version === "") return { how: "absent" };
 	if (packageListing(ctx.layout.agent, pkg.name, pkg.version) === "absent") return { how: "absent" };
-	const removed = await piRemove(ctx, pkg, npm);
-	if (!removed.timedOut && removed.code === 0 && packageListing(ctx.layout.agent, pkg.name, pkg.version) === "absent") return { how: "removed" };
-	ctx.log.event({ event: "prune-remove-failed", package: pkg.name, detail: `pi remove exit ${removed.code}${removed.timedOut ? " (time limit)" : ""}: ${firstLine(`${removed.stderr}\n${removed.stdout}`)}` });
+	// `pi remove` may not even run (the wait for the tools of an earlier run gives up as `locked`): that is a failed removal like any other, and the unlisting below still applies,
+	// because it edits only `settings.json` (pbsswap-F001).
+	let removed: RunResult & { threw?: string };
+	try {
+		removed = await piRemove(ctx, pkg, npm);
+	} catch (error) {
+		removed = { code: null, timedOut: false, stderr: "", stdout: "", threw: (error as Error).message };
+	}
+	if (removed.threw === undefined && !removed.timedOut && removed.code === 0 && packageListing(ctx.layout.agent, pkg.name, pkg.version) === "absent") return { how: "removed" };
+	const why = removed.threw !== undefined ? `pi remove did not run: ${firstLine(removed.threw)}` : `pi remove exit ${removed.code}${removed.timedOut ? " (time limit)" : ""}: ${firstLine(`${removed.stderr}\n${removed.stdout}`)}`;
+	ctx.log.event({ event: "prune-remove-failed", package: pkg.name, detail: why });
 	let unlistError: string | null = null;
 	try {
 		unlistPackages({ agentDir: ctx.layout.agent, packages: [pkg] });
@@ -67,7 +76,7 @@ async function removeDropped(ctx: StageContext, pkg: DroppedPackage, npm?: NpmRu
 	ctx.log.event({ event: "unlisted", package: pkg.name, listing, ...(unlistError === null ? {} : { error: unlistError }) });
 	if (listing === "absent") return { how: "unlisted" };
 	const still = listing === "skills-only" ? "still listed with its extensions off, so its skills, prompts, and themes still load" : listing === "listed" ? "still listed, so pi loads it with its extensions" : "not readable, so what pi loads is unknown";
-	return { how: "listed", detail: `pi remove failed (exit ${removed.code}), and its listing in settings.json is ${still}${unlistError === null ? "" : ` (${unlistError})`}` };
+	return { how: "listed", detail: `${removed.threw !== undefined ? "pi remove did not run" : `pi remove failed (exit ${removed.code})`}, and its listing in settings.json is ${still}${unlistError === null ? "" : ` (${unlistError})`}` };
 }
 
 /**

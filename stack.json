@@ -1,7 +1,7 @@
 {
   "$schema": "./stack.schema.json",
   "schema": 1,
-  "generation": 15,
+  "generation": 16,
   "minShell": "0.0.1",
   "tools": {
     "node": {
@@ -83,8 +83,8 @@
   ],
   "profile": {
     "name": "straw-boss-desk-profile",
-    "version": "0.1.2",
-    "integrity": "sha512-Jni/GVFxrspv9FJBRoTYOBfEYst8HvK+PV0NyUta9dKXvMHqT4b/jGZknYtiZrbw2+IH+EkD4ShfBh5Tuvm/xA=="
+    "version": "0.1.3",
+    "integrity": "sha512-2NUZMSqbxPwsFBF6ESnGuTgWaFF1Zxbm5WOywN9wh73S5VcrjWDl7L3HKIFaA3gt+ezlWn40kXrBMWHMPEvnsA=="
   },
   "piPackages": [
     { "name": "pi-straw-boss", "version": "0.75.2", "integrity": "sha512-b+IURlcQwUTh0zR0IicmUopt/7yEUrv5eAYxnAL8k6T26jfWgkSSnM8EU41hXtWhJHKi+UJFdoT+lFgtz/Uxqg==" },

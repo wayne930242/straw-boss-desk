@@ -29,7 +29,7 @@ test("the real stack.json holds what task 2 lists", () => {
   const stack = fresh();
   assert.equal(stack.schema, 1);
   assert.ok(Number.isInteger(stack.generation) && stack.generation >= 1);
-  assert.equal(stack.generation, 15, "generation 15: pi-better-show 0.6.1 takes pi-herdr-doc-review's place");
+  assert.equal(stack.generation, 16, "generation 16: profile 0.1.3 (pages and frames for show_doc stay inside the base); generation 15 swapped pi-herdr-doc-review for pi-better-show 0.6.1");
   assert.equal(stack.piPackages.find((p) => p.name === "pi-straw-boss")?.version, "0.75.2");
   assert.equal(stack.piPackages.find((p) => p.name === "pi-better-show")?.version, "0.6.1");
   assert.ok(!stack.piPackages.some((p) => p.name === "pi-herdr-doc-review"), "show_doc comes from one package: pi-herdr-doc-review is dropped");
@@ -41,8 +41,8 @@ test("the real stack.json holds what task 2 lists", () => {
   assert.match(stack.tools.git.assets["win32-x64"].url, /PortableGit/);
   assert.deepEqual(stack.profile, {
     name: "straw-boss-desk-profile",
-    version: "0.1.2",
-    integrity: "sha512-Jni/GVFxrspv9FJBRoTYOBfEYst8HvK+PV0NyUta9dKXvMHqT4b/jGZknYtiZrbw2+IH+EkD4ShfBh5Tuvm/xA==",
+    version: "0.1.3",
+    integrity: "sha512-2NUZMSqbxPwsFBF6ESnGuTgWaFF1Zxbm5WOywN9wh73S5VcrjWDl7L3HKIFaA3gt+ezlWn40kXrBMWHMPEvnsA==",
   });
   const names = packagesOf(stack).map((p) => p.name);
   assert.ok(!names.includes("playwriter"), "playwriter is dropped");

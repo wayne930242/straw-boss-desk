@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { removeTree } from "../src/main/bootstrap/fsutil.ts";
@@ -775,6 +775,51 @@ describe("pkg-prune: a package an earlier stack installed and this one no longer
 		assert.deepEqual(readStartGate(f.layout).blocks, []);
 		assert.ok(!sources(f).includes(OLD));
 		assert.equal(new StateStore(f.layout).record("pkg:show-old"), null);
+	});
+
+	/** A root where the replacement is already installed beside the old package (an earlier run was cut before the prune), and a tools folder that never goes quiet, so `pi remove` is never run (pbsswap-F001). */
+	async function withBothInstalled(): Promise<{ f: Fixture; deps: Partial<EngineDeps> }> {
+		const f = await onOldStack();
+		const both = stackFor(pin(published.profile), [pin(published.one), pin(published.old), pin(published.neu)]);
+		const first = await go(f, both, NO_TEAM);
+		assert.equal(first.outcomes["pkg:show-new"]?.status, "installed", JSON.stringify(first.outcomes["pkg:show-new"]));
+		assert.ok(sources(f).includes(OLD) && sources(f).includes(NEW));
+		const base = testPlatform();
+		const executable = join(f.layout.tools.root, "node", "24.0.0", isWindows ? "node.exe" : "node");
+		return { f, deps: { platform: { ...base, processes: { ...base.processes, listUnder: async () => [{ pid: 4242, startTime: "t", executable }] } }, toolsWaitMs: 100, toolsPollMs: 10 } };
+	}
+
+	it("when pi remove cannot even run (a program of an earlier run never ends), the listing is still taken out of settings.json (pbsswap-F001)", async () => {
+		const { f, deps } = await withBothInstalled();
+		const before = calls(f).length;
+		const out = await go(f, gen15(), NO_TEAM, {}, deps);
+		const outcome = out.outcomes[PRUNE_STAGE];
+		assert.equal(outcome?.status, "installed", JSON.stringify(outcome));
+		assert.match(outcome?.evidence ?? "", /^removed show-old@0\.11\.2 \(off pi's package list; its files stay under /);
+		assert.equal(calls(f).length, before, "pi was not run");
+		assert.ok(!sources(f).includes(OLD) && sources(f).includes(NEW), JSON.stringify(sources(f)));
+		assert.match(readFileSync(join(f.layout.logs, "bootstrap.jsonl"), "utf8"), /"event":"prune-remove-failed"[^\n]*pi remove did not run/);
+		const store = new StateStore(f.layout);
+		assert.deepEqual(store.startBlocks(), []);
+		assert.equal(store.record("pkg:show-old"), null);
+	});
+
+	it("when pi remove cannot run and the listing cannot be taken out either, the start is blocked (pbsswap-F001)", { skip: isWindows ? "a read-only folder is a POSIX way to make the unlisting fail" : false }, async () => {
+		const { f, deps } = await withBothInstalled();
+		chmodSync(f.layout.agent, 0o555);
+		let out: RunOut;
+		try {
+			out = await go(f, gen15(), NO_TEAM, {}, deps);
+		} finally {
+			chmodSync(f.layout.agent, 0o755);
+		}
+		const outcome = out.outcomes[PRUNE_STAGE];
+		assert.equal(outcome?.status, "failed", JSON.stringify(outcome));
+		assert.deepEqual(outcome?.failure?.params, { stage: PRUNE_STAGE, reason: "package-dropped", name: "show-old" });
+		assert.match(outcome?.failure?.detail ?? "", /show-old@0\.11\.2: pi remove did not run, and its listing in settings\.json is still listed, so pi loads it with its extensions/);
+		assert.ok(sources(f).includes(OLD), "still listed");
+		assert.deepEqual(readStartGate(f.layout).blocks, [{ stage: PRUNE_STAGE, package: "show-old", sentence: packageDroppedSentence("show-old") }]);
+		assert.equal(new StateStore(f.layout).record("pkg:show-old")?.version, "0.11.2", "the record stays, so the next run tries again");
 	});
 
 	it("a start block ends when a stack lists the package again (a rollback), without the prune removing anything", async () => {

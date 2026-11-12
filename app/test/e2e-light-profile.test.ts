@@ -190,4 +190,37 @@ describe("the profile and the pi packages from an empty root (e2e-light, task 7)
 		assert.ok(ask.includes("new api.ProjectTrustStore(api.getAgentDir()).get(cwd)"), "its saved decision is pi's store");
 		assert.match(ask, /if \(d\.saved\(cwd\) !== null\) return false;/, "a saved decision means no question; none means the question");
 	});
+
+	// pbsswap-F004 (generation 15's `pkg-prune`): the stand-in pi of `profile-stages.test.ts` proves the stage's decisions; this is the real pi 1.4.0's `pi remove` (its `npm uninstall` of one package out of the prefix every
+	// package of the stack shares), run through the stage, on both hosted runners. Stack A lists one more small package (the kit's skills-only package, already pinned above); stack B is the stack.json and drops it.
+	it("a stack that drops a package it listed has it removed by the real pi: settings.json no longer lists it, its files go, the record is forgotten, and every other stage stays verified", async () => {
+		const DROPPED = TEAM_PACKAGE;
+		const droppedStage = `pkg:${DROPPED.name}`;
+		const noTeam = { ...recipe("1.1.0", "- the CI rule, updated"), packages: [] };
+		const stackA = { ...realStack, piPackages: [...(realStack.piPackages as unknown[]), DROPPED] };
+		const sources = (): unknown[] => (JSON.parse(read(world, "settings.json")) as { packages: unknown[] }).packages.map((e) => (typeof e === "string" ? e : (e as { source: string }).source));
+		const listed = `npm:${DROPPED.name}@${DROPPED.version}`;
+
+		const a = await runWorld(world, { recipe: noTeam, profile: true, stack: stackA });
+		assert.ok(a.ok, failuresOf(a));
+		assert.equal(a.outcomes[droppedStage]?.status, "installed", failuresOf(a));
+		assert.ok(sources().includes(listed), "stack A lists the package");
+		assert.equal(installedVersion(world.layout, DROPPED.name), DROPPED.version);
+		assert.equal((stateOf(world, "bootstrap").stages as Record<string, { status: string }>)[droppedStage]?.status, "ok");
+
+		const b = await runWorld(world, { recipe: noTeam, profile: true });
+		assert.ok(b.ok, failuresOf(b));
+		assert.equal(b.outcomes["pkg-prune"]?.status, "installed", failuresOf(b));
+		assert.equal(b.outcomes["pkg-prune"]?.evidence, `removed ${DROPPED.name}@${DROPPED.version}`, "pi remove did it; the settings.json fallback was not needed");
+		assert.ok(!sources().includes(listed), `settings.json no longer lists it: ${JSON.stringify(sources())}`);
+		assert.equal(installedVersion(world.layout, DROPPED.name), null, "its files went with the removal");
+		const bootstrap = stateOf(world, "bootstrap").stages as Record<string, { status: string; startBlock?: unknown }>;
+		assert.equal(bootstrap[droppedStage], undefined, "the record of the dropped package is forgotten");
+		assert.equal(bootstrap["pkg-prune"]?.status, "ok");
+		assert.equal(bootstrap["pkg-prune"]?.startBlock, undefined);
+		for (const [name, status] of Object.entries(statusOf(b))) if (name !== "pkg-prune") assert.equal(status, "skipped-verified", `${name} is untouched by the removal`);
+		for (const name of PACKAGES) assert.ok(sources().includes(`npm:${name}@${(realStack.piPackages as Array<{ name: string; version: string }>).find((p) => p.name === name)?.version}`), `${name} is still listed`);
+		const again = await runWorld(world, { recipe: noTeam, profile: true });
+		assert.equal(again.outcomes["pkg-prune"]?.status, "skipped-verified", "nothing is left to remove");
+	});
 });
