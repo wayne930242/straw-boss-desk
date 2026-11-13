@@ -86,6 +86,10 @@ export interface RpcPanes {
 	paneIds: () => Promise<string[]>;
 	toolPids: () => Promise<Set<number>>;
 	openRpcPi: (label: string, splitFrom: string, cwd: string) => Promise<RpcPi>;
+	/** A pane next to `splitFrom` in `cwd` whose shell was told to start an interactive `pi` (no RPC): the pane id, returned before pi has drawn anything. Read its screen with `screen`. */
+	openPlainPi: (label: string, splitFrom: string, cwd: string) => Promise<string>;
+	/** What the pane shows now (`herdr pane read`), or an empty string when Herdr cannot read it. */
+	screen: (pane: string) => Promise<string>;
 	settlePanes: (known: readonly string[], programsBefore: ReadonlySet<number>) => Promise<void>;
 	/** `name=path` lines from the lookup command's output, and the check that each resolves under the app's tools folder (not to a planted fake or the runner's own). */
 	resolutions: (text: string) => Record<string, string>;
@@ -187,6 +191,29 @@ export function rpcPanes(world: World, platform: ReturnType<typeof createPlatfor
 			},
 		};
 	}
+	const screen = async (pane: string): Promise<string> => {
+		const read = await herdr(["pane", "read", pane, "--lines", "60"], 20_000);
+		return read.code === 0 ? read.stdout : "";
+	};
+	/**
+	 * An interactive pi in a pane of a base, started by the pane's shell as a PM would (`pi --offline`, nothing else): the pi that Herdr's own panes run, which is not the one a base's open
+	 * starts (that one is started by the sb server). Nothing is driven through its input, so the shell's first prompt is all it waits for.
+	 */
+	async function openPlainPi(label: string, splitFrom: string, cwd: string): Promise<string> {
+		const h = new WorldHerdr(world);
+		const split = await h.cli(["pane", "split", splitFrom, "--direction", "right", "--cwd", cwd, "--no-focus"]);
+		assert.equal(split.code, 0, `${split.stdout} ${split.stderr}`);
+		const pane = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
+		if (isWindows) {
+			await until(`the shell's prompt in the pane (${label})`, 40_000, () => promptShown(h, pane)).catch((error: Error) => console.log(`${label}: ${error.message}; typing anyway`));
+			await sleep(1000);
+		} else {
+			// A shell needs a moment before it reads a typed line.
+			await sleep(1500);
+		}
+		await h.type(pane, "pi --offline");
+		return pane;
+	}
 	/**
 	 * What a pane whose pi went away says about it: where `pi` resolves, whether `pi --version` runs, and what `pi --mode rpc` does with an empty stdin, each printed to the pane
 	 * and read back. Test code that explains a failure; it changes nothing.
@@ -265,5 +292,5 @@ export function rpcPanes(world: World, platform: ReturnType<typeof createPlatfor
 		}
 	}
 
-	return { underTools, herdr, herdrAnswers, paneIds, toolPids, openRpcPi, settlePanes, resolutions, assertAppFolders };
+	return { underTools, herdr, herdrAnswers, paneIds, toolPids, openRpcPi, openPlainPi, screen, settlePanes, resolutions, assertAppFolders };
 }

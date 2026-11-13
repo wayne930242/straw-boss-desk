@@ -3,14 +3,18 @@
 // an emitted `suspend` and `resume` with the URL down runs no `up`; a fourth restart within 10 minutes shows the failure screen and Retry starts again; `pickFolder` (the dialog
 // stubbed) opens a base under the work folder, and the preload is absent on a page of another origin; navigation off the GUI's origin is refused and the preview links open; and a
 // pi started as a pane starts it resolves gh, git and pi to the app's folders and dispatches a subagent through the scripted stub model (spec: Workflows, step 7).
+// With sb's auto mode switched on the way the GUI does it, a base the desk's own open path starts asks pi's trust question (desk #54: sb 0.75.2's open-intent) and a pane started any other way is
+// answered "not trusted" (spec: Build note, "the trust question of a base the desk opens").
 //   SBD_E2E=1 SBD_E2E_KIND=dev npm run test:e2e        (a GitHub-hosted runner only; the six-signal check refuses anywhere else)
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { join, basename } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { _electron as electron, type ElectronApplication } from "playwright-core";
 import { createPlatform } from "../../src/main/platform/index.ts";
+import { OpenBaseClient, post as guiPost, readGuiRecord, type OpenOutcome } from "../../src/main/projects/open-base.ts";
 import { loadStartConfig } from "../../src/main/runtime/config.ts";
 import { readInstalled, isInstalled } from "../../src/main/runtime/readiness.ts";
 import { childEnvOf, createWorld, disposeWorld, isWindows, noteUserPath, plantShellStartupDecoy, run, runWorld, type World } from "../harness/e2e-light.ts";
@@ -21,6 +25,7 @@ import { locatePackaged, type Packaged } from "../harness/packaged.ts";
 import { CHILD_NAME, LOOKUP_COMMAND, modelsJson, RESULT_PREFIX, startStubModel, SUBAGENT_MARKER, type StubModel } from "../harness/stub-model.ts";
 import { assertElevatedRunner } from "../harness/elevation.ts";
 import { rpcPanes, strings, type RpcPanes, type RpcPi } from "../harness/rpc-pane.ts";
+import { NOT_TRUSTED_WARNING, plantProject, RELAYED_TO_GUI, screenShows, seconds, TRUST_QUESTION, trustAnswers, trustNotes } from "../harness/trust-open.ts";
 
 const kind = process.env.SBD_E2E_KIND === "release" ? "release" : "dev";
 const enabled = process.env.SBD_E2E === "1";
@@ -97,6 +102,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 	const paneIds = () => panes.paneIds();
 	const toolPids = () => panes.toolPids();
 	const openRpcPi = (label: string, splitFrom: string, cwd: string) => panes.openRpcPi(label, splitFrom, cwd);
+	const openPlainPi = (label: string, splitFrom: string, cwd: string) => panes.openPlainPi(label, splitFrom, cwd);
+	const screenOf = (pane: string) => panes.screen(pane);
 	const settlePanes = (known: readonly string[], programsBefore: ReadonlySet<number>) => panes.settlePanes(known, programsBefore);
 	const resolutions = (text: string) => panes.resolutions(text);
 	const assertAppFolders = (found: Record<string, string>, names: string[]) => panes.assertAppFolders(found, names);
@@ -500,6 +507,126 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		} finally {
 			// On Windows the pi's input is ended before its pane closes (`RpcPi.close`, as in the wizard's steps 5 and 7): a pi whose pane closed under it keeps reading from the feeder (T15R-F003).
 			await parent.close().catch(() => undefined);
+			await settlePanes(knownPanes, programsBefore);
+		}
+	});
+
+	// Desk #54 (review pin-0752-F001). Under sb's auto mode every pi's project-trust question is answered "not trusted for this session" at once (D3), except in a pane the GUI's
+	// `POST /api/open/base` started: since sb 0.75.2 that pane's pi asks the server over the control socket (`open-intent`, 3 s for the call, 10 s for the whole ask; on Windows the owner check
+	// before the call starts PowerShell) and, on a yes, asks as usual. Late or failed is "no", which is the old behaviour, silently: a PM opening a project from the desk would lose its `.pi`
+	// resources. Nothing here writes sb's files or calls its socket: auto mode is switched by the page's own route (`POST /api/auto`, the page's two taps are D9's confirm), the base is opened by
+	// the desk's own client (`OpenBaseClient`, the Projects screen's path), the question is read from `POST /api/open/progress` (what the GUI window draws) and from the pane's screen, and
+	// the contrast is read from the server's return list (`POST /api/auto/report`) and the screen of a pane the shell started `pi` in.
+	check("under auto mode, a base opened from the desk asks pi's trust question and a pane started any other way is answered \"not trusted\"", async () => {
+		assert.ok(base, "the base was opened");
+		const slotDir = join(world.layout.agent, "straw-boss");
+		const gui = async (path: string, json: unknown) => {
+			const record = readGuiRecord(slotDir);
+			assert.ok(record, "gui.json names the running server");
+			const stop = new AbortController();
+			const timer = setTimeout(() => stop.abort(), 30_000);
+			try {
+				return await guiPost(record, path, json, stop.signal);
+			} finally {
+				clearTimeout(timer);
+			}
+		};
+		const autoOn = async (): Promise<unknown> => ((await gui("/api/auto", {})).body as { on?: unknown } | undefined)?.on;
+		const opened = join(workFolder, "trust-opened");
+		const plain = join(workFolder, "trust-plain");
+		plantProject(opened);
+		plantProject(plain);
+		const knownPanes = await paneIds();
+		const programsBefore = await toolPids();
+		const screens = async (ids: readonly string[]) => (await Promise.all(ids.map(async (id) => `--- pane ${id} ---\n${(await screenOf(id)).replace(/[^\x20-\x7e\n]/g, "?").slice(-1200)}`))).join("\n");
+		const newPanes = async (except: readonly string[] = []) => (await paneIds()).filter((id) => !knownPanes.includes(id) && !except.includes(id));
+
+		assert.equal(await autoOn(), false, "auto mode starts off (a state request names no `on`)");
+		let off = false;
+		const abort = new AbortController();
+		let outcome: OpenOutcome | undefined;
+		let ended = 0;
+		let ending: Promise<void> | undefined;
+		try {
+			const on = await gui("/api/auto", { on: true });
+			assert.equal(on.status, 200, `the page's switch: ${JSON.stringify(on.body)}`);
+			assert.equal((on.body as { on?: unknown }).on, true, "auto mode is on");
+
+			// The contrast pane: a plain interactive pi in the other folder, started by the pane's shell. It starts first and runs while the base opens.
+			const plainStarted = Date.now();
+			const plainPane = await openPlainPi("plain", base.pane, plain);
+
+			// The desk's own open path: the client the Projects screen runs, and the server's answer to its progress question while it waits.
+			const deploy = `e2e-trust-${Date.now()}`;
+			const began = Date.now();
+			ending = new OpenBaseClient({ slotDir }).open({ dir: opened, label: "trust-opened", deploy }, { onTrust: () => undefined, signal: abort.signal }).then((o) => {
+				outcome = o;
+				ended = Date.now();
+			});
+			const asked = (await until(
+				"the trust question of the base the desk opened",
+				90_000,
+				async () => {
+					const progress = await gui("/api/open/progress", { id: deploy });
+					return progress.status === 200 ? (progress.body as { trust?: { id: string; digest: string; folder: string; found?: unknown[] } }).trust : undefined;
+				},
+				{
+					every: 500,
+					failWhen: async () =>
+						outcome === undefined
+							? undefined
+							: `the open ended after ${seconds(ended - began)} with ${JSON.stringify(outcome)} and no trust question: under auto mode the pane's pi was answered "not trusted" (open-intent late or refused?)\n${await screens(await newPanes())}`,
+				},
+			)) as { id: string; digest: string; folder: string; found?: unknown[] };
+			const askedAfter = Date.now() - began;
+			console.log(`trust question of the opened base: ${seconds(askedAfter)} after the open began (open-intent round trip is not logged by sb; this bounds it and includes pi's start)`);
+			assert.ok(asked.folder.replace(/\\/g, "/").toLowerCase().endsWith("/trust-opened"), `the question names the opened folder: ${asked.folder}`);
+			assert.ok(Array.isArray(asked.found) && asked.found.length > 0, "the question lists what the folder carries");
+			assert.equal(outcome, undefined, "the open is still waiting on the question: nothing answered it");
+			const openedPanes = await newPanes([plainPane]);
+			const askingScreens = await Promise.all(openedPanes.map(screenOf));
+			console.log(`panes of the opened base while it asks (${openedPanes.length}): relayed to the GUI window ${askingScreens.some((t) => screenShows(t, RELAYED_TO_GUI))}, question drawn ${askingScreens.some((t) => screenShows(t, TRUST_QUESTION))}, "not trusted" shown ${askingScreens.some((t) => screenShows(t, NOT_TRUSTED_WARNING))}`);
+			assert.ok(openedPanes.length > 0, "the open made a pane");
+			assert.equal(askingScreens.some((t) => screenShows(t, NOT_TRUSTED_WARNING)), false, "no pane of the opened base was answered \"not trusted\"");
+
+			// The PM's answer in the window: this session only, so nothing is remembered in the scratch agent folder.
+			const answer = await gui("/api/trust/answer", { id: asked.id, digest: asked.digest, choice: "once", answerId: randomBytes(16).toString("hex") });
+			assert.equal(answer.status, 200, `the trust answer: ${JSON.stringify(answer.body)}`);
+			assert.equal((answer.body as { outcome?: unknown }).outcome, "accepted", `the trust answer: ${JSON.stringify(answer.body)}`);
+			await until("the open to end after the answer", 120_000, () => outcome, { every: 500 });
+			console.log(`the opened base was open ${seconds(ended - began)} after the open began, ${seconds(ended - began - askedAfter)} after the question`);
+			assert.deepEqual(outcome, { ok: true }, `the open after the answer: ${JSON.stringify(outcome)}`);
+			const afterScreens = await Promise.all((await newPanes([plainPane])).map(screenOf));
+			assert.equal(afterScreens.some((t) => screenShows(t, NOT_TRUSTED_WARNING)), false, "the opened base's pi runs as trusted for the session");
+
+			// The contrast: the plain pane's pi was answered "not trusted" at once, and its screen says so; it never drew the question.
+			const plainScreen = await until("the plain pane's pi to say the project is not trusted", 90_000, async () => {
+				const text = await screenOf(plainPane);
+				return screenShows(text, NOT_TRUSTED_WARNING) ? text : undefined;
+			}, { every: 500 });
+			console.log(`the plain pane's pi said "not trusted" ${seconds(Date.now() - plainStarted)} after its pane was started`);
+			assert.equal(screenShows(plainScreen, TRUST_QUESTION), false, "the plain pane's pi never drew the trust question");
+
+			// Auto mode off again, and its return list: exactly one "not trusted" answer in the period, the plain pane's (a second one would be the opened base's).
+			const stopped = await gui("/api/auto", { on: false });
+			assert.equal(stopped.status, 200, `the page's switch off: ${JSON.stringify(stopped.body)}`);
+			assert.equal((stopped.body as { on?: unknown }).on, false, "auto mode is off");
+			off = true;
+			const report = await gui("/api/auto/report", {});
+			assert.equal(report.status, 200, JSON.stringify(report.body));
+			console.log(`the return list's trust lines: ${JSON.stringify(trustNotes(report.body).map((n) => ({ count: n.count, gist: n.gist.slice(0, 60) })))}`);
+			assert.equal(trustAnswers(report.body), 1, `auto mode answered "not trusted" once, for the plain pane: ${JSON.stringify(report.body).slice(0, 600)}`);
+		} catch (error) {
+			console.log(`--- the panes after the trust check failed ---\n${await screens(await newPanes())}`);
+			throw error;
+		} finally {
+			// Whatever happened, auto mode does not stay on for the checks after this one, and the panes this check started go.
+			if (!off) {
+				const stopped = await gui("/api/auto", { on: false }).catch((error: Error) => ({ status: 0, body: error.message }));
+				console.log(`auto mode switched off in the cleanup: ${stopped.status}`);
+			}
+			abort.abort();
+			await ending?.catch(() => undefined);
 			await settlePanes(knownPanes, programsBefore);
 		}
 	});

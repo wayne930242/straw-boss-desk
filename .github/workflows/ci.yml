@@ -213,7 +213,8 @@ jobs:
           node --test --test-concurrency=1 test/e2e/runtime.e2e.ts 2>&1 | tee -a "$RUNNER_TEMP/runtime-e2e.log"
 
       # The task 8b anchor: the packaged app follows the GUI (restart, kill, /boss gui stop and Start, the failure screen at the fourth restart, suspend and resume), keeps the page
-      # safe (the folder hook, navigation, preview links), and a pi in a pane of a base and its subagent resolve the app's tools, against the scripted stub model. It installs a
+      # safe (the folder hook, navigation, preview links), a pi in a pane of a base and its subagent resolve the app's tools, against the scripted stub model, and under auto mode a base the
+      # desk opens asks pi's trust question (desk #54). It installs a
       # whole root like the two files above; the job stays well inside its limit (each Windows file took about 7 minutes before it).
       - name: Playwright, follow on the development build
         working-directory: app
