@@ -193,6 +193,8 @@ describe("the packaged app follows the GUI and keeps the page safe (e2e, task 8b
 		writeFileSync(join(world.layout.agent, "models.json"), modelsJson(stub.baseUrl));
 		const settingsFile = join(world.layout.agent, "settings.json");
 		const settings = readJson<Record<string, unknown>>(settingsFile) ?? {};
+		// The installed profile's settings.json (not a harness copy) carries the PM's tool setting: the stub's `subagent` call relies on search being off, as in a PM's session.
+		assert.deepEqual(settings.defaultTools, ["-tool_search"], "the profile's defaultTools reached the agent folder");
 		writeFileSync(settingsFile, JSON.stringify({ ...settings, defaultProvider: "stub", defaultModel: "stub-1", enabledModels: ["stub/stub-1"] }, null, 2));
 		// The PM's own startup file and a fake gh and git ahead of the real ones: a pane that read them would run the fakes (a guarded fixture: written into the scratch home only).
 		if (!isWindows) plantShellStartupDecoy(world);
