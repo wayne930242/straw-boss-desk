@@ -169,6 +169,16 @@ jobs:
           done
           ls -l "$RUNNER_TEMP/installers"
 
+      # Kept for the Windows VM acceptance (task 16): the guest downloads these through Edge, so they carry Mark-of-the-Web as a PM's download would. Unsigned development
+      # products, uploaded before the tests run so a failing test still leaves them.
+      - name: Upload the installers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dev-installers-windows
+          path: ${{ runner.temp }}/installers
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Cache the downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
