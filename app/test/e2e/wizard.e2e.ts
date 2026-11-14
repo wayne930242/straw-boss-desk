@@ -810,6 +810,10 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 	});
 
 	it("Linear step: a key that is not a key is refused, a dummy key is saved encrypted, ttt is installed, the restart is offered, and after Restart now a new pane has LINEAR_API_KEY (task 11)", { timeout: 1_200_000 }, async () => {
+		// The relaunch above draws step 9 while its stack is still starting, and the supervisor reads linear.bin when it builds Herdr's environment. A key saved before that read
+		// reaches the first Herdr, so "a pane opened before the restart has no key" would test the start's timing, not the restart rule (windows-11-arm nightlies 11-11, 11-12,
+		// 11-14: the read came about 1.6 s after `begin`, after the save). The stack must be up before the key is typed.
+		await until("the relaunched stack's sb server", 300_000, () => startEventsSince("sb-server-up", stackLaunchedAt, CLOCK_SKEW_MS).length >= 1 || undefined, { every: 200, failWhen: startFailing(world.layout, stackLaunchedAt, page) });
 		await page.locator("#linear-key").waitFor({ timeout: 60_000 });
 		const field = page.locator("#linear-key");
 		assert.equal(await field.getAttribute("type"), "password");
@@ -859,7 +863,12 @@ describe("the wizard from zero to the GUI (e2e, task 9)", { skip }, () => {
 		assert.equal(logText().includes(LINEAR_KEY), false, "no log holds the key");
 
 		// Herdr's environment is fixed for its lifetime: a pane opened now does not have the key; after Restart now it does.
-		assert.equal(await paneLinearKey(), "[]", "a pane opened before the restart has no key");
+		const before = await paneLinearKey();
+		if (before !== "[]") {
+			const saved = eventsNamed("linear-key-saved").map((e) => String(e.t));
+			const starts = startEventsSince("herdr-started", stackLaunchedAt, CLOCK_SKEW_MS).map((e) => String(e.t));
+			assert.fail(`a pane opened before the restart has a key: linear-key-saved at ${saved.join(", ")}; herdr-started since the relaunch at ${starts.join(", ")}`);
+		}
 		await page.locator("#linear-restart").click();
 		await until("the stack to restart", 300_000, async () => (await page.locator('#linear-restarted, [data-restart="restarted"]').count()) > 0 || undefined, { every: 200, failWhen: startFailing(world.layout, stackLaunchedAt, page) });
 		await shotBoth(page, "linear-restarted");
