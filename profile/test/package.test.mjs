@@ -55,7 +55,7 @@ describe("configs", () => {
 
   it("settings own only the profile's keys, with Haiku not enabled", () => {
     const settings = readJson("config/settings.json");
-    assert.deepEqual(Object.keys(settings).sort(), ["collapseChangelog", "defaultModel", "defaultProvider", "defaultThinkingLevel", "enableInstallTelemetry", "enabledModels", "quietStartup"]);
+    assert.deepEqual(Object.keys(settings).sort(), ["collapseChangelog", "defaultModel", "defaultProvider", "defaultThinkingLevel", "defaultTools", "enableInstallTelemetry", "enabledModels", "quietStartup"]);
     assert.deepEqual(settings.enabledModels, ["claude-bridge/claude-sonnet-5-5", "claude-bridge/claude-opus-5-5"]);
     assert.equal(settings.shellPath, undefined);
     assert.equal(settings.packages, undefined);
