@@ -18,7 +18,7 @@ The PM's go-ahead also approves pushing the branch and opening the request in st
 ## 2. Prepare the branch
 
 1. `git rev-parse --show-toplevel` must print this session's folder (the base or your assigned worktree). If it does not, stop and tell the PM, in plain words, that the folder is not the project you were given. Repeat this check before every commit and push.
-2. `git status --porcelain`: if there are changes you did not make in this task, they may belong to another task. Do not switch branches over them, commit them, or discard them; continue in a worktree as pi-herdr-agents describes, or ask the PM.
+2. `git status --porcelain`: if there are changes you did not make in this task, they may belong to another task. Do not switch branches over them, commit them, or discard them; continue in a worktree, or ask the PM. On macOS use the worktree pi-herdr-agents makes. On Windows it refuses managed worktrees ("Managed worktrees are not supported on Windows"), and the refusal's advice to launch an ordinary subagent would run it in the base that holds the other changes; instead make the worktree yourself with `git worktree add "$HOME"/.herdr/worktrees/<repo>/<branch>` (see "Where you work") and work there, or pass that folder as the `cwd` of an ordinary subagent. Never launch an ordinary subagent in the base while it holds another task's changes.
 3. `git fetch origin`. Find the default branch with `git symbolic-ref --short refs/remotes/origin/HEAD` (run `git remote set-head origin --auto` first if it is unset) and drop the `origin/` prefix.
 4. Name the branch `<type>/<slug>`: `type` is a Conventional Commits type (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`); `slug` is two to five lowercase English words joined by hyphens. Put an issue ID the PM names first in the slug (`fix/abc-123-login-timeout`). Follow the repository's own naming when its docs or recent branches show one. If the name is taken locally or on `origin`, add `-2`.
 5. `git switch --no-track -c <branch> origin/<default>`.
@@ -89,7 +89,7 @@ After resolving: rerun the checks, commit the merge, push, and wait for CI again
 
 ## Follow-ups on a sent request
 
-When the PM asks about a sent change or passes on an engineer's comment, read the request's state, checks, and comments. Continue on the same branch only when the working tree is clean (otherwise in a worktree), go through steps 3 to 7 again, and report. A merged or closed request is finished: new work starts a new branch from step 2.
+When the PM asks about a sent change or passes on an engineer's comment, read the request's state, checks, and comments. Continue on the same branch only when the working tree is clean (otherwise in a worktree, made as step 2.2 says for your platform), go through steps 3 to 7 again, and report. A merged or closed request is finished: new work starts a new branch from step 2.
 
 ## Code-host commands
 

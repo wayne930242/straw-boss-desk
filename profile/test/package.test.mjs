@@ -18,6 +18,10 @@ describe("package", () => {
     assert.equal(pkg.dependencies, undefined, "no runtime dependencies");
   });
 
+  it("turns pi's tool search off, so the routine subagent tools are active from session start (pi-claude-bridge cannot call a tool loaded mid-run)", () => {
+    assert.deepEqual(readJson("config/settings.json").defaultTools, ["-tool_search"]);
+  });
+
   it("npm pack lists only the intended files", () => {
     const run = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
       cwd: profileDir,
